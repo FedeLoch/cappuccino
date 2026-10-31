@@ -147,3 +147,14 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Android
+.gradle/
+build/
+.cxx/
+.kotlin/
+local.properties
+.idea/
+*.apk
+*.aab
+captures/
