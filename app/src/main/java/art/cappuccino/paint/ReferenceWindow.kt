@@ -10,6 +10,7 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Paint
+import android.graphics.drawable.LayerDrawable
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
@@ -17,6 +18,8 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
+import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.SeekBar
@@ -25,6 +28,8 @@ import android.widget.Toast
 import kotlin.math.roundToInt
 
 private const val MIN_WIDTH_DP = 180
+private const val MAX_TOOL_DP = 36
+private const val MIN_TOOL_DP = 22
 private const val MAX_ZOOM = 12f
 private const val VISIBLE_EDGE_DP = 56
 private const val DRAWING_ALPHA = 0.35f
@@ -47,12 +52,13 @@ class ReferenceWindow(
     private val host: ReferenceHost,
 ) {
     private val ratio = bitmap.height / bitmap.width.toFloat()
+    private val toolButtons = ArrayList<ImageButton>()
     private val image = ReferenceImage()
     private val bar: View = createBar()
     private val root = FrameLayout(activity).apply {
-        background = activity.rounded(SURFACE, 12).apply { setStroke(activity.dp(1), FOAM) }
+        background = activity.rounded(SURFACE, 12)
         clipToOutline = true
-        setPadding(activity.dp(1), activity.dp(1), activity.dp(1), activity.dp(1))
+        foreground = createFrame()
         addView(image)
         addView(createResizeHandle(), FrameLayout.LayoutParams(activity.dp(36), activity.dp(36), Gravity.BOTTOM or Gravity.END))
         addView(bar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
@@ -63,8 +69,17 @@ class ReferenceWindow(
     }
 
     init {
+        fitToolbar()
         bar.visibility = View.GONE
         root.alpha = state.opacity
+    }
+
+    /** A cream frame with a thin dark edge, so it shows on both light and dark artwork. */
+    private fun createFrame(): LayerDrawable {
+        val outer = activity.rounded(Color.TRANSPARENT, 12).apply { setStroke(activity.dp(1), SURFACE) }
+        val inner = activity.rounded(Color.TRANSPARENT, 11).apply { setStroke(activity.dp(2), FOAM) }
+        val inset = activity.dp(1)
+        return LayerDrawable(arrayOf(outer, inner)).apply { setLayerInset(1, inset, inset, inset, inset) }
     }
 
     private fun windowHeight(): Int = (state.width * ratio).toInt()
@@ -94,6 +109,22 @@ class ReferenceWindow(
 
     private fun applyBounds() {
         window.update(state.x, state.y, state.width, windowHeight(), true)
+        fitToolbar()
+    }
+
+    /** Keeps all the tools in one row by shrinking them as the window gets smaller. */
+    private fun fitToolbar() {
+        val available = state.width - activity.dp(10)
+        val size = (available / toolButtons.size)
+            .coerceIn(activity.dp(MIN_TOOL_DP), activity.dp(MAX_TOOL_DP))
+        val padding = size / 5
+        toolButtons.forEach { button ->
+            button.setPadding(padding, padding, padding, padding)
+            button.layoutParams = button.layoutParams.apply {
+                width = size
+                height = size
+            }
+        }
     }
 
     private fun createResizeHandle(): View = TextView(activity).apply {
@@ -159,12 +190,13 @@ class ReferenceWindow(
             gravity = Gravity.CENTER_VERTICAL
             actions.forEach { (icon, name, action) ->
                 val button = activity.iconButton(icon, name) { action() }.apply {
-                    setPadding(activity.dp(7), activity.dp(7), activity.dp(7), activity.dp(7))
+                    scaleType = ImageView.ScaleType.FIT_CENTER
                     tooltipText = name
                 }
+                toolButtons += button
                 if (icon == R.drawable.ic_invert) grayButton = button
                 if (icon == R.drawable.ic_flip) flipButton = button
-                addView(button, LinearLayout.LayoutParams(activity.dp(36), activity.dp(36)))
+                addView(button, LinearLayout.LayoutParams(activity.dp(MAX_TOOL_DP), activity.dp(MAX_TOOL_DP)))
             }
         }
         toggle(grayButton, state.grayscale)
@@ -193,7 +225,7 @@ class ReferenceWindow(
                     addView(row)
                 },
             )
-            addView(opacity)
+            addView(opacity, LinearLayout.LayoutParams(-1, activity.dp(22)))
         }
     }
 
