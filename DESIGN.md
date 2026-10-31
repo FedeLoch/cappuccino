@@ -64,10 +64,10 @@ Gestures:
 
 ## Assistant
 
-A small, original mascot lives on the canvas screen. It is the app's signature and
+A small, original companion lives on the canvas screen. It is the app's signature and
 the one allowed exception to the main-screen control rule.
 
-The app has four mascots, and the artist picks one in the companion panel. Light direction,
+The app has four companions, and the artist picks one in the companion panel. Light direction,
 figure height, and sketch-stage notes join the color, value, composition, and silhouette tips. Only one
 appears at a time, and both share the same behavior and advice.
 
@@ -76,7 +76,7 @@ appears at a time, and both share the same behavior and advice.
 - Foam cup: a small cappuccino whose foam heart takes on the current brush color.
 - Coffee drop: a coffee-colored drop with a foam cap.
 
-Each mascot starts with four expressions: idle, tip ready, thinking, and napping.
+Each companion starts with four expressions: idle, tip ready, thinking, and napping.
 
 Behavior:
 
@@ -192,6 +192,16 @@ history ends when the artwork closes. Selecting a layer is not an undo step.
 Layer limits now depend on canvas size and device memory. Layers are still full textures, so
 tile storage remains future work, along with a stroke recovery journal.
 
+## Reference match
+
+When hidden, the companion rests behind the top-left toolbar and wakes with a tap.
+
+The companion compares the artwork with open references, or with the project's whole library
+when none are open. It runs on the device after each autosave and scores palette, values,
+composition, and mood, keeping the closest reference for each area. It names the weakest area
+and offers colors to try. Every tip has a Why view with its measurements, and reference tips
+also show the artwork beside the closest reference. It measures art direction, and does not recognize subjects or style.
+
 ## Projects and references
 
 - The home screen is the projects view. Artworks can be grouped into projects, renamed,
@@ -219,7 +229,7 @@ Each milestone must pass its gate on the real device before the next one starts.
 | 2. Daily sketching | Layers, blend modes, color picker, eraser, smudge, gallery, autosave, PNG export | A forced-crash test loses no finished stroke |
 | 3. Serious illustration | About 10 refined brushes, custom brushes, selections, transforms, clipping masks, PSD | A complete illustration is finished in the app |
 | 4. Public release | Device testing, onboarding, Google Play, and F-Droid | Beta runs without data-loss reports |
-| 5. Assistant | Mascot, local analysis, optional questions through the artist's own key | Measured: no added input lag during drawing |
+| 5. Assistant | Companion, local analysis, optional questions through the artist's own key | Measured: no added input lag during drawing |
 | 6. Later | Symmetry, perspective guides, time-lapse, animation, brush sharing | Decided from artist feedback |
 
 ## First version non-goals
@@ -236,7 +246,7 @@ CMYK, and animation.
 
 ## Open decisions
 
-- Final mascot artwork, mascot names, and visual identity.
+- Final companion artwork, companion names, and visual identity.
 - Trademark check and domain for Cappuccino. On 2026-10-31, cappuccino.app and
   cappuccinoapp.com were registered. cappuccino.art, cappuccinopaint.com,
   cappuccinodraw.com, and getcappuccino.app appeared unregistered.

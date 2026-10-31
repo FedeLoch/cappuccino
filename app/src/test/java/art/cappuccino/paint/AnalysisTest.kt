@@ -35,6 +35,14 @@ class AnalysisTest {
     }
 
     @Test
+    fun everyTipExplainsWhy() {
+        val report = analyzeArtwork(image { x, _ -> if (x < 30) 0xFFB03030.toInt() else null }, SIZE, SIZE, 0)
+        assertTrue(report.tips.all { it.why.isNotBlank() })
+        assertTrue(tip(report, "Palette").isNotBlank())
+        assertTrue(report.tips.first { it.topic == "Palette" }.why.contains("red"))
+    }
+
+    @Test
     fun blankPaperGivesNoTips() {
         assertTrue(analyzeArtwork(image { _, _ -> null }, SIZE, SIZE).tips.isEmpty())
     }

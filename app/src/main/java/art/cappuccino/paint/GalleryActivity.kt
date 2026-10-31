@@ -3,6 +3,7 @@ package art.cappuccino.paint
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.Typeface
@@ -55,6 +56,11 @@ class GalleryActivity : Activity() {
                 addView(root)
             },
         )
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        render()
     }
 
     override fun onResume() {
@@ -110,25 +116,34 @@ class GalleryActivity : Activity() {
         }
         shelf += sketchbook("Unsorted", artworks.count { it.projectId.isEmpty() }, null) { select("") }
         shelf += newSketchbook()
-        root.addView(
-            LinearLayout(this).apply {
-                artworks.firstOrNull()?.let { latest ->
-                    addView(
-                        continueCard(latest),
-                        LinearLayout.LayoutParams(dp(CONTINUE_WIDTH), dp(CONTINUE_HEIGHT)).apply { marginEnd = dp(20) },
-                    )
-                }
-                addView(
-                    LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
-                        addView(label("Your sketchbooks", 14f, LATTE))
-                        addView(row(shelf), spaced())
-                    },
-                    LinearLayout.LayoutParams(0, -2, 1f),
+        val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+        val books = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(label("Your sketchbooks", 14f, LATTE))
+            addView(row(shelf), spaced())
+        }
+        if (portrait) {
+            artworks.firstOrNull()?.let { latest ->
+                root.addView(
+                    continueCard(latest),
+                    LinearLayout.LayoutParams(-1, dp(CONTINUE_HEIGHT)).apply { topMargin = dp(16) },
                 )
-            },
-            spaced(),
-        )
+            }
+            root.addView(books, spaced())
+        } else {
+            root.addView(
+                LinearLayout(this).apply {
+                    artworks.firstOrNull()?.let { latest ->
+                        addView(
+                            continueCard(latest),
+                            LinearLayout.LayoutParams(dp(CONTINUE_WIDTH), dp(CONTINUE_HEIGHT)).apply { marginEnd = dp(20) },
+                        )
+                    }
+                    addView(books, LinearLayout.LayoutParams(0, -2, 1f))
+                },
+                spaced(),
+            )
+        }
         if (artworks.size > 1) {
             root.addView(label("Recent", 14f, LATTE), spaced())
             val cell = dp(220)
@@ -168,7 +183,7 @@ class GalleryActivity : Activity() {
         val preferences = getSharedPreferences("studio", MODE_PRIVATE)
         addView(
             CompanionView(context).apply {
-                mascot = Mascot.valueOf(preferences.getString("mascot", null) ?: Mascot.COFFEE_DROP.name)
+                look = CompanionLook.valueOf(preferences.getString("mascot", null) ?: CompanionLook.COFFEE_DROP.name)
                 contentDescription = "Your companion"
             },
             LinearLayout.LayoutParams(dp(36), dp(36)),

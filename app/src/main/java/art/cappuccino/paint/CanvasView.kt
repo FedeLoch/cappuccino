@@ -4,6 +4,8 @@ import android.content.Context
 import android.graphics.Color
 import android.graphics.Matrix
 import android.opengl.Matrix as GlMatrix
+import android.os.SystemClock
+import android.util.Log
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -47,6 +49,17 @@ class BrushState(
     val alphaLock: Boolean,
     val pressureGamma: Float,
 )
+
+private const val SLOW_MS = 32L
+
+/** Logs work on the drawing thread that's long enough to miss a frame or more. */
+private inline fun <T> timed(name: String, work: () -> T): T {
+    val start = SystemClock.elapsedRealtime()
+    val result = work()
+    val elapsed = SystemClock.elapsedRealtime() - start
+    if (elapsed >= SLOW_MS) Log.d("CappuccinoPerf", "$name took $elapsed ms")
+    return result
+}
 
 enum class SelectionTool { NONE, LASSO, WAND }
 
@@ -137,7 +150,10 @@ class CanvasView(
 
         fun drainActions() {
             if (engine == 0L) engine = NativeEngine.create(canvasWidth, canvasHeight)
-            while (true) (pendingActions.poll() ?: break).invoke(engine)
+            while (true) {
+                val action = pendingActions.poll() ?: break
+                timed("engine action") { action(engine) }
+            }
         }
 
         private fun prepare(bufferInfo: BufferInfo, transform: FloatArray) {
@@ -178,11 +194,13 @@ class CanvasView(
                     kind.mode == BrushMode.SMUDGE, brush.pressureGamma, kind.tip,
                 )
             }
-            NativeEngine.drawFront(
-                engine, projection, op.view,
-                bufferInfo.width, bufferInfo.height,
-                op.samples, op.predicted, op.end,
-            )
+            timed(if (op.end) "stroke end" else "stroke frame") {
+                NativeEngine.drawFront(
+                    engine, projection, op.view,
+                    bufferInfo.width, bufferInfo.height,
+                    op.samples, op.predicted, op.end,
+                )
+            }
         }
 
         override fun onDrawMultiBufferedLayer(
@@ -202,7 +220,9 @@ class CanvasView(
             drainActions()
             val view = latestView
             if (view[Matrix.MPERSP_2] == 0f) return
-            NativeEngine.compose(engine, projection, view, bufferInfo.width, bufferInfo.height)
+            timed("compose") {
+                NativeEngine.compose(engine, projection, view, bufferInfo.width, bufferInfo.height)
+            }
             composed = true
         }
 

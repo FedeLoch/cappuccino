@@ -48,6 +48,7 @@ private const val PICK_REFERENCES = 41
 private const val REFERENCE_SIZE = 2048
 private const val PREFERENCES = "studio"
 private const val PANEL_WIDTH = 340
+private const val BUBBLE_WIDTH = 280
 private const val THUMBNAIL_WIDTH = 72
 private const val THUMBNAIL_HEIGHT = 48
 private const val LAYER_ROW = 56
@@ -55,6 +56,11 @@ private const val LAYER_GAP = 4
 private const val RETIRED_LAYERS = 6
 private val LEFT_PANELS = setOf("actions", "references", "view", "selection")
 private const val PICK_TIP = 45
+private const val PEEK_SIZE = 44
+private const val PEEK_OVERLAP = 16
+private const val PEEK_TOP = 1
+private const val PEEK_TILT = 24f
+private const val REFERENCE_PROFILE_SIZE = 240
 private const val BRUSH_TIP_SIZE = 128
 
 class MainActivity : Activity(), ReferenceHost {
@@ -90,6 +96,14 @@ class MainActivity : Activity(), ReferenceHost {
     private var pickView: PickRing? = null
     private var hasSelection = false
     private var tipIndex = 0
+    private var matchedFiles: List<File> = emptyList()
+    private var peek: CompanionView? = null
+    private var peekFrame: View? = null
+    private var peekWindow: PopupWindow? = null
+    private var companionX = 0
+    private var companionY = 0
+    private var referenceMatch: ReferenceMatch? = null
+    private val referenceCache = java.util.concurrent.ConcurrentHashMap<String, VisualProfile>()
     private var companionSection = 0
     private var pendingBrushName = ""
     private var pendingBrushShape: FloatArray? = null
@@ -138,8 +152,8 @@ class MainActivity : Activity(), ReferenceHost {
         customBrushes.addAll(store.customBrushes())
         setContentView(canvas)
         companion = CompanionView(this).apply {
-            mascot = Mascot.valueOf(
-                preferences.getString("mascot", null) ?: Mascot.PAINT_DROP.name,
+            look = CompanionLook.valueOf(
+                preferences.getString("mascot", null) ?: CompanionLook.PAINT_DROP.name,
             )
             bodyColor = canvas.brushColor
         }
@@ -261,6 +275,7 @@ class MainActivity : Activity(), ReferenceHost {
         val nextId = target.nextLayerId
         val groups = target.groups.map { it.copy() }
         val nextGroup = target.nextGroupId
+        val referenceSet = referenceFiles()
         if (!interfaceHidden) companion.mood = Mood.THINKING
         canvas.snapshot { engine ->
             val pixels = layers.filter { NativeEngine.takeLayerDirty(engine, it.id) }
@@ -283,12 +298,31 @@ class MainActivity : Activity(), ReferenceHost {
                         Toast.makeText(this, "Couldn't save your artwork", Toast.LENGTH_LONG).show()
                     }
                 }
-                analyze(thumbnail)
+                analyze(thumbnail, referenceSet)
             }
         }
     }
 
-    private fun analyze(thumbnail: java.nio.ByteBuffer) {
+    /** Uses open references, or the whole project's library when none are open. */
+    private fun referenceFiles(): List<File> {
+        val all = store.references(document.projectId)
+        val open = all.filter { references.containsKey(it.name) }
+        return open.ifEmpty { all }
+    }
+
+    private fun referenceProfiles(files: List<File>): List<VisualProfile> = files.mapNotNull { file ->
+        referenceCache.getOrPut(file.name) {
+            val bitmap = decodeReference(file, REFERENCE_PROFILE_SIZE) ?: return@mapNotNull null
+            val small = Bitmap.createScaledBitmap(
+                bitmap, REFERENCE_PROFILE_SIZE, max(1, REFERENCE_PROFILE_SIZE * bitmap.height / bitmap.width), true,
+            )
+            val pixels = IntArray(small.width * small.height)
+            small.getPixels(pixels, 0, small.width, 0, 0, small.width, small.height)
+            profileImage(pixels, small.width, small.height)
+        }
+    }
+
+    private fun analyze(thumbnail: java.nio.ByteBuffer, files: List<File>) {
         thumbnail.rewind()
         val raw = thumbnail.order(ByteOrder.LITTLE_ENDIAN).asIntBuffer()
         val pixels = IntArray(raw.remaining())
@@ -301,11 +335,17 @@ class MainActivity : Activity(), ReferenceHost {
         val result = analyzeArtwork(
             pixels, ArtworkStore.THUMBNAIL_WIDTH, document.thumbnailHeight, document.light.takeIf { it != Light.OFF }?.degrees,
         )
+        val artProfile = profileImage(pixels, ArtworkStore.THUMBNAIL_WIDTH, document.thumbnailHeight)
+        val matched = compareWithReferences(artProfile, referenceProfiles(files))
         runOnUiThread {
             if (isDestroyed) return@runOnUiThread
-            val changed = result.tips != report?.tips
+            val changed = result.tips.map { it.text } != report?.tips?.map { it.text } ||
+                matched?.summary != referenceMatch?.summary
             report = result
+            referenceMatch = matched
+            matchedFiles = files
             if (changed && result.tips.isNotEmpty()) unreadTips = true
+            if (unreadTips) peek?.mood = Mood.TIP
             companion.mood = if (unreadTips) Mood.TIP else Mood.IDLE
         }
     }
@@ -313,6 +353,7 @@ class MainActivity : Activity(), ReferenceHost {
     internal fun setColor(color: Int) {
         canvas.brushColor = color
         companion.bodyColor = color
+        peek?.bodyColor = color
         swatch?.background = swatchBackground(color)
         if (canvas.brushKind.isEraser) selectTool(lastBrush)
     }
@@ -374,6 +415,8 @@ class MainActivity : Activity(), ReferenceHost {
             selectButton = iconButton(R.drawable.ic_select, "Selection") { togglePanel("selection", ::selectionPanel) }
             addView(selectButton)
         }
+        left.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        showPeek(dp(12) + left.measuredWidth - dp(PEEK_OVERLAP), dp(PEEK_TOP))
         place(left, Gravity.TOP or Gravity.START, dp(12), dp(12))
 
         val colorButton = View(this).apply {
@@ -454,10 +497,11 @@ class MainActivity : Activity(), ReferenceHost {
     private fun showCompanion() {
         val size = dp(56)
         val window = PopupWindow(companion, size, size).apply { isClippingEnabled = false }
-        var x = preferences.getInt("companionX", dp(12))
+        var x = preferences.getInt("companionX", dp(12)).coerceIn(0, max(0, canvas.width - size))
         var y = preferences.getInt("companionY", canvas.height - size - dp(12))
             .coerceIn(0, max(0, canvas.height - size))
-        x = x.coerceIn(0, max(0, canvas.width - size))
+        companionX = x
+        companionY = y
         var startX = 0f
         var startY = 0f
         var originX = x
@@ -479,7 +523,10 @@ class MainActivity : Activity(), ReferenceHost {
                     if (dragged) {
                         x = (originX + dx).toInt().coerceIn(0, canvas.width - size)
                         y = (originY + dy).toInt().coerceIn(0, canvas.height - size)
+                        companionX = x
+                        companionY = y
                         window.update(x, y, -1, -1)
+                        if (panelKey == "companion") closePanel()
                     }
                 }
                 MotionEvent.ACTION_UP -> {
@@ -499,8 +546,44 @@ class MainActivity : Activity(), ReferenceHost {
         handler.postDelayed(nap, NAP_DELAY_MS)
     }
 
+    /**
+     * A resting companion peeking from behind the toolbar's top right corner. Its window opens
+     * first, so the toolbar stays in front of it. Tap it to wake the companion.
+     */
+    private fun showPeek(x: Int, y: Int) {
+        val resting = CompanionView(this).apply {
+            look = companion.look
+            bodyColor = canvas.brushColor
+            mood = if (unreadTips) Mood.TIP else Mood.NAP
+            rotation = PEEK_TILT
+        }
+        peek = resting
+        val hidden = !preferences.getBoolean("companion", true)
+        val frame = FrameLayout(this).apply {
+            contentDescription = "Wake your companion"
+            visibility = if (hidden) View.VISIBLE else View.INVISIBLE
+            addView(resting, FrameLayout.LayoutParams(dp(PEEK_SIZE), dp(PEEK_SIZE), Gravity.CENTER))
+            setOnClickListener { setCompanionVisible(true) }
+        }
+        peekFrame = frame
+        peekWindow = PopupWindow(frame, dp(PEEK_SIZE), dp(PEEK_SIZE)).apply {
+            isClippingEnabled = false
+            isTouchable = hidden
+            showAtLocation(canvas, Gravity.NO_GRAVITY, x, y)
+        }
+        peekWindow?.let(chrome::add)
+    }
+
     private fun setCompanionVisible(visible: Boolean) {
         preferences.edit().putBoolean("companion", visible).apply()
+        peek?.look = companion.look
+        peek?.bodyColor = canvas.brushColor
+        peek?.mood = if (unreadTips) Mood.TIP else Mood.NAP
+        peekFrame?.visibility = if (visible) View.INVISIBLE else View.VISIBLE
+        peekWindow?.let {
+            it.isTouchable = !visible
+            it.update()
+        }
         companionWindow?.dismiss()
         companionWindow = null
         closePanel()
@@ -521,25 +604,28 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun showPanel(key: String, content: View) {
+        val panelWidth = dp(if (key == "companion") BUBBLE_WIDTH else PANEL_WIDTH)
+        val padding = dp(if (key == "companion") 10 else 14)
         val body = ScrollView(this).apply {
             background = rounded(SURFACE, 16)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
+            setPadding(padding, padding, padding, padding)
             addView(content)
         }
-        val window = PopupWindow(body, dp(PANEL_WIDTH), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        val window = PopupWindow(body, panelWidth, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             isClippingEnabled = true
         }
         val leftSide = key in LEFT_PANELS
         val side = if (leftSide) Gravity.START else Gravity.END
         window.height = minOf(dp(520), canvas.height - dp(84)).let {
             body.measure(
-                View.MeasureSpec.makeMeasureSpec(dp(PANEL_WIDTH), View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(panelWidth, View.MeasureSpec.EXACTLY),
                 View.MeasureSpec.UNSPECIFIED,
             )
             minOf(it, body.measuredHeight)
         }
         if (key == "companion") {
-            window.showAtLocation(canvas, Gravity.BOTTOM or Gravity.START, dp(12), dp(76))
+            val spot = bubbleSpot(panelWidth, window.height)
+            window.showAtLocation(canvas, Gravity.NO_GRAVITY, spot[0], spot[1])
         } else {
             window.showAtLocation(canvas, Gravity.TOP or side, dp(12), dp(68))
         }
@@ -551,6 +637,16 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
+    /** Places the bubble beside the companion, on whichever side has room. */
+    private fun bubbleSpot(width: Int, height: Int): IntArray {
+        val size = dp(56)
+        val gap = dp(8)
+        val right = companionX + size + gap
+        val x = if (right + width <= canvas.width) right else max(0, companionX - gap - width)
+        val y = (companionY + size / 2 - height / 2).coerceIn(0, max(0, canvas.height - height))
+        return intArrayOf(x, y)
+    }
+
     private fun closePanel() {
         hideHandles()
         if (panelKey == "adjust") canvas.act { NativeEngine.setAdjustment(it, false, FloatArray(6)) }
@@ -560,8 +656,12 @@ class MainActivity : Activity(), ReferenceHost {
         panelKey = ""
     }
 
-    private fun companionTips(): List<Tip> =
-        listOfNotNull(perspectiveLog.summary()?.let { Tip("Perspective", it) }) + report?.tips.orEmpty()
+    private fun companionTips(): List<Tip> = listOfNotNull(
+        referenceMatch?.let { Tip("Your references", "${it.summary} ${it.advice}", it.why) },
+        perspectiveLog.summary()?.let {
+            Tip("Perspective", it, "A straight line counts as drifted when it's over 4° from the guide.")
+        },
+    ) + report?.tips.orEmpty()
 
     private fun companionPanel(): View = column().apply {
         val tips = companionTips()
@@ -570,59 +670,123 @@ class MainActivity : Activity(), ReferenceHost {
             addView(label("Draw a little more, then pause. I'll have a note for you.", 14f))
         } else {
             addView(label(tip.topic, 13f, MUTED_TEXT))
-            addView(label(tip.text, 15f))
+            addView(label(tip.text, 14f))
         }
         val actions = ArrayList<View>()
         if (tips.size > 1) {
-            actions += chip("Next tip") {
+            actions += smallChip("Next") {
                 tipIndex++
                 rerender("companion", ::companionPanel)
             }
         }
-        if (report?.tips?.isNotEmpty() == true) {
-            actions += chip(if (companionSection == 1) "Hide previews" else "Previews", companionSection == 1) {
+        if (tip?.why?.isNotEmpty() == true) {
+            actions += smallChip("Why", companionSection == 1) {
                 companionSection = if (companionSection == 1) 0 else 1
                 rerender("companion", ::companionPanel)
             }
         }
-        actions += chip("Companion", companionSection == 2) {
+        if (referenceMatch != null) {
+            actions += smallChip("Match", companionSection == 3) {
+                companionSection = if (companionSection == 3) 0 else 3
+                rerender("companion", ::companionPanel)
+            }
+        }
+        actions += smallChip("Companion", companionSection == 2) {
             companionSection = if (companionSection == 2) 0 else 2
             rerender("companion", ::companionPanel)
         }
         gapped(wrapRow(actions))
-        val current = report
-        if (companionSection == 1 && current != null) {
-            gapped(
-                LinearLayout(context).apply {
-                    listOf(current.values, current.silhouette).forEach { pixels ->
-                        val bitmap = Bitmap.createBitmap(pixels, current.width, current.height, Bitmap.Config.ARGB_8888)
+        val match = referenceMatch
+        if (companionSection == 3 && match != null) {
+            match.areas.forEach { area ->
+                gapped(
+                    LinearLayout(context).apply {
+                        gravity = Gravity.CENTER_VERTICAL
+                        addView(label(area.name, 13f, MUTED_TEXT), LinearLayout.LayoutParams(dp(96), -2))
                         addView(
-                            ImageView(context).apply {
-                                setImageBitmap(bitmap)
-                                contentDescription = "Artwork preview"
+                            android.widget.ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
+                                max = 100
+                                progress = (area.score * 100).roundToInt()
+                                progressTintList = ColorStateList.valueOf(ACCENT)
+                                contentDescription = "${area.name} match"
                             },
-                            LinearLayout.LayoutParams(0, dp(90), 1f).apply { marginEnd = dp(4) },
+                            LinearLayout.LayoutParams(0, -2, 1f),
                         )
-                    }
-                },
-            )
+                    },
+                )
+            }
+            if (match.colors.isNotEmpty()) {
+                gapped(label("Colors to try", 13f, MUTED_TEXT))
+                addView(
+                    LinearLayout(context).apply {
+                        match.colors.forEach { color ->
+                            addView(
+                                View(context).apply {
+                                    background = rounded(color, 8)
+                                    contentDescription = "Use this color"
+                                    setOnClickListener {
+                                        setColor(color)
+                                        rememberColor()
+                                    }
+                                },
+                                LinearLayout.LayoutParams(0, dp(34), 1f).apply { marginEnd = dp(3) },
+                            )
+                        }
+                    },
+                )
+            }
+        }
+        if (companionSection == 1 && tip != null) {
+            gapped(label(tip.why, 13f, MUTED_TEXT))
+            val current = report
+            val images = ArrayList<Pair<String, Bitmap?>>()
+            if (tip.topic == "Your references" && match != null) {
+                images += "Yours" to BitmapFactory.decodeFile(store.thumbnail(document.id).path)
+                images += "Closest reference" to matchedFiles.getOrNull(match.closest)?.let { decodeReference(it, dp(150)) }
+            } else if (current != null && (tip.topic == "Values" || tip.topic == "Silhouette")) {
+                val pixels = if (tip.topic == "Values") current.values else current.silhouette
+                images += "Preview" to Bitmap.createBitmap(pixels, current.width, current.height, Bitmap.Config.ARGB_8888)
+            }
+            if (images.isNotEmpty()) {
+                gapped(
+                    LinearLayout(context).apply {
+                        images.forEach { (name, bitmap) ->
+                            addView(
+                                column().apply {
+                                    addView(label(name, 12f, MUTED_TEXT))
+                                    addView(
+                                        ImageView(context).apply {
+                                            setImageBitmap(bitmap)
+                                            scaleType = ImageView.ScaleType.FIT_START
+                                            contentDescription = name
+                                        },
+                                        LinearLayout.LayoutParams(-1, dp(96)),
+                                    )
+                                },
+                                LinearLayout.LayoutParams(0, -2, 1f).apply { marginEnd = dp(4) },
+                            )
+                        }
+                    },
+                )
+            }
         }
         if (companionSection == 2) {
             gapped(
                 wrapRow(
-                    Mascot.entries.map { mascot ->
-                        chip(mascot.label, companion.mascot == mascot) { chooseMascot(mascot) }
-                    } + chip("Hide") { setCompanionVisible(false) },
+                    listOf(smallChip("Hide") { setCompanionVisible(false) }) +
+                        CompanionLook.entries.map { look ->
+                            smallChip(look.label, companion.look == look) { chooseCompanion(look) }
+                        },
                 ),
             )
         }
     }
 
-    private fun chooseMascot(mascot: Mascot) {
-        companion.mascot = mascot
-        preferences.edit().putString("mascot", mascot.name).apply()
-        companionSection = 0
-        closePanel()
+    private fun chooseCompanion(look: CompanionLook) {
+        companion.look = look
+        preferences.edit().putString("mascot", look.name).apply()
+        peek?.look = look
+        rerender("companion", ::companionPanel)
     }
 
     private fun column() = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -693,14 +857,21 @@ class MainActivity : Activity(), ReferenceHost {
         gapped(toolGrid(brushes, color, favorites))
         gapped(label("Tools", 13f, MUTED_TEXT))
         gapped(
-            wrapRow(
-                listOf(BrushKind.SMUDGE, BrushKind.FILL, BrushKind.GRADIENT).map { kind ->
-                    chip(kind.label, canvas.brushKind === kind) {
-                        selectTool(kind)
-                        closePanel()
-                    }
-                },
-            ),
+            LinearLayout(context).apply {
+                listOf(
+                    Triple(BrushKind.SMUDGE, R.drawable.ic_smudge, "Blend colors"),
+                    Triple(BrushKind.FILL, R.drawable.ic_fill, "Fill an area"),
+                    Triple(BrushKind.GRADIENT, R.drawable.ic_gradient, "Fade a color"),
+                ).forEachIndexed { index, (kind, icon, detail) ->
+                    addView(
+                        toolCard(icon, kind.label, detail, canvas.brushKind === kind) {
+                            selectTool(kind)
+                            closePanel()
+                        },
+                        LinearLayout.LayoutParams(0, -2, 1f).apply { if (index > 0) marginStart = dp(6) },
+                    )
+                }
+            },
         )
         addView(toolSlider("Stabilizer", (toolFor(canvas.brushKind).stabilizer * 100).roundToInt()) {
             toolFor(canvas.brushKind).stabilizer = it / 100f
@@ -852,36 +1023,35 @@ class MainActivity : Activity(), ReferenceHost {
     private fun selectionPanel(): View = column().apply {
         addView(label("Selection", 16f))
         gapped(
-            wrapRow(
-                listOf(
-                    chip("Lasso") { startSelection(SelectionTool.LASSO, "Draw around an area with your pen") },
-                    chip("Magic wand") { startSelection(SelectionTool.WAND, "Tap a color area with your pen") },
-                ),
-            ),
+            LinearLayout(context).apply {
+                addView(
+                    toolCard(R.drawable.ic_select, "Lasso", "Draw around an area", false) {
+                        startSelection(SelectionTool.LASSO, "Draw around an area with your pen")
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f),
+                )
+                addView(
+                    toolCard(R.drawable.ic_wand, "Magic wand", "Pick a color area", false) {
+                        startSelection(SelectionTool.WAND, "Tap a color area with your pen")
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) },
+                )
+            },
         )
-        if (hasSelection) {
-            gapped(
-                wrapRow(
-                    listOf(
-                        chip("Transform") { selectionToLayer(cut = true, transform = true) },
-                        chip("Copy to layer") { selectionToLayer(cut = false, transform = false) },
-                        chip("Cut to layer") { selectionToLayer(cut = true, transform = false) },
-                    ),
-                ),
-            )
-            gapped(
-                wrapRow(
-                    listOf(
-                        chip("Invert") {
-                            canvas.act { NativeEngine.invertSelection(it) }
-                            closePanel()
-                        },
-                        chip("Clear") { clearSelection() },
-                    ),
-                ),
-            )
-            gapped(label("Brushes, fill, and adjustments stay inside the selection.", 13f, MUTED_TEXT))
+        if (!hasSelection) {
+            gapped(label("Make a selection to keep painting inside it, or to move part of a layer.", 13f, MUTED_TEXT))
+            return@apply
         }
+        gapped(actionRow(R.drawable.ic_transform, "Transform", "Move, scale, or rotate the selection") { selectionToLayer(cut = true, transform = true) })
+        gapped(actionRow(R.drawable.ic_copy, "Copy to layer") { selectionToLayer(cut = false, transform = false) })
+        gapped(actionRow(R.drawable.ic_cut, "Cut to layer") { selectionToLayer(cut = true, transform = false) })
+        gapped(
+            actionRow(R.drawable.ic_invert, "Invert") {
+                canvas.act { NativeEngine.invertSelection(it) }
+                closePanel()
+            },
+        )
+        gapped(actionRow(R.drawable.ic_close, "Clear selection") { clearSelection() })
     }
 
     private fun startSelection(tool: SelectionTool, hint: String) {
@@ -1488,13 +1658,15 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun restoreLayers(state: LayerState) {
+        val previous = document.layers.map { it.id }.toSet()
         document.layers.clear()
         document.layers.addAll(state.layers.map { it.copy() })
         document.activeLayer = state.activeLayer
         document.groups.clear()
         document.groups.addAll(state.groups.map { it.copy() })
-        val ids = document.layers.map { it.id }
-        canvas.act { engine -> ids.forEach { NativeEngine.markLayerDirty(engine, it) } }
+        // Only layers coming back need saving again. Their old files may already be gone.
+        val returning = document.layers.map { it.id }.filter { it !in previous }
+        canvas.act { engine -> returning.forEach { NativeEngine.markLayerDirty(engine, it) } }
         syncLayers(structural = true)
         refreshLayers()
     }
@@ -1854,8 +2026,9 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun actionsPanel() = column().apply {
         addView(label(document.name, 16f))
+        addView(label("${document.width} x ${document.height} pixels · ${document.layers.size} of $maxLayers layers", 12f, MUTED_TEXT))
         gapped(
-            chip("Rename artwork") {
+            actionRow(R.drawable.ic_rename, "Rename artwork") {
                 closePanel()
                 askForName("Rename artwork", document.name) {
                     document.name = it
@@ -1863,26 +2036,32 @@ class MainActivity : Activity(), ReferenceHost {
                 }
             },
         )
+        gapped(label("Export", 13f, MUTED_TEXT))
         gapped(
-            chip("Export PNG") {
+            actionRow(R.drawable.ic_export, "PNG image", "Flattened, saved to Pictures") {
                 closePanel()
                 exportPng()
             },
         )
         gapped(
-            chip("Export PSD") {
+            actionRow(R.drawable.ic_layersfile, "PSD file", "Keeps your layers, saved to Download") {
                 closePanel()
                 exportPsd()
             },
         )
         gapped(
-            chip("Export time-lapse") {
+            actionRow(R.drawable.ic_video, "Time-lapse", "A video of your progress") {
                 closePanel()
                 exportTimelapse()
             },
         )
+        gapped(label("Companion", 13f, MUTED_TEXT))
         val visible = preferences.getBoolean("companion", true)
-        gapped(chip(if (visible) "Hide companion" else "Show companion") { setCompanionVisible(!visible) })
+        gapped(
+            actionRow(R.drawable.ic_companion, if (visible) "Hide companion" else "Wake companion") {
+                setCompanionVisible(!visible)
+            },
+        )
     }
 
     /** Sends one layer at a time through the GL thread, so a tablet isn't short of memory. */

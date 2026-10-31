@@ -5,7 +5,7 @@ import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.min
 
-data class Tip(val topic: String, val text: String)
+data class Tip(val topic: String, val text: String, val why: String = "")
 
 class AnalysisReport(
     val tips: List<Tip>,
@@ -17,6 +17,12 @@ class AnalysisReport(
 
 private const val PAPER_DISTANCE = 18
 private const val HUE_BINS = 12
+private val HUE_NAMES = listOf(
+    "red", "orange", "yellow", "lime", "green", "teal",
+    "cyan", "blue", "indigo", "violet", "magenta", "pink",
+)
+
+private fun percent(value: Float) = "${(value * 100).toInt()}%"
 
 /** Reads a small flattened copy of the artwork on white paper, without any network or AI model. */
 fun analyzeArtwork(pixels: IntArray, width: Int, height: Int, lightDegrees: Int? = null): AnalysisReport {
@@ -88,14 +94,49 @@ fun analyzeArtwork(pixels: IntArray, width: Int, height: Int, lightDegrees: Int?
         ),
     ).toFloat()
     val tips = listOfNotNull(
-        stageTip(coverage, coloredWeight, markCount),
-        lightDegrees?.let { lightTip(it, lightDirection, lightTotal) },
-        paletteTip(hues, coloredWeight, saturationTotal, markCount),
-        valueTip(luminances),
-        compositionTip(weightX / weightTotal / width, weightY / weightTotal / height),
-        silhouetteTip(markCount, left, top, right, bottom),
+        stageTip(coverage, coloredWeight, markCount)?.withWhy(
+            "Marks cover ${percent(coverage)} of the canvas, and ${percent(coloredWeight / markCount)} of them have color.",
+        ),
+        lightDegrees?.let { lightTip(it, lightDirection, lightTotal) }?.withWhy(
+            "Your lighter marks gather ${directionName(lightDirection)} of the darker ones.",
+        ),
+        paletteTip(hues, coloredWeight, saturationTotal, markCount).withWhy(paletteWhy(hues, coloredWeight, saturationTotal)),
+        valueTip(luminances).withWhy(valueWhy(luminances)),
+        compositionTip(weightX / weightTotal / width, weightY / weightTotal / height).withWhy(
+            "Your visual weight sits ${percent(weightX / weightTotal / width)} across and " +
+                "${percent(weightY / weightTotal / height)} down the canvas.",
+        ),
+        silhouetteTip(markCount, left, top, right, bottom).withWhy(
+            "Your marks fill ${percent(markCount / ((right - left + 1f) * (bottom - top + 1f)))} of the area around them.",
+        ),
     )
     return AnalysisReport(tips, width, height, values, silhouette)
+}
+
+private fun Tip.withWhy(reason: String) = copy(why = reason)
+
+private fun directionName(degrees: Float): String {
+    val normalized = (degrees + 360f) % 360f
+    return when {
+        normalized < 45f || normalized >= 315f -> "to the right"
+        normalized < 135f -> "below"
+        normalized < 225f -> "to the left"
+        else -> "above"
+    }
+}
+
+private fun paletteWhy(hues: FloatArray, colored: Float, saturation: Float): String {
+    if (colored <= 0f) return "None of your marks are strongly colored."
+    val main = hues.indices.sortedByDescending { hues[it] }.take(3).filter { hues[it] > 0f }
+    val list = main.joinToString(", ") { "${HUE_NAMES[it]} ${percent(hues[it] / colored)}" }
+    return "Your main hues are $list. Average strength is ${percent(saturation / colored)}."
+}
+
+private fun valueWhy(luminances: List<Float>): String {
+    val sorted = luminances.sorted()
+    val middle = luminances.count { it in 0.35f..0.65f } / luminances.size.toFloat()
+    return "Your marks run from ${percent(sorted[sorted.size / 10])} to ${percent(sorted[sorted.size * 9 / 10])} " +
+        "brightness, and ${percent(middle)} are midtones."
 }
 
 private fun stageTip(coverage: Float, colored: Float, marks: Int): Tip? = when {

@@ -9,7 +9,7 @@ import android.view.View
 
 enum class Mood { IDLE, TIP, THINKING, NAP }
 
-enum class Mascot(val label: String) {
+enum class CompanionLook(val label: String) {
     PAINT_DROP("Paint drop"),
     INK_BLOT("Ink blot"),
     FOAM_CUP("Foam cup"),
@@ -23,9 +23,9 @@ private const val INK = 0xFF2C2C2A.toInt()
 private const val COFFEE = 0xFF6B4226.toInt()
 private const val COFFEE_LINE = 0xFF4A2C1A.toInt()
 
-/** Draws the mascot in a 120 by 120 box, with its center at the origin. */
+/** Draws the companion in a 120 by 120 box, with its center at the origin. */
 class CompanionView(context: Context) : View(context) {
-    var mascot = Mascot.PAINT_DROP
+    var look = CompanionLook.PAINT_DROP
         set(value) { field = value; invalidate() }
     var mood = Mood.IDLE
         set(value) { field = value; invalidate() }
@@ -109,20 +109,20 @@ class CompanionView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         canvas.translate(width / 2f, height / 2f)
         canvas.scale(width / 120f, width / 120f)
-        when (mascot) {
-            Mascot.PAINT_DROP -> {
+        when (look) {
+            CompanionLook.PAINT_DROP -> {
                 drawBody(canvas, drop, bodyColor)
                 drawFace(canvas, 10f, if (Color.luminance(bodyColor) > 0.35f) INK else CREAM)
             }
-            Mascot.INK_BLOT -> {
+            CompanionLook.INK_BLOT -> {
                 drawBody(canvas, blot, INK)
                 fill.color = INK
                 canvas.drawCircle(46f, -34f, 5f, fill)
                 canvas.drawCircle(-48f, 38f, 4f, fill)
                 drawFace(canvas, 2f, CREAM)
             }
-            Mascot.FOAM_CUP -> drawFoamCup(canvas)
-            Mascot.COFFEE_DROP -> {
+            CompanionLook.FOAM_CUP -> drawFoamCup(canvas)
+            CompanionLook.COFFEE_DROP -> {
                 drawBody(canvas, drop, COFFEE)
                 fill.color = CREAM
                 canvas.save()

@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
@@ -56,6 +57,47 @@ fun Context.chip(content: String, selected: Boolean = false, onClick: () -> Unit
         setPadding(dp(14), dp(8), dp(14), dp(8))
         background = rounded(if (selected) ACCENT else SURFACE_RAISED, 20)
         setOnClickListener { onClick() }
+    }
+
+/** A small button for compact surfaces, such as the companion bubble. */
+fun Context.smallChip(content: String, selected: Boolean = false, onClick: () -> Unit) =
+    label(content, 12f).apply {
+        gravity = Gravity.CENTER
+        minHeight = dp(28)
+        setPadding(dp(10), dp(4), dp(10), dp(4))
+        background = rounded(if (selected) ACCENT else SURFACE_RAISED, 14)
+        setOnClickListener { onClick() }
+    }
+
+/** A list row with an icon, a title, and an optional line of detail. */
+fun Context.actionRow(icon: Int, title: String, detail: String? = null, onClick: () -> Unit) =
+    LinearLayout(this).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(52)
+        setPadding(dp(10), dp(6), dp(10), dp(6))
+        background = rounded(SURFACE_RAISED, 10)
+        setOnClickListener { onClick() }
+        addView(ImageView(context).apply { setImageResource(icon) }, LinearLayout.LayoutParams(dp(24), dp(24)))
+        addView(
+            LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(label(title, 14f))
+                detail?.let { addView(label(it, 12f, MUTED_TEXT)) }
+            },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(12) },
+        )
+    }
+
+/** A square card with an icon, a title, and a short explanation of the tool. */
+fun Context.toolCard(icon: Int, title: String, detail: String, selected: Boolean, onClick: () -> Unit) =
+    LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(10), dp(10), dp(10), dp(10))
+        background = rounded(if (selected) ACCENT else SURFACE_RAISED, 12)
+        setOnClickListener { onClick() }
+        addView(ImageView(context).apply { setImageResource(icon) }, LinearLayout.LayoutParams(dp(24), dp(24)))
+        addView(label(title, 13f), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(6) })
+        addView(label(detail, 11f, if (selected) TEXT_COLOR else MUTED_TEXT))
     }
 
 fun Context.iconButton(icon: Int, description: String, onClick: (View) -> Unit) =
