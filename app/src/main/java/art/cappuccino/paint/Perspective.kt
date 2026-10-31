@@ -76,12 +76,20 @@ fun strokeDrift(path: FloatArray, vanishingPoints: List<Float>): Float? {
 class PerspectiveLog {
     private val drifts = ArrayDeque<Float>()
 
-    fun add(drift: Float) {
+    /** The newest drifting stroke's start and end in canvas pixels. */
+    var driftedLine: FloatArray? = null
+        private set
+
+    fun add(drift: Float, line: FloatArray? = null) {
+        if (drift > PERSPECTIVE_TOLERANCE && line != null) driftedLine = line
         drifts.addLast(drift)
         if (drifts.size > RECENT_STROKES) drifts.removeFirst()
     }
 
-    fun reset() = drifts.clear()
+    fun reset() {
+        drifts.clear()
+        driftedLine = null
+    }
 
     fun summary(): String? {
         if (drifts.isEmpty()) return null

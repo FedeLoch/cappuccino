@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.view.View
+import kotlin.math.hypot
+import kotlin.math.max
 
 /** Shows the lasso path while it's being drawn, above the canvas. */
 class LassoOverlay(context: Context) : View(context) {
@@ -90,5 +92,94 @@ class PickRing(context: Context, private val previous: Int) : View(context) {
         canvas.drawArc(bounds, 180f, 180f, false, paint)
         paint.color = previous
         canvas.drawArc(bounds, 0f, 180f, false, paint)
+    }
+}
+
+/** Draws what a companion note is pointing at. It follows the canvas as it pans and zooms. */
+class NoteOverlay(
+    context: Context,
+    private val canvasWidth: Int,
+    private val canvasHeight: Int,
+    private val toScreen: (Float, Float) -> FloatArray,
+) : View(context) {
+    private val halo = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = context.dp(4).toFloat()
+        strokeCap = Paint.Cap.ROUND
+        color = Color.BLACK
+        alpha = 90
+    }
+    private val line = Paint(halo).apply {
+        strokeWidth = context.dp(2).toFloat()
+        color = Color.WHITE
+    }
+    private val tag = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SURFACE }
+    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = TEXT_COLOR
+        textSize = context.dp(12).toFloat()
+    }
+    private val shape = Path()
+    private val box = RectF()
+    private var marks: List<NoteMark> = emptyList()
+
+    fun show(next: List<NoteMark>) {
+        if (next == marks) return
+        marks = next
+        invalidate()
+        alpha = 0f
+        animate().alpha(1f).setDuration(FADE_MS).start()
+    }
+
+    private fun place(x: Float, y: Float) = toScreen(x * canvasWidth, y * canvasHeight)
+
+    override fun onDraw(canvas: Canvas) {
+        for (mark in marks) {
+            shape.reset()
+            val anchor: FloatArray
+            when (mark.shape) {
+                MarkShape.RING -> {
+                    val center = place(mark.x1, mark.y1)
+                    val edge = place(mark.x1 + mark.x2, mark.y1)
+                    val radius = hypot(edge[0] - center[0], edge[1] - center[1])
+                    shape.addCircle(center[0], center[1], radius, Path.Direction.CW)
+                    anchor = floatArrayOf(center[0], center[1] + radius)
+                }
+                MarkShape.BOX -> {
+                    val corners = listOf(mark.x1 to mark.y1, mark.x2 to mark.y1, mark.x2 to mark.y2, mark.x1 to mark.y2)
+                        .map { (x, y) -> place(x, y) }
+                    shape.moveTo(corners[0][0], corners[0][1])
+                    corners.drop(1).forEach { shape.lineTo(it[0], it[1]) }
+                    shape.close()
+                    anchor = floatArrayOf((corners[2][0] + corners[3][0]) / 2f, (corners[2][1] + corners[3][1]) / 2f)
+                }
+                MarkShape.LINE -> {
+                    val start = place(mark.x1, mark.y1)
+                    val end = place(mark.x2, mark.y2)
+                    shape.moveTo(start[0], start[1])
+                    shape.lineTo(end[0], end[1])
+                    anchor = floatArrayOf((start[0] + end[0]) / 2f, (start[1] + end[1]) / 2f)
+                }
+            }
+            canvas.drawPath(shape, halo)
+            canvas.drawPath(shape, line)
+            drawLabel(canvas, mark.label, anchor[0], anchor[1] + context.dp(8))
+        }
+    }
+
+    private fun drawLabel(canvas: Canvas, label: String, x: Float, y: Float) {
+        val padding = context.dp(8).toFloat()
+        val tagWidth = text.measureText(label) + padding * 2f
+        val tagHeight = context.dp(24).toFloat()
+        val edge = context.dp(TOOL_MARGIN_DP).toFloat()
+        val left = (x - tagWidth / 2f).coerceIn(edge, max(edge, width - tagWidth - edge))
+        val top = y.coerceIn(edge, max(edge, height - tagHeight))
+        box.set(left, top, left + tagWidth, top + tagHeight)
+        canvas.drawRoundRect(box, tagHeight / 2f, tagHeight / 2f, tag)
+        canvas.drawText(label, left + padding, top + tagHeight / 2f - (text.ascent() + text.descent()) / 2f, text)
+    }
+
+    private companion object {
+        const val FADE_MS = 180L
+        const val TOOL_MARGIN_DP = 72
     }
 }

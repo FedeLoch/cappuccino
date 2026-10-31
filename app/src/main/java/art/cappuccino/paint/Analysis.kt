@@ -5,7 +5,32 @@ import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.min
 
-data class Tip(val topic: String, val text: String, val why: String = "")
+enum class MarkShape { RING, BOX, LINE }
+
+/**
+ * A place a note points to, in shares of the canvas's width and height. A ring is centered on
+ * [x1], [y1] with a radius of [x2] widths. Boxes and lines run between their two points.
+ */
+data class NoteMark(
+    val label: String,
+    val shape: MarkShape,
+    val x1: Float,
+    val y1: Float,
+    val x2: Float,
+    val y2: Float = 0f,
+)
+
+enum class NoteAction {
+    SEE_VALUES, SHOW_THIRDS, CHECK_SHAPES, OPEN_COLORS, OPEN_GUIDES, BLOCK_IN, SHADOW_LAYER, OPEN_REFERENCE,
+}
+
+data class Tip(
+    val topic: String,
+    val text: String,
+    val why: String = "",
+    val marks: List<NoteMark> = emptyList(),
+    val action: NoteAction? = null,
+)
 
 /** A creative suggestion. [brushId] or [accentHue] lets the artist try it with one tap. */
 data class Idea(val text: String, val brushId: String? = null, val accentHue: Float? = null)
@@ -21,6 +46,13 @@ class AnalysisReport(
 
 private const val PAPER_DISTANCE = 18
 private const val HUE_BINS = 12
+private const val MARK_COLUMNS = 12
+private const val MARK_ROWS = 8
+private const val MARK_RADIUS = 0.07f
+private const val TARGET_FAR = 0.72f
+private const val TARGET_NEAR = 0.28f
+private const val MIN_CONTRAST = 0.002f
+private const val WHOLE_CANVAS = 0.9f
 private val HUE_NAMES = listOf(
     "red", "orange", "yellow", "lime", "green", "teal",
     "cyan", "blue", "indigo", "violet", "magenta", "pink",
@@ -47,6 +79,11 @@ fun analyzeArtwork(pixels: IntArray, width: Int, height: Int, lightDegrees: Int?
     var top = height
     var right = -1
     var bottom = -1
+    val cells = MARK_COLUMNS * MARK_ROWS
+    val cellLight = FloatArray(cells)
+    val cellSquares = FloatArray(cells)
+    val cellCounts = IntArray(cells)
+    val cellColor = FloatArray(cells)
 
     for (y in 0 until height) {
         for (x in 0 until width) {
@@ -56,6 +93,10 @@ fun analyzeArtwork(pixels: IntArray, width: Int, height: Int, lightDegrees: Int?
             val green = (color shr 8) and 255
             val blue = color and 255
             val luminance = (0.2126f * red + 0.7152f * green + 0.0722f * blue) / 255f
+            val cell = y * MARK_ROWS / height * MARK_COLUMNS + x * MARK_COLUMNS / width
+            cellLight[cell] += luminance
+            cellSquares[cell] += luminance * luminance
+            cellCounts[cell]++
             val level = (luminance * 255f).toInt()
             values[index] = (0xFF shl 24) or (level shl 16) or (level shl 8) or level
             val marked = max(max(255 - red, 255 - green), 255 - blue) > PAPER_DISTANCE
@@ -83,6 +124,7 @@ fun analyzeArtwork(pixels: IntArray, width: Int, height: Int, lightDegrees: Int?
                 hues[hueBin(red, green, blue, high, low)] += 1f
                 coloredWeight += 1f
                 saturationTotal += saturation
+                cellColor[cell] += saturation
             }
         }
     }
@@ -97,20 +139,41 @@ fun analyzeArtwork(pixels: IntArray, width: Int, height: Int, lightDegrees: Int?
             (lightX / max(lightTotal, 1f) - weightX / weightTotal).toDouble(),
         ),
     ).toFloat()
+    val balanceX = weightX / weightTotal / width
+    val balanceY = weightY / weightTotal / height
+    val variance = FloatArray(cells) { cell ->
+        val count = max(cellCounts[cell], 1)
+        val mean = cellLight[cell] / count
+        cellSquares[cell] / count - mean * mean
+    }
+    val busiest = variance.indices.maxBy { variance[it] }
+    val strongest = cellColor.indices.maxBy { cellColor[it] }
     val tips = listOfNotNull(
         stageTip(coverage, coloredWeight, markCount)?.withWhy(
             tr("Marks cover %1 of the canvas, and %2 of them have color.", percent(coverage), percent(coloredWeight / markCount)),
         ),
         lightDegrees?.let { lightTip(it, lightDirection, lightTotal) }?.withWhy(
             tr("Your lighter marks gather %1 of the darker ones.", directionName(lightDirection)),
+        )?.copy(
+            marks = listOf(ring(tr("Light gathers here"), lightX / max(lightTotal, 1f) / width, lightY / max(lightTotal, 1f) / height)),
+            action = NoteAction.OPEN_GUIDES,
         ),
-        paletteTip(hues, coloredWeight, saturationTotal, markCount).withWhy(paletteWhy(hues, coloredWeight, saturationTotal)),
-        valueTip(luminances).withWhy(valueWhy(luminances)),
-        compositionTip(weightX / weightTotal / width, weightY / weightTotal / height).withWhy(
-            tr("Your visual weight sits %1 across and %2 down the canvas.", percent(weightX / weightTotal / width), percent(weightY / weightTotal / height)),
+        paletteTip(hues, coloredWeight, saturationTotal, markCount).withWhy(paletteWhy(hues, coloredWeight, saturationTotal)).copy(
+            marks = if (cellColor[strongest] > 0f) listOf(cellRing(tr("Strongest color"), strongest)) else emptyList(),
+            action = NoteAction.OPEN_COLORS,
         ),
+        valueTip(luminances).withWhy(valueWhy(luminances)).copy(
+            marks = if (variance[busiest] > MIN_CONTRAST) listOf(cellRing(tr("Strongest contrast"), busiest)) else emptyList(),
+            action = NoteAction.SEE_VALUES,
+        ),
+        compositionTip(balanceX, balanceY).withWhy(
+            tr("Your visual weight sits %1 across and %2 down the canvas.", percent(balanceX), percent(balanceY)),
+        ).copy(marks = compositionMarks(balanceX, balanceY), action = NoteAction.SHOW_THIRDS),
         silhouetteTip(markCount, left, top, right, bottom).withWhy(
             tr("Your marks fill %1 of the area around them.", percent(markCount / ((right - left + 1f) * (bottom - top + 1f)))),
+        ).copy(
+            marks = silhouetteMarks(left, top, right, bottom, width, height),
+            action = NoteAction.CHECK_SHAPES,
         ),
     )
     val mainHue = hues.indices.maxBy { hues[it] }
@@ -153,6 +216,39 @@ private fun creativeIdeas(mainHue: Float?, colored: Float, saturation: Float, co
 
 private fun Tip.withWhy(reason: String) = copy(why = reason)
 
+private fun ring(label: String, x: Float, y: Float) = NoteMark(label, MarkShape.RING, x, y, MARK_RADIUS)
+
+private fun cellRing(label: String, cell: Int) = ring(
+    label,
+    (cell % MARK_COLUMNS + 0.5f) / MARK_COLUMNS,
+    (cell / MARK_COLUMNS + 0.5f) / MARK_ROWS,
+)
+
+/** Marks the visual weight, and where to place something when the image needs balancing. */
+private fun compositionMarks(x: Float, y: Float): List<NoteMark> {
+    val weight = ring(tr("Visual weight"), x, y)
+    val target = when {
+        abs(x - 0.5f) < 0.06f && abs(y - 0.5f) < 0.06f -> ring(tr("Try moving it here"), TARGET_FAR - 0.05f, 0.38f)
+        x < 0.22f -> ring(tr("Try an accent here"), TARGET_FAR, y)
+        x > 0.78f -> ring(tr("Try an accent here"), TARGET_NEAR, y)
+        y < 0.22f -> ring(tr("Try something here"), x, TARGET_FAR)
+        y > 0.78f -> ring(tr("Try something here"), x, TARGET_NEAR)
+        else -> null
+    }
+    return listOfNotNull(weight, target)
+}
+
+private fun silhouetteMarks(left: Int, top: Int, right: Int, bottom: Int, width: Int, height: Int): List<NoteMark> {
+    val share = (right - left + 1f) * (bottom - top + 1f) / (width * height)
+    if (share > WHOLE_CANVAS) return emptyList()
+    return listOf(
+        NoteMark(
+            tr("Your silhouette"), MarkShape.BOX,
+            left / width.toFloat(), top / height.toFloat(), (right + 1f) / width, (bottom + 1f) / height,
+        ),
+    )
+}
+
 private fun directionName(degrees: Float): String {
     val normalized = (degrees + 360f) % 360f
     return when {
@@ -178,9 +274,9 @@ private fun valueWhy(luminances: List<Float>): String {
 
 private fun stageTip(coverage: Float, colored: Float, marks: Int): Tip? = when {
     coverage < 0.12f && colored < marks * 0.1f ->
-        Tip("Next step", tr("This looks like an early sketch. Block in the biggest shapes before adding detail."))
+        Tip("Next step", tr("This looks like an early sketch. Block in the biggest shapes before adding detail."), action = NoteAction.BLOCK_IN)
     coverage < 0.4f && colored < marks * 0.1f ->
-        Tip("Next step", tr("The drawing has a clear structure. A simple light and dark pass could give it form next."))
+        Tip("Next step", tr("The drawing has a clear structure. A simple light and dark pass could give it form next."), action = NoteAction.SHADOW_LAYER)
     else -> null
 }
 
@@ -207,7 +303,7 @@ private fun hueBin(red: Int, green: Int, blue: Int, high: Int, low: Int): Int {
 }
 
 private fun paletteTip(hues: FloatArray, colored: Float, saturation: Float, marks: Int): Tip {
-    val topic = tr("Palette")
+    val topic = "Palette"
     if (colored < marks * 0.1f) {
         return Tip(topic, tr("This is almost neutral. One small accent color could guide the eye."))
     }

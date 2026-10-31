@@ -96,6 +96,32 @@ class StrokeJournal(private val dir: File) {
     fun clear(upTo: Int) = sequences().filter { it <= upTo }.forEach { file(it).delete() }
 }
 
+/**
+ * Counts saves still in progress, so reopening an artwork right after leaving it waits for the
+ * save and loads the newest version.
+ */
+object PendingSaves {
+    private const val WAIT_MS = 4000L
+    private val lock = Object()
+    private var running = 0
+
+    fun started() = synchronized(lock) { running++ }
+
+    fun finished() = synchronized(lock) {
+        running--
+        lock.notifyAll()
+    }
+
+    fun await() = synchronized(lock) {
+        val deadline = SystemClock.elapsedRealtime() + WAIT_MS
+        while (running > 0) {
+            val left = deadline - SystemClock.elapsedRealtime()
+            if (left <= 0) break
+            lock.wait(left)
+        }
+    }
+}
+
 /** Keeps a short file of slow moments, so a freeze can still be studied long after it happens. */
 object SlowLog {
     private val worker = Executors.newSingleThreadExecutor()

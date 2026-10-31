@@ -43,6 +43,8 @@ class ReferenceMatch(
     val colors: List<Int>,
     val why: String,
     val closest: Int,
+    /** The center of the area that differs most from the closest reference, as canvas shares. */
+    val farthest: Pair<Float, Float>,
 )
 
 fun profileImage(pixels: IntArray, width: Int, height: Int): VisualProfile {
@@ -234,5 +236,10 @@ fun compareWithReferences(art: VisualProfile, references: List<VisualProfile>): 
         overlap(art.colors, reference.colors) * 0.35f + overlap(art.values, reference.values) * 0.3f +
             layoutScore(art, reference) * 0.2f + moodScore(art, reference) * 0.15f
     }
-    return ReferenceMatch(overall, areas, summary, advice, suggestions, matchWhy(art, references), closest)
+    val target = references[closest]
+    val artMean = art.layout.average().toFloat()
+    val targetMean = target.layout.average().toFloat()
+    val cell = art.layout.indices.maxBy { abs((art.layout[it] - artMean) - (target.layout[it] - targetMean)) }
+    val farthest = (cell % GRID_COLUMNS + 0.5f) / GRID_COLUMNS to (cell / GRID_COLUMNS + 0.5f) / GRID_ROWS
+    return ReferenceMatch(overall, areas, summary, advice, suggestions, matchWhy(art, references), closest, farthest)
 }

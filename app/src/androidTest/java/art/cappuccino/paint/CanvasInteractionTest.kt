@@ -633,6 +633,7 @@ class CanvasInteractionTest {
         scenario = ActivityScenario.launch(intent)
         repeat(20) { if (!hasInk(width / 2f, height * 0.4f)) SystemClock.sleep(500) }
         assertTrue("the long stroke should come back", hasInk(width / 2f, height * 0.4f))
+        repeat(20) { if (!hasInk(width * 0.51f, height * 0.6f)) SystemClock.sleep(500) }
         assertTrue("the short stroke should come back", hasInk(width * 0.51f, height * 0.6f))
     }
 

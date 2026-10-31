@@ -48,6 +48,18 @@ then your 40 newest. The note always says which set it used.
 The companion never asks you to take its word for it. **Why** shows the measurements behind a
 note, with previews of your values, your silhouette, or the closest reference side by side.
 
+### It points to the spot
+
+When you read a note, the companion marks the place it's talking about on your canvas: your
+strongest contrast, your visual weight and where to balance it, your silhouette, a line that
+drifts from the guide, or the area furthest from your reference. Close the note and the mark is
+gone, because it's never part of your artwork.
+
+Every note also takes you one tap from what helps, such as a gray view, the thirds guide, your
+colors, or the closest reference.
+
+![A companion note marking the area furthest from the reference on the canvas](docs/screenshots/companion-marks.png)
+
 ### It gives you ideas
 
 When you're stuck, **Idea** suggests something to try, such as a texture pass, a bold accent

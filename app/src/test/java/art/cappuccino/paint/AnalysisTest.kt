@@ -100,4 +100,42 @@ class AnalysisTest {
         assertEquals(0xFF2C2C2A.toInt(), report.silhouette[0])
         assertEquals(WHITE, report.silhouette[99])
     }
+
+    @Test
+    fun valuesNotePointsToTheStrongestContrast() {
+        val pixels = image { x, y ->
+            when {
+                x in 60..80 && y in 20..40 && (x + y) % 8 < 4 -> 0xFF000000.toInt()
+                x in 60..80 && y in 20..40 -> WHITE
+                else -> 0xFF808080.toInt()
+            }
+        }
+        val mark = analyzeArtwork(pixels, SIZE, SIZE).tips.first { it.topic == "Values" }.marks.single()
+        assertTrue(mark.x1 in 0.55f..0.85f)
+        assertTrue(mark.y1 in 0.15f..0.45f)
+    }
+
+    @Test
+    fun aLopsidedImageGetsASpotToBalanceIt() {
+        val pixels = image { x, _ -> if (x < 15) 0xFF202020.toInt() else null }
+        val marks = analyzeArtwork(pixels, SIZE, SIZE).tips.first { it.topic == "Composition" }.marks
+        assertEquals(2, marks.size)
+        assertTrue(marks[0].x1 < 0.2f)
+        assertTrue(marks[1].x1 > 0.6f)
+    }
+
+    @Test
+    fun theSilhouetteBoxFollowsTheMarks() {
+        val pixels = image { x, y -> if (x in 20..39 && y in 30..59) 0xFF202020.toInt() else null }
+        val mark = analyzeArtwork(pixels, SIZE, SIZE).tips.first { it.topic == "Silhouette" }.marks.single()
+        assertEquals(0.2f, mark.x1, 0.01f)
+        assertEquals(0.6f, mark.y2, 0.01f)
+    }
+
+    @Test
+    fun everyMeasuredNoteOffersAnAction() {
+        val pixels = image { x, y -> if (x in 20..80 && y in 20..80) 0xFF2060C0.toInt() else null }
+        val tips = analyzeArtwork(pixels, SIZE, SIZE, lightDegrees = 0).tips
+        assertTrue(tips.all { it.action != null })
+    }
 }

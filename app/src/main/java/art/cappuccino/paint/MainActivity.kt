@@ -132,6 +132,8 @@ class MainActivity : Activity(), ReferenceHost {
     private var peekFrame: View? = null
     private var peekWindow: PopupWindow? = null
     private var peekHands: CompanionHands? = null
+    private var noteOverlay: NoteOverlay? = null
+    private var noteWindow: PopupWindow? = null
     private var peekX = 0
     private var peekY = 0
     private var hideMotion: ValueAnimator? = null
@@ -170,6 +172,7 @@ class MainActivity : Activity(), ReferenceHost {
         super.onCreate(savedInstanceState)
         store = ArtworkStore(this)
         val artworkId = intent.getStringExtra(EXTRA_ARTWORK)
+        PendingSaves.await()
         val loaded = artworkId?.let(store::load)
         if (artworkId != null && loaded == null) {
             Toast.makeText(this, tr("Couldn't open this artwork"), Toast.LENGTH_LONG).show()
@@ -211,7 +214,10 @@ class MainActivity : Activity(), ReferenceHost {
             markUnsaved(strokeOnly = true)
         }
         canvas.onGestureStart = { closePanel() }
-        canvas.onViewChanged = { positionHandles() }
+        canvas.onViewChanged = {
+            positionHandles()
+            noteOverlay?.invalidate()
+        }
         canvas.onFillTap = { x, y -> fillAt(x, y) }
         canvas.onStrokeCommitted = { history.record(Edit.Stroke) }
         canvas.onStrokeRecord = { brush, samples -> journalStroke(brush, samples) }
@@ -401,6 +407,7 @@ class MainActivity : Activity(), ReferenceHost {
         if (withPreview) previewStale = false
         saveWaitStart = 0L
         val included = journalSequence++
+        PendingSaves.started()
         unsaved = false
         val target = document
         val layers = target.layers.map { it.copy() }
@@ -453,6 +460,7 @@ class MainActivity : Activity(), ReferenceHost {
                         Toast.makeText(this, tr("Couldn't save your artwork"), Toast.LENGTH_LONG).show()
                     }
                 }
+                PendingSaves.finished()
                 then?.invoke()
                 analyze(thumbnail, referenceSet.first, referenceSet.second)
             }
@@ -830,6 +838,30 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
+    /** The overlay exists only while a note is open, so drawing never pays for it. */
+    private fun showNoteMarks(marks: List<NoteMark>) {
+        if (marks.isEmpty()) {
+            noteWindow?.dismiss()
+            noteWindow = null
+            noteOverlay = null
+            return
+        }
+        val overlay = noteOverlay ?: NoteOverlay(this, document.width, document.height, canvas::canvasToScreen).also {
+            noteOverlay = it
+            noteWindow = PopupWindow(it, canvas.width, canvas.height).apply {
+                isTouchable = false
+                isClippingEnabled = false
+                showAtLocation(canvas, Gravity.NO_GRAVITY, 0, 0)
+            }
+        }
+        overlay.show(marks)
+    }
+
+    private fun currentTip(): Tip? {
+        val tips = companionTips()
+        return tips.getOrNull(tipIndex.mod(max(tips.size, 1)))
+    }
+
     private fun togglePanel(key: String, content: () -> View) {
         val reopen = panelKey != key || panel?.isShowing != true
         closePanel()
@@ -844,6 +876,7 @@ class MainActivity : Activity(), ReferenceHost {
             setPadding(padding, padding, padding, padding)
             addView(content)
         }
+        showNoteMarks(if (key == "companion") currentTip()?.marks.orEmpty() else emptyList())
         val window = PopupWindow(body, panelWidth, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             isClippingEnabled = true
         }
@@ -889,12 +922,31 @@ class MainActivity : Activity(), ReferenceHost {
         panel?.dismiss()
         panel = null
         panelKey = ""
+        showNoteMarks(emptyList())
     }
 
     private fun companionTips(): List<Tip> = listOfNotNull(
-        referenceMatch?.let { Tip("Your references", "${it.summary} ${it.advice}", it.why) },
+        referenceMatch?.let {
+            Tip(
+                "Your references", "${it.summary} ${it.advice}", it.why,
+                listOf(NoteMark(tr("Furthest from your reference"), MarkShape.RING, it.farthest.first, it.farthest.second, 0.07f)),
+                NoteAction.OPEN_REFERENCE,
+            )
+        },
         perspectiveLog.summary()?.let {
-            Tip("Perspective", it, tr("A straight line counts as drifted when it's over 4° from the guide."))
+            Tip(
+                "Perspective", it, tr("A straight line counts as drifted when it's over 4° from the guide."),
+                perspectiveLog.driftedLine?.let { line ->
+                    listOf(
+                        NoteMark(
+                            tr("This line drifts"), MarkShape.LINE,
+                            line[0] / document.width, line[1] / document.height,
+                            line[2] / document.width, line[3] / document.height,
+                        ),
+                    )
+                }.orEmpty(),
+                NoteAction.OPEN_GUIDES,
+            )
         },
     ) + report?.tips.orEmpty()
 
@@ -906,6 +958,7 @@ class MainActivity : Activity(), ReferenceHost {
         } else {
             addView(label(tr(tip.topic), 13f, MUTED_TEXT))
             addView(label(tip.text, 14f))
+            noteChip(tip)?.let { gapped(wrapRow(listOf(it))) }
         }
         val actions = ArrayList<View>()
         if (tips.size > 1) {
@@ -1053,6 +1106,47 @@ class MainActivity : Activity(), ReferenceHost {
                         },
                 ),
             )
+        }
+    }
+
+    /** One tap from a note to the tool that helps with it. */
+    private fun noteChip(tip: Tip): View? {
+        fun toggle(active: Boolean, on: String, off: String, change: () -> Unit) = smallChip(if (active) off else on, true) {
+            change()
+            canvas.post { applyViewOptions() }
+            rerender("companion", ::companionPanel)
+        }
+        fun open(name: String, run: () -> Unit) = smallChip(name, true) {
+            closePanel()
+            run()
+        }
+        return when (tip.action) {
+            NoteAction.SEE_VALUES -> toggle(viewMode == 1, tr("See in gray"), tr("Back to color")) {
+                viewMode = if (viewMode == 1) 0 else 1
+            }
+            NoteAction.CHECK_SHAPES -> toggle(viewMode == 2, tr("See big shapes"), tr("Back to color")) {
+                viewMode = if (viewMode == 2) 0 else 2
+            }
+            NoteAction.SHOW_THIRDS -> toggle(guide == 1, tr("Show thirds"), tr("Hide thirds")) {
+                guide = if (guide == 1) 0 else 1
+            }
+            NoteAction.OPEN_COLORS -> open(tr("Open colors")) {
+                colorBeforePanel = canvas.brushColor
+                showPanel("color", colorPanel())
+            }
+            NoteAction.OPEN_GUIDES -> open(tr("Open guides")) { showPanel("view", viewPanel()) }
+            NoteAction.BLOCK_IN -> open(tr("Use Chalk")) {
+                BrushKind.entries.firstOrNull { it.id == "chalk" }?.let(::selectTool)
+            }
+            NoteAction.SHADOW_LAYER -> open(tr("Add a shadow layer")) {
+                addLayer()
+                activeLayer()?.let { layer -> editLayers(structural = false) { layer.blend = 1 } }
+            }
+            NoteAction.OPEN_REFERENCE -> {
+                val file = referenceMatch?.let { matchedFiles.getOrNull(it.closest) }
+                if (file == null || references.containsKey(file.name)) null else open(tr("Open this reference")) { toggleReference(file) }
+            }
+            null -> null
         }
     }
 
@@ -2079,7 +2173,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun checkPerspective(path: FloatArray) {
         val drift = strokeDrift(path, document.perspective) ?: return
-        perspectiveLog.add(drift)
+        perspectiveLog.add(drift, floatArrayOf(path[0], path[1], path[path.size - 2], path[path.size - 1]))
         if (drift > PERSPECTIVE_TOLERANCE) {
             unreadTips = true
             companion.mood = Mood.TIP
@@ -3345,6 +3439,7 @@ class MainActivity : Activity(), ReferenceHost {
         closePanel()
         hideHandles()
         transformControls?.dismiss()
+        noteWindow?.dismiss()
         liquifyControls?.dismiss()
         liquifyRingWindow?.dismiss()
         references.values.forEach { it.dismiss() }
