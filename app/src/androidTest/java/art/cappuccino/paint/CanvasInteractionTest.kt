@@ -365,6 +365,7 @@ class CanvasInteractionTest {
         }
         stroke(x, y - 60f, x, y + 60f)
         settle()
+        repeat(10) { if (hasInk(x, y)) SystemClock.sleep(500) }
         assertFalse(hasInk(x, y))
         onStudio { it.startTransform() }
         stroke(x, height * 0.3f, x, height * 0.3f + 120f)
@@ -624,8 +625,9 @@ class CanvasInteractionTest {
         val before = packBytes()
         assertTrue("a stroke should be saved as tiles", before > 0)
         val packsBefore = dir.listFiles().orEmpty().filter { it.name.startsWith("pack-") }.map { it.name }.toSet()
-        stroke(width * 0.5f, height * 0.6f, width * 0.52f, height * 0.6f)
+        stroke(width * 0.45f, height * 0.6f, width * 0.6f, height * 0.6f)
         settle()
+        assertTrue("the short stroke should be drawn", hasInk(width * 0.51f, height * 0.6f))
         scenario.close()
         val newest = dir.listFiles().orEmpty().filter { it.name.startsWith("pack-") && it.name !in packsBefore }
         assertTrue("the short stroke should rewrite less than the long one", newest.sumOf { it.length() } < before)
