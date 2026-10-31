@@ -517,10 +517,9 @@ class MainActivity : Activity() {
         }
         gapped(
             wrapRow(
-                listOf(
-                    chip("Paint drop", companion.mascot == Mascot.PAINT_DROP) { chooseMascot(Mascot.PAINT_DROP) },
-                    chip("Ink blot", companion.mascot == Mascot.INK_BLOT) { chooseMascot(Mascot.INK_BLOT) },
-                ),
+                Mascot.entries.map { mascot ->
+                    chip(mascot.label, companion.mascot == mascot) { chooseMascot(mascot) }
+                },
             ),
         )
         gapped(chip("Hide companion") { setCompanionVisible(false) })

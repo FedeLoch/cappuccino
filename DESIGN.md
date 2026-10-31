@@ -67,11 +67,13 @@ Gestures:
 A small, original mascot lives on the canvas screen. It is the app's signature and
 the one allowed exception to the main-screen control rule.
 
-The app starts with two mascots, and the artist picks one in settings. Only one
+The app has four mascots, and the artist picks one in the companion panel. Only one
 appears at a time, and both share the same behavior and advice.
 
 - Paint drop: a warm drop that takes on the current brush color.
 - Ink blot: a dark blot with a light outline, so it stays visible on dark canvases.
+- Foam cup: a small cappuccino whose foam heart takes on the current brush color.
+- Coffee drop: a coffee-colored drop with a foam cap.
 
 Each mascot starts with four expressions: idle, tip ready, thinking, and napping.
 

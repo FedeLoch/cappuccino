@@ -9,12 +9,19 @@ import android.view.View
 
 enum class Mood { IDLE, TIP, THINKING, NAP }
 
-enum class Mascot { PAINT_DROP, INK_BLOT }
+enum class Mascot(val label: String) {
+    PAINT_DROP("Paint drop"),
+    INK_BLOT("Ink blot"),
+    FOAM_CUP("Foam cup"),
+    COFFEE_DROP("Coffee drop"),
+}
 
 private const val BLINK_EVERY_MS = 4200L
 private const val BLINK_MS = 140L
 private const val CREAM = 0xFFF1EFE8.toInt()
 private const val INK = 0xFF2C2C2A.toInt()
+private const val COFFEE = 0xFF6B4226.toInt()
+private const val COFFEE_LINE = 0xFF4A2C1A.toInt()
 
 /** Draws the mascot in a 120 by 120 box, with its center at the origin. */
 class CompanionView(context: Context) : View(context) {
@@ -51,6 +58,24 @@ class CompanionView(context: Context) : View(context) {
         close()
     }
 
+    private val cup = Path().apply {
+        moveTo(-34f, -14f)
+        lineTo(34f, -14f)
+        lineTo(28f, 26f)
+        cubicTo(26f, 38f, 16f, 42f, 8f, 42f)
+        lineTo(-8f, 42f)
+        cubicTo(-16f, 42f, -26f, 38f, -28f, 26f)
+        close()
+    }
+    private val foamHeart = Path().apply {
+        moveTo(0f, -8f)
+        cubicTo(-16f, -14f, -14f, -24f, -6f, -23f)
+        cubicTo(-3f, -23f, -1f, -21f, 0f, -19f)
+        cubicTo(1f, -21f, 3f, -23f, 6f, -23f)
+        cubicTo(14f, -24f, 16f, -14f, 0f, -8f)
+        close()
+    }
+
     private val blinkLoop = object : Runnable {
         override fun run() {
             blinking = !blinking
@@ -72,27 +97,49 @@ class CompanionView(context: Context) : View(context) {
     override fun onDraw(canvas: Canvas) {
         canvas.translate(width / 2f, height / 2f)
         canvas.scale(width / 120f, width / 120f)
-        val faceY: Float
-        val face: Int
-        if (mascot == Mascot.PAINT_DROP) {
-            fill.color = bodyColor
-            canvas.drawPath(drop, fill)
-            line.color = CREAM
-            canvas.drawPath(drop, line)
-            faceY = 10f
-            val luminance = Color.luminance(bodyColor)
-            face = if (luminance > 0.35f) INK else CREAM
-        } else {
-            fill.color = INK
-            canvas.drawPath(blot, fill)
-            line.color = CREAM
-            canvas.drawPath(blot, line)
-            canvas.drawCircle(46f, -34f, 5f, fill)
-            canvas.drawCircle(-48f, 38f, 4f, fill)
-            faceY = 2f
-            face = CREAM
+        when (mascot) {
+            Mascot.PAINT_DROP -> {
+                drawBody(canvas, drop, bodyColor)
+                drawFace(canvas, 10f, if (Color.luminance(bodyColor) > 0.35f) INK else CREAM)
+            }
+            Mascot.INK_BLOT -> {
+                drawBody(canvas, blot, INK)
+                fill.color = INK
+                canvas.drawCircle(46f, -34f, 5f, fill)
+                canvas.drawCircle(-48f, 38f, 4f, fill)
+                drawFace(canvas, 2f, CREAM)
+            }
+            Mascot.FOAM_CUP -> drawFoamCup(canvas)
+            Mascot.COFFEE_DROP -> {
+                drawBody(canvas, drop, COFFEE)
+                fill.color = CREAM
+                canvas.drawOval(-15f, -24f, 15f, -8f, fill)
+                canvas.drawCircle(-9f, -18f, 7f, fill)
+                canvas.drawCircle(8f, -19f, 6f, fill)
+                drawFace(canvas, 10f, CREAM)
+            }
         }
-        drawFace(canvas, faceY, face)
+    }
+
+    private fun drawBody(canvas: Canvas, shape: Path, color: Int) {
+        fill.color = color
+        canvas.drawPath(shape, fill)
+        line.color = CREAM
+        canvas.drawPath(shape, line)
+    }
+
+    private fun drawFoamCup(canvas: Canvas) {
+        line.color = COFFEE_LINE
+        canvas.drawArc(26f, -6f, 52f, 24f, -90f, 180f, false, line)
+        fill.color = CREAM
+        canvas.drawPath(cup, fill)
+        canvas.drawPath(cup, line)
+        fill.color = COFFEE
+        canvas.drawOval(-36f, -30f, 36f, -2f, fill)
+        canvas.drawOval(-36f, -30f, 36f, -2f, line)
+        fill.color = bodyColor
+        canvas.drawPath(foamHeart, fill)
+        drawFace(canvas, 14f, INK)
     }
 
     private fun drawFace(canvas: Canvas, y: Float, color: Int) {
