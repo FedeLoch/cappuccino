@@ -26,6 +26,8 @@ private const val TAP_TIMEOUT_MS = 300L
 private const val TAP_TRAVEL_DP = 16f
 private const val FIRST_FRAME_RETRY_MS = 100L
 private const val LONG_PRESS_MS = 500L
+private const val PEN_HOLD_MS = 700L
+private const val PEN_HOLD_TRAVEL_DP = 5f
 
 private sealed interface RenderOp {
     class Stroke(
@@ -105,6 +107,7 @@ class CanvasView(
     private val predictor = MotionEventPredictor.newInstance(this)
     private val point = FloatArray(2)
     private val tapTravel = TAP_TRAVEL_DP * resources.displayMetrics.density
+    private val penHoldTravel = PEN_HOLD_TRAVEL_DP * resources.displayMetrics.density
     private var fitted = false
 
     // These cross to the GL thread outside the renderer's params, because it can merge
@@ -129,6 +132,8 @@ class CanvasView(
     private var gestureStartX = 0f
     private var gestureStartY = 0f
     private var picking = false
+    private var penPicking = false
+    private val penHold = Runnable { startPenPick() }
     private val stabilizer = LineStabilizer()
     private val layerMatrix = Matrix()
     private var transformLayer = 0
@@ -281,6 +286,7 @@ class CanvasView(
     fun release() {
         removeCallbacks(publishUntilComposed)
         removeCallbacks(pickAtPress)
+        removeCallbacks(penHold)
         renderer.execute { glCallback.destroyEngine() }
         renderer.release(true)
     }
@@ -389,6 +395,7 @@ class CanvasView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (transformMode) return onTransformEvent(event)
         if (toolGesture) return onToolGesture(event)
+        if (penPicking) return onPenPick(event)
         val index = event.actionIndex
         val startsStroke = acceptsInput &&
             event.actionMasked == MotionEvent.ACTION_DOWN && isPen(event, index)
@@ -439,19 +446,30 @@ class CanvasView(
                 onStrokeStart()
                 predictor.record(event)
                 sendStroke(event, begin = true, end = false)
+                pressX = event.x
+                pressY = event.y
+                val buttonPressed = event.buttonState and
+                    (MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_STYLUS_SECONDARY) != 0
+                if (buttonPressed) {
+                    startPenPick()
+                } else if (!strokeKind.isEraser && strokeKind.mode == BrushMode.PAINT) {
+                    postDelayed(penHold, PEN_HOLD_MS)
+                }
             }
             MotionEvent.ACTION_MOVE -> {
+                if (hypot(event.x - pressX, event.y - pressY) > penHoldTravel) removeCallbacks(penHold)
                 predictor.record(event)
                 sendStroke(event, begin = false, end = false)
             }
-            MotionEvent.ACTION_UP -> finishStroke(event)
+            MotionEvent.ACTION_UP -> {
+                removeCallbacks(penHold)
+                finishStroke(event)
+            }
             MotionEvent.ACTION_POINTER_UP ->
                 if (event.getPointerId(event.actionIndex) == penPointerId) finishStroke(event)
             MotionEvent.ACTION_CANCEL -> {
-                penPointerId = MotionEvent.INVALID_POINTER_ID
-                renderer.cancel()
-                act { NativeEngine.cancelStroke(it) }
-                onStrokeEnd()
+                removeCallbacks(penHold)
+                cancelStroke()
             }
         }
         return true
@@ -472,6 +490,33 @@ class CanvasView(
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 toolGesture = false
                 if (lasso) onLassoDone(strokePath.copyOf(strokePathSize)) else onGradientDone()
+            }
+        }
+        return true
+    }
+
+    private fun cancelStroke() {
+        penPointerId = MotionEvent.INVALID_POINTER_ID
+        renderer.cancel()
+        act { NativeEngine.cancelStroke(it) }
+        onStrokeEnd()
+    }
+
+    /** Holding the pen still turns the stroke into a color pick, leaving no mark. */
+    private fun startPenPick() {
+        removeCallbacks(penHold)
+        cancelStroke()
+        penPicking = true
+        picking = true
+        pickAt(pressX, pressY)
+    }
+
+    private fun onPenPick(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE -> pickAt(event.x, event.y)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                penPicking = false
+                endPick()
             }
         }
         return true

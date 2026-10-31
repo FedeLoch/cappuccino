@@ -883,17 +883,17 @@ class MainActivity : Activity(), ReferenceHost {
             preferences.edit().putFloat("pressureGamma", canvas.pressureGamma).apply()
         })
         val active = canvas.brushKind
-        val actions = arrayListOf<View>(chip("New brush") { openBrushEditor(null) })
+        val actions = arrayListOf<View>(smallChip("New brush") { openBrushEditor(null) })
         if (active.custom) {
-            actions += chip("Edit") { openBrushEditor(active) }
-            actions += chip("Delete") { deleteBrush(active) }
+            actions += smallChip("Edit") { openBrushEditor(active) }
+            actions += smallChip("Delete") { deleteBrush(active) }
         }
         gapped(wrapRow(actions))
-        gapped(label("Long-press a brush to keep it at the top.", 13f, MUTED_TEXT))
+        gapped(label("Hold a brush to keep it at the top.", 12f, MUTED_TEXT))
     }
 
     private fun toolSlider(name: String, value: Int, change: (Int) -> Unit): View = column().apply {
-        gapped(label(name, 13f, MUTED_TEXT))
+        gapped(label(name, 12f, MUTED_TEXT))
         addView(
             SeekBar(context).apply {
                 max = 100
@@ -963,7 +963,7 @@ class MainActivity : Activity(), ReferenceHost {
         gapped(
             wrapRow(
                 listOf(
-                    chip(if (draftTip == null) "Import tip" else "Replace tip") {
+                    smallChip(if (draftTip == null) "Import tip" else "Replace tip") {
                         pendingBrushName = name.text.toString()
                         pendingBrushShape = shape
                         startActivityForResult(
@@ -971,7 +971,7 @@ class MainActivity : Activity(), ReferenceHost {
                             PICK_TIP,
                         )
                     },
-                    chip("Save", true) {
+                    smallChip("Save", true) {
                         val brush = draftBrush(source, name.text.toString(), shape)
                         store.saveBrush(brush)
                         customBrushes.removeAll { it.id == brush.id }
@@ -1143,8 +1143,8 @@ class MainActivity : Activity(), ReferenceHost {
         gapped(
             wrapRow(
                 listOf(
-                    chip("Cancel") { closePanel() },
-                    chip("Apply", true) {
+                    smallChip("Cancel") { closePanel() },
+                    smallChip("Apply", true) {
                         panelKey = ""
                         panel?.dismiss()
                         applyAdjustment()
@@ -1329,14 +1329,10 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun colorPanel(): View = column().apply {
         addView(
-            wrapRow(
-                listOf("Picker", "Harmony", "Palettes").mapIndexed { index, name ->
-                    chip(name, colorTab == index) {
-                        colorTab = index
-                        rerender("color", ::colorPanel)
-                    }
-                },
-            ),
+            segmented(listOf("Picker", "Harmony", "Palettes"), colorTab) {
+                colorTab = it
+                rerender("color", ::colorPanel)
+            },
         )
         when (colorTab) {
             0 -> {
@@ -1390,7 +1386,7 @@ class MainActivity : Activity(), ReferenceHost {
                 gapped(
                     wrapRow(
                         listOf(
-                            chip("From artwork") { paletteFromArtwork() },
+                            smallChip("From artwork") { paletteFromArtwork() },
                             chip("From reference") {
                         val reference = references.values.lastOrNull()
                         if (reference == null) {
@@ -1399,7 +1395,7 @@ class MainActivity : Activity(), ReferenceHost {
                             onReferencePalette(reference)
                         }
                     },
-                            chip("Save recent") {
+                            smallChip("Save recent") {
                                 if (recentColors.size < 2) {
                                     Toast.makeText(context, "Use at least two colors first", Toast.LENGTH_SHORT).show()
                                 } else {
@@ -1466,61 +1462,39 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun viewPanel(): View = column().apply {
         addView(label("Art direction", 16f))
-        gapped(label("Check your image", 13f, MUTED_TEXT))
-        gapped(
-            wrapRow(
-                VIEW_MODES.mapIndexed { index, name ->
-                    chip(name, viewMode == index) {
-                        viewMode = index
-                        applyViewOptions()
-                    }
-                },
-            ),
+        gapped(label("Check your image", 12f, MUTED_TEXT))
+        addView(segmented(listOf("Color", "Gray", "2 values", "3 values"), viewMode) {
+            viewMode = it
+            applyViewOptions()
+        })
+        gapped(label("Composition", 12f, MUTED_TEXT))
+        addView(segmented(GUIDES.map { if (it == "None") "Off" else it }, guide) {
+            guide = it
+            applyViewOptions()
+        })
+        gapped(label("Perspective", 12f, MUTED_TEXT))
+        addView(segmented(listOf("Off", "1 point", "2 points", "3 points"), document.perspective.size / 2) {
+            setPerspectiveCount(it)
+        })
+        gapped(label("Light direction", 12f, MUTED_TEXT))
+        addView(segmented(Light.entries.map { it.label }, document.light.ordinal) {
+            document.light = Light.entries[it]
+            markUnsaved()
+            rerender("view", ::viewPanel)
+        })
+        gapped(label("Figure height", 12f, MUTED_TEXT))
+        val figures = listOf(0f, 6f, 7.5f, 8f)
+        addView(
+            segmented(
+                listOf("Off", "6 heads", "7.5 heads", "8 heads"),
+                figures.indexOf(document.figure.getOrElse(2) { 0f }).coerceAtLeast(0),
+            ) { setFigure(figures[it]) },
         )
-        gapped(label("Composition guides", 13f, MUTED_TEXT))
-        gapped(
-            wrapRow(
-                GUIDES.mapIndexed { index, name ->
-                    chip(name, guide == index) {
-                        guide = index
-                        applyViewOptions()
-                    }
-                },
-            ),
-        )
-        gapped(label("Perspective", 13f, MUTED_TEXT))
-        gapped(
-            wrapRow(
-                listOf("Off", "1 point", "2 points", "3 points").mapIndexed { count, name ->
-                    chip(name, document.perspective.size / 2 == count) { setPerspectiveCount(count) }
-                },
-            ),
-        )
-        if (document.perspective.isNotEmpty()) {
-            gapped(label("Drag the circles to place each vanishing point. Zoom out to reach points beyond the canvas.", 13f, MUTED_TEXT))
+        if (document.perspective.isNotEmpty() || document.figure.isNotEmpty()) {
+            gapped(label("Drag the circles to place your guides.", 12f, MUTED_TEXT))
         }
-        gapped(label("Light direction", 13f, MUTED_TEXT))
-        gapped(
-            wrapRow(
-                Light.entries.map { light ->
-                    chip(light.label, document.light == light) {
-                        document.light = light
-                        markUnsaved()
-                        rerender("view", ::viewPanel)
-                    }
-                },
-            ),
-        )
-        gapped(label("Figure height guide", 13f, MUTED_TEXT))
-        gapped(
-            wrapRow(
-                listOf(0f to "Off", 6f to "6 heads", 7.5f to "7.5 heads", 8f to "8 heads").map { (heads, name) ->
-                    chip(name, document.figure.getOrElse(2) { 0f } == heads) { setFigure(heads) }
-                },
-            ),
-        )
-        gapped(chip("Flip canvas") { canvas.flip() })
-        gapped(label("These only change your view, not your artwork or exports.", 13f, MUTED_TEXT))
+        gapped(actionRow(R.drawable.ic_flip, "Flip canvas", "A fresh look at your drawing") { canvas.flip() })
+        gapped(label("These change your view only, never your artwork.", 12f, MUTED_TEXT))
     }
 
     private fun setPerspectiveCount(count: Int) {
@@ -1696,6 +1670,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     internal val layerCount get() = document.layers.size
+    internal val currentColor get() = canvas.brushColor
 
     internal fun activeLayer() = document.layers.firstOrNull { it.id == document.activeLayer }
 
@@ -1713,7 +1688,7 @@ class MainActivity : Activity(), ReferenceHost {
             LinearLayout(context).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 addView(label("Layers", 16f), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(chip("Add") { addLayer() })
+                addView(iconButton(R.drawable.ic_add, "Add layer") { addLayer() })
             },
         )
         val rows = ArrayList<View>()
@@ -1740,7 +1715,7 @@ class MainActivity : Activity(), ReferenceHost {
         requestLayerThumbnails()
         if (active == null) return@apply
 
-        gapped(label("Opacity", 13f, MUTED_TEXT))
+        gapped(label("Opacity", 12f, MUTED_TEXT))
         addView(
             SeekBar(context).apply {
                 max = 100
@@ -1757,28 +1732,36 @@ class MainActivity : Activity(), ReferenceHost {
             },
         )
         gapped(
-            wrapRow(
-                listOf(
-                    chip(BLEND_MODES[active.blend]) { }.apply {
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(label("Blend", 12f, MUTED_TEXT), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(
+                    smallChip("${BLEND_MODES[active.blend]} ▾") { }.apply {
                         setOnClickListener { chooseBlend(this, active) }
                     },
-                    chip("Transform") { startTransform() },
-                    chip("Adjust") {
+                )
+            },
+        )
+        gapped(
+            tileGrid(
+                listOf(
+                    iconTile(R.drawable.ic_transform, "Transform") { startTransform() },
+                    iconTile(R.drawable.ic_adjust, "Adjust") {
                         closePanel()
                         showPanel("adjust", adjustPanel())
                     },
-                    chip(if (active.groupId != 0) "Ungroup" else "Group") { toggleGroup(active) },
-                    chip("Clip", active.clip) {
+                    iconTile(R.drawable.ic_clip, "Clip", active.clip) {
                         setClip(active, !active.clip)
                         refreshLayers()
                     },
-                    chip("Duplicate") { duplicateLayer(active) },
-                    chip("Merge down") { mergeDown(active) },
-                    chip("Delete") { deleteLayer(active) },
+                    iconTile(R.drawable.ic_group, if (active.groupId != 0) "Ungroup" else "Group") { toggleGroup(active) },
+                    iconTile(R.drawable.ic_duplicate, "Duplicate") { duplicateLayer(active) },
+                    iconTile(R.drawable.ic_merge, "Merge") { mergeDown(active) },
+                    iconTile(R.drawable.ic_trash, "Delete") { deleteLayer(active) },
                 ),
             ),
         )
-        gapped(label("Long-press a layer to rename it. Drag the lines to reorder.", 13f, MUTED_TEXT))
+        gapped(label("Hold a layer to rename it. Drag its lines to reorder.", 12f, MUTED_TEXT))
     }
 
     private fun groupRow(group: LayerGroup): View = LinearLayout(this).apply {
@@ -2118,41 +2101,48 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun referencesPanel(): View = column().apply {
-        addView(
-            LinearLayout(context).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                addView(label("References", 16f), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(
-                    chip("Add") {
-                        startActivityForResult(
-                            Intent(Intent.ACTION_OPEN_DOCUMENT)
-                                .addCategory(Intent.CATEGORY_OPENABLE)
-                                .setType("image/*")
-                                .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true),
-                            PICK_REFERENCES,
-                        )
-                    },
-                )
-            },
-        )
+        addView(label("References", 16f))
         val files = store.references(document.projectId)
-        if (files.isEmpty()) {
-            gapped(label("Add images here, or share them to Cappuccino from another app.", 13f, MUTED_TEXT))
-            return@apply
-        }
+        val cell = (dp(PANEL_WIDTH) - dp(28) - dp(8)) / 3
         gapped(
             GridLayout(context).apply {
                 columnCount = 3
+                addView(
+                    LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER
+                        background = rounded(SURFACE_RAISED, 10)
+                        contentDescription = "Add references"
+                        addView(ImageView(context).apply { setImageResource(R.drawable.ic_add) }, LinearLayout.LayoutParams(dp(24), dp(24)))
+                        addView(label("Add", 12f), LinearLayout.LayoutParams(-2, -2))
+                        setOnClickListener {
+                            startActivityForResult(
+                                Intent(Intent.ACTION_OPEN_DOCUMENT)
+                                    .addCategory(Intent.CATEGORY_OPENABLE)
+                                    .setType("image/*")
+                                    .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true),
+                                PICK_REFERENCES,
+                            )
+                        }
+                    },
+                    GridLayout.LayoutParams().apply {
+                        width = cell
+                        height = cell
+                        setMargins(0, 0, dp(4), dp(4))
+                    },
+                )
                 files.forEach { file ->
                     val open = references.containsKey(file.name)
                     addView(
                         FrameLayout(context).apply {
-                            background = rounded(if (open) ACCENT else SURFACE, 8)
+                            background = rounded(if (open) ACCENT else SURFACE, 10)
                             setPadding(dp(3), dp(3), dp(3), dp(3))
                             addView(
                                 ImageView(context).apply {
                                     scaleType = ImageView.ScaleType.CENTER_CROP
-                                    setImageBitmap(decodeReference(file, dp(96)))
+                                    background = rounded(SURFACE_RAISED, 8)
+                                    clipToOutline = true
+                                    setImageBitmap(decodeReference(file, cell))
                                     contentDescription = if (open) "Close reference" else "Open reference"
                                     setOnClickListener {
                                         toggleReference(file)
@@ -2166,15 +2156,20 @@ class MainActivity : Activity(), ReferenceHost {
                             )
                         },
                         GridLayout.LayoutParams().apply {
-                            width = dp(96)
-                            height = dp(96)
-                            setMargins(dp(2), dp(2), dp(2), dp(2))
+                            width = cell
+                            height = cell
+                            setMargins(0, 0, dp(4), dp(4))
                         },
                     )
                 }
             },
         )
-        gapped(label("Tap to open or close. Long-press to delete. On a reference, tap for tools, pinch to zoom, and long-press to pick a color.", 13f, MUTED_TEXT))
+        val hint = if (files.isEmpty()) {
+            "Add images, or share them here from another app."
+        } else {
+            "Tap to open. Hold to delete. On a reference, tap for tools."
+        }
+        gapped(label(hint, 12f, MUTED_TEXT))
     }
 
     private fun confirmDeleteReference(file: File) {

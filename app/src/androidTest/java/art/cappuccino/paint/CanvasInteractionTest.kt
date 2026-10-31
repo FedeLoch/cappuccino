@@ -307,6 +307,23 @@ class CanvasInteractionTest {
     }
 
     @Test
+    fun holdingThePenPicksAColorWithoutDrawing() {
+        val x = width / 2f
+        val y = height / 2f
+        onStudio { it.setColor(Color.BLACK) }
+        val down = SystemClock.uptimeMillis()
+        inject(MotionEvent.ACTION_DOWN, down, 0, listOf(Pointer(0, x, y)), stylus = true)
+        SystemClock.sleep(900)
+        settle()
+        inject(MotionEvent.ACTION_UP, down, SystemClock.uptimeMillis() - down, listOf(Pointer(0, x, y)), stylus = true)
+        settle()
+        var color = 0
+        scenario.onActivity { color = it.currentColor }
+        assertEquals("the paper color should be picked", Color.WHITE, color)
+        assertFalse("holding should leave no mark", hasInk(x, y))
+    }
+
+    @Test
     fun backupRestoresProjects() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val store = ArtworkStore(context)

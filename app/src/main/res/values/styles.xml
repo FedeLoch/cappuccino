@@ -1,0 +1,15 @@
+<resources>
+    <style name="Cappuccino.Dialog" parent="android:Theme.DeviceDefault.Dialog.Alert">
+        <item name="android:colorBackground">#3A291F</item>
+        <item name="android:colorBackgroundFloating">#3A291F</item>
+        <item name="android:textColorPrimary">#F4E9D8</item>
+        <item name="android:textColorSecondary">#D8C4AC</item>
+        <item name="android:colorAccent">#D85A30</item>
+    </style>
+
+    <style name="Theme.Cappuccino" parent="android:Theme.DeviceDefault.NoActionBar.Fullscreen">
+        <item name="android:alertDialogTheme">@style/Cappuccino.Dialog</item>
+        <item name="android:colorBackgroundFloating">#2C2C2A</item>
+        <item name="android:colorAccent">#D85A30</item>
+    </style>
+</resources>

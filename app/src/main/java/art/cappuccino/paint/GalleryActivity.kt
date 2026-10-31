@@ -242,19 +242,19 @@ class GalleryActivity : Activity() {
                 gravity = Gravity.CENTER_VERTICAL
                 addView(quietChip("Back") { select(ALL) })
                 addView(
-                    wordmark(project?.name ?: "Unsorted", 24f),
-                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(14) },
+                    wordmark(project?.name ?: "Unsorted", 26f),
+                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(14) },
+                )
+                addView(
+                    LinearLayout(context).apply {
+                        addView(quietChip("Artworks", !showingReferences) { showReferences(false) })
+                        addView(
+                            quietChip("References", showingReferences) { showReferences(true) },
+                            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) },
+                        )
+                    },
                 )
             },
-            spaced(),
-        )
-        root.addView(
-            row(
-                listOf(
-                    quietChip("Artworks", !showingReferences) { showReferences(false) },
-                    quietChip("References", showingReferences) { showReferences(true) },
-                ),
-            ),
             spaced(),
         )
         if (showingReferences) renderReferences() else renderArtworks()
@@ -481,7 +481,7 @@ class GalleryActivity : Activity() {
 
     private fun renderReferences() {
         root.addView(
-            chip("Add references") {
+            quietChip("Add references") {
                 startActivityForResult(
                     Intent(Intent.ACTION_OPEN_DOCUMENT)
                         .addCategory(Intent.CATEGORY_OPENABLE)
@@ -494,7 +494,7 @@ class GalleryActivity : Activity() {
         )
         val files = store.references(selected)
         if (files.isEmpty()) {
-            root.addView(label("Collect images for this project here.", 16f, MUTED_TEXT), spaced())
+            root.addView(label("Collect the images that inspire this sketchbook.", 15f, LATTE), spaced())
             return
         }
         val cell = dp(180)
@@ -505,6 +505,8 @@ class GalleryActivity : Activity() {
 
     private fun referenceCell(file: File, size: Int) = ImageView(this).apply {
         scaleType = ImageView.ScaleType.CENTER_CROP
+        background = rounded(ROAST, 10)
+        clipToOutline = true
         contentDescription = "Reference"
         layoutParams = GridLayout.LayoutParams().apply {
             width = size

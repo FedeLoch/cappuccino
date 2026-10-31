@@ -69,6 +69,55 @@ fun Context.smallChip(content: String, selected: Boolean = false, onClick: () ->
         setOnClickListener { onClick() }
     }
 
+/** One choice from a short list, in a single rounded track. */
+fun Context.segmented(options: List<String>, selected: Int, onPick: (Int) -> Unit) =
+    LinearLayout(this).apply {
+        background = rounded(SURFACE_RAISED, 10)
+        setPadding(dp(2), dp(2), dp(2), dp(2))
+        options.forEachIndexed { index, option ->
+            addView(
+                label(option, 11f).apply {
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                    minHeight = dp(30)
+                    if (index == selected) background = rounded(ACCENT, 8)
+                    setOnClickListener { onPick(index) }
+                },
+                LinearLayout.LayoutParams(0, -2, 1f),
+            )
+        }
+    }
+
+/** A compact icon and caption for a grid of actions. */
+fun Context.iconTile(icon: Int, title: String, selected: Boolean = false, onClick: () -> Unit) =
+    LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER
+        setPadding(dp(2), dp(7), dp(2), dp(5))
+        background = rounded(if (selected) ACCENT else SURFACE_RAISED, 10)
+        contentDescription = title
+        setOnClickListener { onClick() }
+        addView(ImageView(context).apply { setImageResource(icon) }, LinearLayout.LayoutParams(dp(20), dp(20)))
+        addView(label(title, 10f).apply { maxLines = 1 }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(3) })
+    }
+
+fun Context.tileGrid(tiles: List<View>, columns: Int = 4) = LinearLayout(this).apply {
+    orientation = LinearLayout.VERTICAL
+    tiles.chunked(columns).forEachIndexed { rowIndex, row ->
+        addView(
+            LinearLayout(context).apply {
+                row.forEachIndexed { index, tile ->
+                    addView(tile, LinearLayout.LayoutParams(0, -2, 1f).apply { if (index > 0) marginStart = dp(4) })
+                }
+                repeat(columns - row.size) {
+                    addView(View(context), LinearLayout.LayoutParams(0, 0, 1f).apply { marginStart = dp(4) })
+                }
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { if (rowIndex > 0) topMargin = dp(4) },
+        )
+    }
+}
+
 /** A list row with an icon, a title, and an optional line of detail. */
 fun Context.actionRow(icon: Int, title: String, detail: String? = null, onClick: () -> Unit) =
     LinearLayout(this).apply {

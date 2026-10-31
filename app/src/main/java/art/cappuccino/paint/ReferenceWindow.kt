@@ -50,10 +50,11 @@ class ReferenceWindow(
     private val image = ReferenceImage()
     private val bar: View = createBar()
     private val root = FrameLayout(activity).apply {
-        background = activity.rounded(SURFACE, 10)
+        background = activity.rounded(SURFACE, 12).apply { setStroke(activity.dp(1), FOAM) }
         clipToOutline = true
+        setPadding(activity.dp(1), activity.dp(1), activity.dp(1), activity.dp(1))
         addView(image)
-        addView(createResizeHandle(), FrameLayout.LayoutParams(activity.dp(32), activity.dp(32), Gravity.BOTTOM or Gravity.END))
+        addView(createResizeHandle(), FrameLayout.LayoutParams(activity.dp(36), activity.dp(36), Gravity.BOTTOM or Gravity.END))
         addView(bar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
     }
     private val window: PopupWindow = PopupWindow(root, state.width, windowHeight()).apply {
@@ -96,11 +97,12 @@ class ReferenceWindow(
     }
 
     private fun createResizeHandle(): View = TextView(activity).apply {
-        text = "↘"
-        textSize = 14f
-        gravity = Gravity.CENTER
-        setTextColor(TEXT_COLOR)
-        background = activity.rounded(SURFACE, 8)
+        text = "◢"
+        textSize = 16f
+        gravity = Gravity.BOTTOM or Gravity.END
+        setPadding(0, 0, activity.dp(5), activity.dp(1))
+        setTextColor(FOAM)
+        setShadowLayer(3f, 0f, 0f, SURFACE)
         contentDescription = "Resize reference"
         var startX = 0f
         var startWidth = 0
@@ -123,41 +125,50 @@ class ReferenceWindow(
     }
 
     private fun createBar(): View {
-        val actions = listOf<Pair<String, () -> Unit>>(
-            "Grayscale" to {
+        fun toggle(button: View, on: Boolean) {
+            button.background = if (on) activity.rounded(ACCENT, 8) else null
+        }
+        lateinit var grayButton: View
+        lateinit var flipButton: View
+        val actions = listOf<Triple<Int, String, () -> Unit>>(
+            Triple(R.drawable.ic_invert, "Grayscale") {
                 state.grayscale = !state.grayscale
+                toggle(grayButton, state.grayscale)
                 image.invalidate()
                 host.onReferenceChanged()
             },
-            "Flip" to {
+            Triple(R.drawable.ic_flip, "Flip") {
                 state.flipped = !state.flipped
+                toggle(flipButton, state.flipped)
                 image.invalidate()
                 host.onReferenceChanged()
             },
-            "Fit" to {
+            Triple(R.drawable.ic_fit, "Fit") {
                 state.zoom = 1f
                 state.panX = 0f
                 state.panY = 0f
                 image.invalidate()
                 host.onReferenceChanged()
             },
-            "Pin" to { pin() },
-            "Palette" to { host.onReferencePalette(this) },
-            "Add as layer" to { host.onReferenceToLayer(this) },
-            "Close" to { host.onReferenceClosed(this) },
+            Triple(R.drawable.ic_pin, "Pin for tracing") { pin() },
+            Triple(R.drawable.ic_palette, "Save its palette") { host.onReferencePalette(this) },
+            Triple(R.drawable.ic_layersfile, "Add as layer") { host.onReferenceToLayer(this) },
+            Triple(R.drawable.ic_close, "Close") { host.onReferenceClosed(this) },
         )
         val row = LinearLayout(activity).apply {
-            actions.forEach { (name, action) ->
-                addView(
-                    activity.label(name, 12f).apply {
-                        gravity = Gravity.CENTER
-                        minHeight = activity.dp(36)
-                        setPadding(activity.dp(10), 0, activity.dp(10), 0)
-                        setOnClickListener { action() }
-                    },
-                )
+            gravity = Gravity.CENTER_VERTICAL
+            actions.forEach { (icon, name, action) ->
+                val button = activity.iconButton(icon, name) { action() }.apply {
+                    setPadding(activity.dp(7), activity.dp(7), activity.dp(7), activity.dp(7))
+                    tooltipText = name
+                }
+                if (icon == R.drawable.ic_invert) grayButton = button
+                if (icon == R.drawable.ic_flip) flipButton = button
+                addView(button, LinearLayout.LayoutParams(activity.dp(36), activity.dp(36)))
             }
         }
+        toggle(grayButton, state.grayscale)
+        toggle(flipButton, state.flipped)
         val opacity = SeekBar(activity).apply {
             max = 100
             min = 15
@@ -174,6 +185,7 @@ class ReferenceWindow(
         return LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(SURFACE)
+            setPadding(activity.dp(4), activity.dp(2), activity.dp(4), activity.dp(2))
             isClickable = true
             addView(
                 HorizontalScrollView(activity).apply {
