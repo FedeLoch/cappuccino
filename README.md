@@ -17,9 +17,13 @@ clearly? Are the values working? Am I getting closer to the look I'm after? Capp
 companion is there for those moments, like a friend looking over your shoulder only when you
 ask.
 
-Choose a paint drop, ink blot, foam cup, or coffee drop. It rests in a corner of the canvas and
-never interrupts you. When it has a thought, a small dot appears beside it. Tap it to read the
-note, or keep drawing and ignore it. If you'd rather be alone, it tucks away behind the toolbar.
+Choose a paint drop, ink blot, foam cup, or coffee drop:
+
+![The four companions, each shown idle, with a tip ready, thinking, and napping](docs/screenshots/companions.png)
+
+Your companion rests in a corner of the canvas and never interrupts you. When it has a thought, a
+small dot appears beside it. Tap it to read the note, or keep drawing and ignore it. If you'd
+rather be alone, it tucks away behind the toolbar.
 
 ![The companion's note about how the artwork compares with its references](docs/screenshots/companion-note.png)
 
