@@ -139,12 +139,8 @@ class ArtworkStore(context: Context) {
         writeProjects(projects().map { if (it.id == id) it.copy(name = name) else it })
     }
 
-    fun recolorProject(id: String) {
-        writeProjects(
-            projects().map {
-                if (it.id == id) it.copy(color = (it.color + 1) % SKETCHBOOK_COLORS.size) else it
-            },
-        )
+    fun recolorProject(id: String, color: Int) {
+        writeProjects(projects().map { if (it.id == id) it.copy(color = color) else it })
     }
 
     private val brushesFile = File(root, "brushes.json")
@@ -241,6 +237,9 @@ class ArtworkStore(context: Context) {
                     it.optString("project", ""),
                     it.optLong("updated"),
                     it.optString("variationOf"),
+                    it.optInt("width", DEFAULT_CANVAS_WIDTH),
+                    it.optInt("height", DEFAULT_CANVAS_HEIGHT),
+                    it.optJSONArray("layers")?.length() ?: 0,
                 )
             }
         }.sortedByDescending { it.updated }

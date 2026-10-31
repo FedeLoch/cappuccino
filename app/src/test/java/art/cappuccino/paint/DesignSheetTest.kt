@@ -36,4 +36,11 @@ class DesignSheetTest {
         assertEquals(gray, shiftHue(intArrayOf(gray), 0.4f)[0])
         assertEquals(0x80, shiftHue(intArrayOf(0x80FF0000.toInt()), 0.5f)[0] ushr 24)
     }
+
+    @Test
+    fun presetsTurnToEitherOrientation() {
+        assertEquals(2480 to 3508, orientedSize(3508, 2480, portrait = true))
+        assertEquals(3508 to 2480, orientedSize(2480, 3508, portrait = false))
+        assertEquals(3000 to 3000, orientedSize(3000, 3000, portrait = true))
+    }
 }

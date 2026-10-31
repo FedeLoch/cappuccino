@@ -236,7 +236,8 @@ class MainActivity : Activity(), ReferenceHost {
             val project = intent.getStringExtra(EXTRA_PROJECT).orEmpty()
             val first = LayerInfo(1, tr("Layer %1", 1))
             document = ArtworkDocument(
-                UUID.randomUUID().toString(), tr("Untitled"), project, 1, 2, mutableListOf(first),
+                UUID.randomUUID().toString(), intent.getStringExtra(EXTRA_NAME)?.ifEmpty { null } ?: tr("Untitled"),
+                project, 1, 2, mutableListOf(first),
                 width = width, height = height,
             )
             engineLayers.add(1)
@@ -3271,5 +3272,6 @@ class MainActivity : Activity(), ReferenceHost {
         const val EXTRA_PROJECT = "project"
         const val EXTRA_WIDTH = "width"
         const val EXTRA_HEIGHT = "height"
+        const val EXTRA_NAME = "name"
     }
 }

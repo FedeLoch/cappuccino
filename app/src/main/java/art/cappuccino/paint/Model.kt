@@ -227,4 +227,7 @@ data class ArtworkInfo(
     val projectId: String,
     val updated: Long,
     val variationOf: String = "",
+    val width: Int = DEFAULT_CANVAS_WIDTH,
+    val height: Int = DEFAULT_CANVAS_HEIGHT,
+    val layers: Int = 0,
 )

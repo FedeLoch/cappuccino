@@ -27,6 +27,24 @@ fun tr(text: String, vararg values: Any): String {
 }
 
 val SPANISH = mapOf(
+    "%1 references" to "%1 referencias",
+    "1 reference" to "1 referencia",
+    "Cover color %1" to "Color de tapa %1",
+    "%1 x %2 pixels · %3 layers" to "%1 x %2 píxeles · %3 capas",
+    "%1 x %2 pixels · up to %3 layers" to "%1 x %2 píxeles · hasta %3 capas",
+    "A3" to "A3",
+    "A4" to "A4",
+    "Continue drawing" to "Seguir dibujando",
+    "Default" to "Predeterminado",
+    "Edited %1" to "Editado %1",
+    "Landscape" to "Horizontal",
+    "More for %1" to "Más opciones de %1",
+    "Name" to "Nombre",
+    "Phone story" to "Historia de teléfono",
+    "Portrait" to "Vertical",
+    "Square" to "Cuadrado",
+    "Wide video" to "Video panorámico",
+    "Your own" to "A tu medida",
     "Recovered %1 strokes from your last session" to "Se recuperaron %1 trazos de tu última sesión",
     "%1 design sheet" to "Hoja de diseño de %1",
     "Add text" to "Agregar texto",
@@ -189,7 +207,7 @@ val SPANISH = mapOf(
     "Create" to "Crear",
     "Custom size" to "Tamaño personalizado",
     "Cut to layer" to "Cortar a capa",
-    "Default, 4096 x 2732" to "Predeterminado, 4096 x 2732",
+
     "Delete this reference?" to "¿Eliminar esta referencia?",
     "Delete" to "Eliminar",
     "Done" to "Listo",

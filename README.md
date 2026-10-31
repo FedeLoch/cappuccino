@@ -91,7 +91,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Filters: blur, motion blur, sharpen, noise, gradient map, levels, and depth fade
 - Lasso and magic wand selections, transform, and hue, saturation, and tone adjustments
 - One undo history for strokes and layer changes
-- Canvas presets for screen, print, and video, or custom sizes up to 8192 pixels
+- Canvases up to 8192 pixels on a side
 
 | Layers | Layer tools |
 |---|---|
@@ -139,6 +139,17 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 | Floating references | Boards and stars |
 |---|---|
 | ![A floating reference with a companion note](docs/screenshots/references.png) | ![Reference library with stars and boards](docs/screenshots/reference-boards.png) |
+
+### Start and pick up work
+
+- Canvas presets for screen, print, and video, shown in their real proportions, or any custom size
+- See how many layers each size can hold before you create it
+- Name a new artwork and choose its sketchbook in one step
+- Every artwork has its own page with its details, variations, and actions
+
+| New artwork | Artwork details |
+|---|---|
+| ![New artwork sheet with canvas presets](docs/screenshots/new-artwork.png) | ![Artwork details with a large preview and actions](docs/screenshots/artwork-details.png) |
 
 ### Keep your work
 

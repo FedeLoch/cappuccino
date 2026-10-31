@@ -67,6 +67,15 @@ fun Context.chip(content: String, selected: Boolean = false, onClick: () -> Unit
     }
 
 /** A small button for compact surfaces, such as the companion bubble. */
+/** A chip for the cream home screen. */
+fun Context.creamChip(content: String, selected: Boolean = false, onClick: () -> Unit) =
+    chip(content, selected, onClick).apply {
+        if (!selected) {
+            background = rounded(OAT, 20)
+            setTextColor(ESPRESSO)
+        }
+    }
+
 fun Context.smallChip(content: String, selected: Boolean = false, onClick: () -> Unit) =
     label(content, 12f).apply {
         gravity = Gravity.CENTER

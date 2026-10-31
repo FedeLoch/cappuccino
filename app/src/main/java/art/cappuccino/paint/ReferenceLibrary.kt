@@ -59,7 +59,7 @@ class ReferenceThumbnails {
     }
 
     fun show(file: File, size: Int, view: ImageView) {
-        val key = "${file.name}:$size"
+        val key = "${file.path}:${file.lastModified()}:$size"
         view.tag = key
         cache.get(key)?.let {
             view.setImageBitmap(it)

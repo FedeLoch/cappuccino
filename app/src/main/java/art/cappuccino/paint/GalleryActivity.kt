@@ -9,7 +9,6 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import android.text.InputType
 import android.text.format.DateUtils
 import android.view.Gravity
 import android.view.View
@@ -31,6 +30,10 @@ private const val PICK_REFERENCES = 42
 private const val CREATE_BACKUP = 43
 private const val OPEN_BACKUP = 44
 private const val OPEN_PSD = 45
+private const val COVER_COLUMNS = 3
+private const val COVER_ROW_WIDTH = 640
+private const val COVER_SIZE = 88
+private const val COVER_HEIGHT = 104
 private const val CONTINUE_WIDTH = 380
 private const val CONTINUE_HEIGHT = 250
 
@@ -71,12 +74,7 @@ class GalleryActivity : Activity() {
     }
 
     private fun quietChip(content: String, selected: Boolean = false, onClick: () -> Unit) =
-        chip(content, selected, onClick).apply {
-            if (!selected) {
-                background = rounded(OAT, 20)
-                setTextColor(ESPRESSO)
-            }
-        }
+        creamChip(content, selected, onClick)
 
     private fun wordmark(content: String, size: Float) = label(content, size, ESPRESSO).apply {
         typeface = Typeface.create(Typeface.SERIF, Typeface.NORMAL)
@@ -96,7 +94,7 @@ class GalleryActivity : Activity() {
                     LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
                 )
                 addView(
-                    chip(tr("New artwork"), true) { chooseCanvas() },
+                    chip(tr("New artwork"), true) { showNewArtwork() },
                     LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
                 )
             },
@@ -162,12 +160,17 @@ class GalleryActivity : Activity() {
         background = rounded(Color.WHITE, 14).apply { setStroke(dp(1), OAT) }
         setPadding(dp(10), dp(10), dp(10), dp(10))
         addView(
-            ImageView(context).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                background = rounded(Color.WHITE, 8)
-                clipToOutline = true
-                contentDescription = art.name
-                setImageBitmap(BitmapFactory.decodeFile(store.thumbnail(art.id).path))
+            FrameLayout(context).apply {
+                addView(
+                    ImageView(context).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        background = rounded(Color.WHITE, 8)
+                        clipToOutline = true
+                        contentDescription = art.name
+                        setImageBitmap(BitmapFactory.decodeFile(store.thumbnail(art.id).path))
+                    },
+                )
+                addView(moreButton(art), moreSpot())
             },
             LinearLayout.LayoutParams(-1, 0, 1f),
         )
@@ -180,6 +183,18 @@ class GalleryActivity : Activity() {
             artworkOptions(art)
             true
         }
+    }
+
+    /** The button looks small, but its touch area stays easy to hit. */
+    private fun moreSpot() = FrameLayout.LayoutParams(dp(44), dp(36), Gravity.TOP or Gravity.END)
+
+    private fun moreButton(art: ArtworkInfo) = label("···", 11f, ESPRESSO).apply {
+        gravity = Gravity.CENTER
+        includeFontPadding = false
+        setPadding(dp(13), dp(5), dp(5), dp(13))
+        background = android.graphics.drawable.InsetDrawable(rounded(OAT, 9), dp(13), dp(5), dp(5), dp(13))
+        contentDescription = tr("More for %1", art.name)
+        setOnClickListener { artworkOptions(art) }
     }
 
     private fun greeting() = LinearLayout(this).apply {
@@ -243,22 +258,13 @@ class GalleryActivity : Activity() {
 
     private fun renderSketchbook(projects: List<Project>) {
         val project = projects.firstOrNull { it.id == selected }
+        root.addView(sketchbookCover(project), LinearLayout.LayoutParams(-1, dp(COVER_HEIGHT)).apply { topMargin = dp(16) })
         root.addView(
             LinearLayout(this).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                addView(quietChip(tr("Back")) { select(ALL) })
+                addView(quietChip(tr("Artworks"), !showingReferences) { showReferences(false) })
                 addView(
-                    wordmark(project?.name ?: tr("Unsorted"), 26f),
-                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(14) },
-                )
-                addView(
-                    LinearLayout(context).apply {
-                        addView(quietChip(tr("Artworks"), !showingReferences) { showReferences(false) })
-                        addView(
-                            quietChip(tr("References"), showingReferences) { showReferences(true) },
-                            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) },
-                        )
-                    },
+                    quietChip(tr("References"), showingReferences) { showReferences(true) },
+                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) },
                 )
             },
             spaced(),
@@ -266,61 +272,53 @@ class GalleryActivity : Activity() {
         if (showingReferences) renderReferences() else renderArtworks()
     }
 
-    private fun chooseCanvas() {
-        val sizes = listOf(
-            Triple(tr("Default, 4096 x 2732"), 4096, 2732),
-            Triple(tr("Square, 3000 x 3000"), 3000, 3000),
-            Triple(tr("A4 at 300 dpi, 2480 x 3508"), 2480, 3508),
-            Triple(tr("A3 at 300 dpi, 3508 x 4961"), 3508, 4961),
-            Triple(tr("Phone story, 1080 x 1920"), 1080, 1920),
-            Triple(tr("Wide video, 3840 x 2160"), 3840, 2160),
-        )
-        AlertDialog.Builder(this)
-            .setTitle(tr("New artwork"))
-            .setItems((sizes.map { it.first } + tr("Custom size")).toTypedArray()) { _, choice ->
-                val size = sizes.getOrNull(choice)
-                if (size != null) openNew(size.second, size.third) else askCustomSize()
-            }
-            .show()
-    }
-
-    private fun askCustomSize() {
-        val width = EditText(this).apply {
-            hint = tr("Width in pixels")
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }
-        val height = EditText(this).apply {
-            hint = tr("Height in pixels")
-            inputType = InputType.TYPE_CLASS_NUMBER
-        }
-        AlertDialog.Builder(this)
-            .setTitle(tr("Custom size"))
-            .setView(
-                LinearLayout(this).apply {
-                    orientation = LinearLayout.VERTICAL
-                    setPadding(dp(24), dp(8), dp(24), 0)
-                    addView(width)
-                    addView(height)
-                },
-            )
-            .setNegativeButton(tr("Cancel"), null)
-            .setPositiveButton(tr("Create")) { _, _ ->
-                val w = width.text.toString().toIntOrNull() ?: 0
-                val h = height.text.toString().toIntOrNull() ?: 0
-                if (w in 64..MAX_CANVAS_SIDE && h in 64..MAX_CANVAS_SIDE) {
-                    openNew(w, h)
-                } else {
-                    Toast.makeText(this, tr("Use sizes from 64 to %1 pixels", MAX_CANVAS_SIDE), Toast.LENGTH_LONG).show()
+    /** The open sketchbook's cover, in its own color, with its name and contents. */
+    private fun sketchbookCover(project: Project?) = FrameLayout(this).apply {
+        val (cover, spine) = project?.let { SKETCHBOOK_COLORS[it.color % SKETCHBOOK_COLORS.size] } ?: (OAT to COCOA)
+        val text = if (project == null) ESPRESSO else Color.WHITE
+        val artworks = store.artworks().count { it.projectId == selected }
+        val references = store.references(selected).size
+        background = rounded(cover, 16)
+        addView(View(context).apply { background = rounded(spine, 8) }, FrameLayout.LayoutParams(dp(14), -1))
+        addView(
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(30), dp(18), dp(18), dp(18))
+                addView(
+                    LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(wordmark(project?.name ?: tr("Unsorted"), 30f).apply { setTextColor(text) })
+                        addView(
+                            label(
+                                listOf(
+                                    if (artworks == 1) tr("1 artwork") else tr("%1 artworks", artworks),
+                                    if (references == 1) tr("1 reference") else tr("%1 references", references),
+                                ).joinToString(" · "),
+                                14f, text,
+                            ),
+                        )
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f),
+                )
+                project?.let {
+                    addView(quietChip(tr("Edit")) { projectOptions(it) }, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
                 }
-            }
-            .show()
+                addView(quietChip(tr("Back")) { select(ALL) })
+            },
+            FrameLayout.LayoutParams(-1, -2),
+        )
     }
 
-    private fun openNew(width: Int, height: Int) {
+    internal fun showNewArtwork() {
         val project = if (selected == ALL) "" else selected
+        NewArtworkSheet(this, store.projects(), project, ::openNew).show()
+    }
+
+    private fun openNew(width: Int, height: Int, name: String, project: String) {
         startActivity(
             Intent(this, MainActivity::class.java)
                 .putExtra(MainActivity.EXTRA_PROJECT, project)
+                .putExtra(MainActivity.EXTRA_NAME, name)
                 .putExtra(MainActivity.EXTRA_WIDTH, width)
                 .putExtra(MainActivity.EXTRA_HEIGHT, height),
         )
@@ -399,12 +397,17 @@ class GalleryActivity : Activity() {
             setMargins(0, 0, dp(12), dp(16))
         }
         addView(
-            ImageView(context).apply {
-                scaleType = ImageView.ScaleType.CENTER_CROP
-                background = rounded(Color.WHITE, 8)
-                clipToOutline = true
-                contentDescription = art.name
-                setImageBitmap(BitmapFactory.decodeFile(store.thumbnail(art.id).path))
+            FrameLayout(context).apply {
+                addView(
+                    ImageView(context).apply {
+                        scaleType = ImageView.ScaleType.CENTER_CROP
+                        background = rounded(Color.WHITE, 8)
+                        clipToOutline = true
+                        contentDescription = art.name
+                        setImageBitmap(BitmapFactory.decodeFile(store.thumbnail(art.id).path))
+                    },
+                )
+                addView(moreButton(art), moreSpot())
             },
             LinearLayout.LayoutParams(-1, width * 2 / 3),
         )
@@ -426,37 +429,46 @@ class GalleryActivity : Activity() {
         )
     }
 
-    private fun artworkOptions(art: ArtworkInfo) {
+    internal fun artworkOptions(art: ArtworkInfo) {
         val projects = store.projects()
-        AlertDialog.Builder(this)
-            .setTitle(art.name)
-            .setItems(arrayOf(tr("Rename"), tr("Move to project"), tr("Duplicate"), tr("Delete"))) { _, choice ->
-                when (choice) {
-                    0 -> ask(tr("Rename artwork"), art.name) {
-                        store.renameArtwork(art.id, it)
-                        render()
-                    }
-                    1 -> {
-                        val names = listOf(tr("Unsorted")) + projects.map { it.name }
-                        AlertDialog.Builder(this)
-                            .setTitle(tr("Move to"))
-                            .setItems(names.toTypedArray()) { _, index ->
-                                store.moveArtwork(art.id, projects.getOrNull(index - 1)?.id.orEmpty())
-                                render()
-                            }
-                            .show()
-                    }
-                    2 -> {
-                        store.duplicateArtwork(art.id)
-                        render()
-                    }
-                    3 -> confirm(tr("Delete %1?", art.name), tr("You can't undo this.")) {
-                        store.deleteArtwork(art.id)
-                        render()
-                    }
+        artworkSheet(
+            art,
+            projects.firstOrNull { it.id == art.projectId }?.name ?: tr("Unsorted"),
+            store.variations(art.id),
+            thumbnails,
+            store,
+            open = ::openStudio,
+            rename = {
+                ask(tr("Rename artwork"), art.name) {
+                    store.renameArtwork(art.id, it)
+                    render()
                 }
-            }
-            .show()
+            },
+            move = {
+                val names = listOf(tr("Unsorted")) + projects.map { it.name }
+                AlertDialog.Builder(this)
+                    .setTitle(tr("Move to"))
+                    .setItems(names.toTypedArray()) { _, index ->
+                        store.moveArtwork(art.id, projects.getOrNull(index - 1)?.id.orEmpty())
+                        render()
+                    }
+                    .show()
+            },
+            duplicate = {
+                store.duplicateArtwork(art.id)
+                render()
+            },
+            variation = {
+                store.makeVariation(art.id)
+                render()
+            },
+            delete = {
+                confirm(tr("Delete %1?", art.name), tr("You can't undo this.")) {
+                    store.deleteArtwork(art.id)
+                    render()
+                }
+            },
+        )
     }
 
     private fun projectOptions(project: Project) {
@@ -469,8 +481,7 @@ class GalleryActivity : Activity() {
                         render()
                     }
                 } else if (choice == 1) {
-                    store.recolorProject(project.id)
-                    render()
+                    chooseCover(project)
                 } else {
                     confirm(
                         tr("Delete %1?", project.name),
@@ -483,6 +494,45 @@ class GalleryActivity : Activity() {
                 }
             }
             .show()
+    }
+
+    /** Shows every cover color as a small sketchbook, ready to tap. */
+    internal fun chooseCover(project: Project) {
+        lateinit var dialog: android.app.Dialog
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(22), dp(20), dp(22), dp(20))
+            addView(wordmark(tr("Change cover color"), 24f))
+            addView(
+                GridLayout(context).apply {
+                    columnCount = if (resources.displayMetrics.widthPixels >= dp(COVER_ROW_WIDTH)) SKETCHBOOK_COLORS.size else COVER_COLUMNS
+                    SKETCHBOOK_COLORS.forEachIndexed { index, (cover, spine) ->
+                        addView(
+                            FrameLayout(context).apply {
+                                background = rounded(cover, 10).apply {
+                                    if (index == project.color % SKETCHBOOK_COLORS.size) setStroke(dp(3), ESPRESSO)
+                                }
+                                contentDescription = tr("Cover color %1", index + 1)
+                                addView(View(context).apply { background = rounded(spine, 5) }, FrameLayout.LayoutParams(dp(9), -1))
+                                setOnClickListener {
+                                    store.recolorProject(project.id, index)
+                                    dialog.dismiss()
+                                    render()
+                                }
+                            },
+                            GridLayout.LayoutParams().apply {
+                                width = dp(COVER_SIZE)
+                                height = dp(COVER_SIZE * 4 / 5)
+                                setMargins(0, 0, dp(8), dp(8))
+                            },
+                        )
+                    }
+                },
+                LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) },
+            )
+        }
+        dialog = sheet(content)
+        dialog.show()
     }
 
     private fun renderReferences() {
@@ -683,6 +733,7 @@ class GalleryActivity : Activity() {
 
     override fun onDestroy() {
         background.shutdown()
+        thumbnails.close()
         super.onDestroy()
     }
 }
