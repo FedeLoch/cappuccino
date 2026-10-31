@@ -2,8 +2,13 @@ package art.cappuccino.paint
 
 private const val MAX_EDITS = 300
 
-class LayerState(layers: List<LayerInfo>, val activeLayer: Int) {
+class LayerState(
+    layers: List<LayerInfo>,
+    val activeLayer: Int,
+    groups: List<LayerGroup> = emptyList(),
+) {
     val layers: List<LayerInfo> = layers.map { it.copy() }
+    val groups: List<LayerGroup> = groups.map { it.copy() }
 }
 
 sealed interface Edit {

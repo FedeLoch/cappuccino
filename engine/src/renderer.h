@@ -31,7 +31,11 @@ struct BrushParams {
     float grain = 0.0f;
     bool eraser = false;
     bool alphaLock = false;
+    bool smudge = false;
+    std::vector<uint8_t> tip;  // Optional square grayscale tip, kTipSize on each side.
 };
+
+constexpr int kTipSize = 128;
 
 // Owns the artwork on the GPU. All methods must run on the thread that holds the GL
 // context, and each one restores the framebuffer that was bound when it was called.
@@ -56,7 +60,21 @@ public:
     // Previews a layer under a 3x3 row-major transform, or ends the preview when id is 0.
     void setLayerTransform(int id, const float* transform);
     void commitLayerTransform();
+
+    void setSelectionPolygon(const float* points, int count);
+    void selectColorAt(int x, int y, int tolerance);
+    void clearSelection();
+    void invertSelection();
+    bool hasSelection() const { return selectionActive_; }
+    void copySelectionToLayer(int newId, bool cut);
+
+    void setGradientPreview(bool active, const float* points, const float* color);
+    void commitGradient();
+    // Previews hue, saturation, brightness, shadows, midtones, and highlights on the active layer.
+    void setAdjustment(bool active, const float* values);
+    void commitAdjustment();
     void setPerspective(const float* points, int count);
+    void setFigureGuide(float top, float bottom, float divisions);
     bool takeLayerDirty(int id);
     void readLayer(int id, void* pixels);
     void writeLayer(int id, const void* pixels);
@@ -99,6 +117,12 @@ private:
     void drawScene(const float* matrix, int bufferWidth, int bufferHeight,
                    const std::vector<Stamp>* stamps);
     void drawGuides(const float* matrix);
+    void drawSelectionTint(const float* matrix);
+    void drawGradient(const float* matrix);
+    void uploadSelection();
+    void pushFullHistory(const Layer& layer);
+    void replaceLayerFromShadow(Layer& layer);
+    void drawSmudge(const std::vector<Stamp>& stamps, const float* matrix, GLuint layerFbo);
     void drawPerspective(const float* matrix);
     void appendLine(float x1, float y1, float x2, float y2);
     void fillCanvasRect(const float* matrix, float x, float y, float width, float height);
@@ -137,8 +161,42 @@ private:
     int viewMode_ = 0;
     int guide_ = 0;
     int previewLayer_ = 0;
+    float figureTop_ = 0.0f;
+    float figureBottom_ = 0.0f;
+    float figureDivisions_ = 0.0f;
     float previewTransform_[16] = {};
     GLint canvasClip_ = -1;
+    GLint canvasTint_ = -1;
+    GLuint stampMaskTexture_ = 0;
+    GLint stampUseMask_ = -1;
+    GLint stampUseTip_ = -1;
+    GLuint tipTexture_ = 0;
+    GLuint carryTexture_ = 0;
+    GLuint carryFbo_ = 0;
+    bool carryReady_ = false;
+    GLuint smudgeProgram_ = 0;
+    GLint smudgeMatrix_ = -1;
+    GLuint gradientProgram_ = 0;
+    GLint gradientMatrix_ = -1;
+    GLint gradientSize_ = -1;
+    GLint gradientPoints_ = -1;
+    GLint gradientColor_ = -1;
+    GLint gradientUseMask_ = -1;
+    bool gradientActive_ = false;
+    float gradientPointValues_[4] = {};
+    float gradientColorValues_[3] = {};
+    GLuint adjustProgram_ = 0;
+    GLint adjustMatrix_ = -1;
+    GLint adjustSize_ = -1;
+    GLint adjustValues_ = -1;
+    GLint adjustCurve_ = -1;
+    GLint adjustUseMask_ = -1;
+    bool adjustActive_ = false;
+    float adjustment_[6] = {};
+    bool maskStamps_ = false;
+    bool selectionActive_ = false;
+    bool showSelectionTint_ = true;
+    std::vector<uint8_t> selection_;
     GLint canvasUseClip_ = -1;
     std::vector<float> perspective_;  // x and y of each vanishing point.
 

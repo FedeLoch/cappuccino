@@ -14,16 +14,20 @@ private const val MAX_BEND = 0.04f
 private const val RECENT_STROKES = 10
 
 /** Starting vanishing points in canvas coordinates, as x and y pairs. */
-fun defaultVanishingPoints(count: Int): List<Float> {
-    val horizon = CANVAS_HEIGHT * 0.45f
+fun defaultVanishingPoints(
+    count: Int,
+    width: Int = DEFAULT_CANVAS_WIDTH,
+    height: Int = DEFAULT_CANVAS_HEIGHT,
+): List<Float> {
+    val horizon = height * 0.45f
     return when (count) {
         0 -> emptyList()
-        1 -> listOf(CANVAS_WIDTH * 0.5f, horizon)
-        2 -> listOf(CANVAS_WIDTH * 0.12f, horizon, CANVAS_WIDTH * 0.88f, horizon)
+        1 -> listOf(width * 0.5f, horizon)
+        2 -> listOf(width * 0.12f, horizon, width * 0.88f, horizon)
         else -> listOf(
-            CANVAS_WIDTH * 0.12f, horizon,
-            CANVAS_WIDTH * 0.88f, horizon,
-            CANVAS_WIDTH * 0.5f, CANVAS_HEIGHT * 0.92f,
+            width * 0.12f, horizon,
+            width * 0.88f, horizon,
+            width * 0.5f, height * 0.92f,
         )
     }
 }

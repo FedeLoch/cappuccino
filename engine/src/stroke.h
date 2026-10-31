@@ -26,9 +26,11 @@ struct BrushShape {
     float spacingRatio = 0.08f;  // Distance between stamps, as a share of the stamp size.
     float flow = 1.0f;           // Stamp alpha at full pressure.
     float pressureFlow = 0.0f;   // How much light pressure fades the stamp, from 0 to 1.
+    float pressureGamma = 0.75f; // Curve from pen pressure to size. Lower feels softer.
 };
 
-float pressureToScale(float pressure, float minScale = BrushShape{}.minScale);
+float pressureToScale(float pressure, float minScale = BrushShape{}.minScale,
+                      float gamma = BrushShape{}.pressureGamma);
 
 // Turns stylus samples into evenly spaced brush stamps along a smoothed path.
 // The object is copyable, so predicted samples can run on a throwaway copy.

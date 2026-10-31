@@ -1,4 +1,5 @@
 #include <cassert>
+#include <utility>
 #include <cstdio>
 #include <vector>
 
@@ -32,6 +33,11 @@ int main() {
     assert(bounds.left == 5 && bounds.right == 16);
     assert(!floodFill(image.data(), kSize, kSize, 10, 10, kRed, 16, nullptr));
     assert(!floodFill(image.data(), kSize, kSize, -1, 0, kRed, 16, nullptr));
+    const float triangle[6] = {2, 2, 18, 2, 2, 18};
+    std::vector<uint8_t> mask;
+    rasterizePolygon(triangle, 3, kSize, kSize, mask);
+    assert(mask[5 * kSize + 5] == 255);
+    assert(mask[17 * kSize + 17] == 0);
     std::puts("fill tests passed");
     return 0;
 }

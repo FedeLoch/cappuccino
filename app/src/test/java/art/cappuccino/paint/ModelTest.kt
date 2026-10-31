@@ -16,8 +16,16 @@ class ModelTest {
     }
 
     @Test
+    fun smallerCanvasesAllowMoreLayers() {
+        val memory = 8_000_000_000L
+        assertTrue(layerLimit(2048, 2048, memory) > layerLimit(4096, 2732, memory))
+        assertEquals(8, layerLimit(8192, 8192, 1_000_000_000L))
+    }
+
+    @Test
     fun everyBrushShapeHasAnEraser() {
-        val (erasers, brushes) = BrushKind.entries.filterNot { it.isFill }.partition { it.isEraser }
+        val erasers = BrushKind.entries.filter { it.isEraser }
+        val brushes = BrushKind.PAINT_BRUSHES
         assertEquals(brushes.map { it.label }, erasers.map { it.label })
     }
 }

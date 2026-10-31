@@ -6,7 +6,6 @@
 namespace cappuccino {
 namespace {
 
-constexpr float kPressureGamma = 0.75f;
 constexpr float kMinSpacing = 0.5f;
 constexpr float kTiltStart = 0.5f;
 constexpr float kMaxTiltWiden = 3.0f;
@@ -29,9 +28,9 @@ Sample quadratic(const Sample& a, const Sample& b, const Sample& c, float t) {
 
 }  // namespace
 
-float pressureToScale(float pressure, float minScale) {
+float pressureToScale(float pressure, float minScale, float gamma) {
     const float clamped = std::clamp(pressure, 0.0f, 1.0f);
-    return minScale + (1.0f - minScale) * std::pow(clamped, kPressureGamma);
+    return minScale + (1.0f - minScale) * std::pow(clamped, gamma);
 }
 
 StrokeBuilder::StrokeBuilder(float diameter, const BrushShape& shape)
@@ -39,11 +38,13 @@ StrokeBuilder::StrokeBuilder(float diameter, const BrushShape& shape)
 
 float StrokeBuilder::spacingFor(float pressure) const {
     return std::max(kMinSpacing,
-                    diameter_ * pressureToScale(pressure, shape_.minScale) * shape_.spacingRatio);
+                    diameter_ * pressureToScale(pressure, shape_.minScale, shape_.pressureGamma) *
+                        shape_.spacingRatio);
 }
 
 void StrokeBuilder::place(const Sample& sample, std::vector<Stamp>& out) {
-    const float radius = diameter_ * pressureToScale(sample.pressure, shape_.minScale) * 0.5f;
+    const float radius =
+        diameter_ * pressureToScale(sample.pressure, shape_.minScale, shape_.pressureGamma) * 0.5f;
     const float pressure = std::clamp(sample.pressure, 0.0f, 1.0f);
     const float alpha = shape_.flow * (1.0f - shape_.pressureFlow * (1.0f - pressure));
     const float lean = std::clamp((sample.tilt - kTiltStart) / (1.05f - kTiltStart), 0.0f, 1.0f);

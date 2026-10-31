@@ -200,6 +200,112 @@ class CanvasInteractionTest {
         assertTrue("undo didn't restore the position", hasInk(x, y))
     }
 
+    private val leftHalf = floatArrayOf(
+        0f, 0f,
+        DEFAULT_CANVAS_WIDTH / 2f, 0f,
+        DEFAULT_CANVAS_WIDTH / 2f, DEFAULT_CANVAS_HEIGHT.toFloat(),
+        0f, DEFAULT_CANVAS_HEIGHT.toFloat(),
+    )
+
+    @Test
+    fun selectionKeepsPaintInside() {
+        val y = height / 2f
+        onStudio { it.finishLasso(leftHalf) }
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        assertTrue("paint inside was lost", hasInk(width * 0.3f, y))
+        assertFalse("paint leaked outside", hasInk(width * 0.7f, y))
+    }
+
+    @Test
+    fun cutToLayerMovesPixelsAndUndoRestoresThem() {
+        val y = height / 2f
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        onStudio { it.finishLasso(leftHalf) }
+        onStudio { it.selectionToLayer(cut = true, transform = false) }
+        assertEquals(2, layerCount())
+        assertTrue("cut pixels should show on the new layer", hasInk(width * 0.3f, y))
+        onStudio { it.deleteLayer(it.activeLayer()!!) }
+        assertFalse("pixels were copied, not cut", hasInk(width * 0.3f, y))
+        assertTrue("uncut pixels should stay", hasInk(width * 0.7f, y))
+        tap(2)
+        settle()
+        tap(2)
+        settle()
+        assertEquals(1, layerCount())
+        assertTrue("undo should restore cut pixels", hasInk(width * 0.3f, y))
+    }
+
+    @Test
+    fun gradientPaintsAndCanBeUndone() {
+        val y = height / 2f
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.selectTool(BrushKind.GRADIENT)
+        }
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        settle()
+        assertTrue("gradient start should be dark", hasInk(width * 0.22f, y))
+        assertFalse("gradient end should fade away", hasInk(width * 0.75f, y))
+        tap(2)
+        settle()
+        assertFalse("undo didn't remove the gradient", hasInk(width * 0.22f, y))
+    }
+
+    @Test
+    fun smudgePullsColorAcrossTheCanvas() {
+        val y = height / 2f
+        val x = width / 2f
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        val spot = y + 30f
+        assertFalse("spot should start clean", isTinted(x, spot))
+        onStudio { it.selectTool(BrushKind.SMUDGE) }
+        stroke(x, y - 40f, x, y + 80f)
+        settle()
+        assertTrue("smudge didn't pull color", isTinted(x, spot))
+    }
+
+    @Test
+    fun hiddenGroupHidesItsLayers() {
+        val y = height / 2f
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        onStudio {
+            it.addLayer()
+            it.toggleGroup(it.activeLayer()!!)
+            it.hideActiveGroup()
+        }
+        assertFalse("group didn't hide its layers", hasInk(width / 2f, y))
+        tap(2)
+        settle()
+        assertTrue("undo didn't show the group", hasInk(width / 2f, y))
+    }
+
+    @Test
+    fun adjustmentChangesPixelsAndCanBeUndone() {
+        val y = height / 2f
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        onStudio { it.applyAdjustment(floatArrayOf(0f, 1f, 0.5f, 0f, 0f, 0f)) }
+        assertFalse("brightness didn't change the stroke", hasInk(width / 2f, y))
+        tap(2)
+        settle()
+        assertTrue("undo didn't restore the stroke", hasInk(width / 2f, y))
+    }
+
+    private fun isTinted(x: Float, y: Float): Boolean {
+        val shot = screenshot()
+        for (dx in -4..4) {
+            for (dy in -4..4) {
+                if (Color.red(shot.getPixel(x.toInt() + dx, y.toInt() + dy)) < 235) return true
+            }
+        }
+        return false
+    }
+
     @Test
     fun backupRestoresProjects() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -236,7 +342,7 @@ class CanvasInteractionTest {
     private fun paperTop(): Float {
         val shot = screenshot()
         val x = shot.width / 2
-        return (0 until shot.height).first { Color.red(shot.getPixel(x, it)) > 100 }.toFloat()
+        return (shot.height / 4 until shot.height).first { Color.red(shot.getPixel(x, it)) > 100 }.toFloat()
     }
 
     private fun stroke(startX: Float, startY: Float, endX: Float, endY: Float) {

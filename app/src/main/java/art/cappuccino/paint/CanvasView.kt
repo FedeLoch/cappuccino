@@ -45,9 +45,16 @@ class BrushState(
     val color: Int,
     val opacity: Float,
     val alphaLock: Boolean,
+    val pressureGamma: Float,
 )
 
-class CanvasView(context: Context) : SurfaceView(context) {
+enum class SelectionTool { NONE, LASSO, WAND }
+
+class CanvasView(
+    context: Context,
+    private val canvasWidth: Int,
+    private val canvasHeight: Int,
+) : SurfaceView(context) {
     var brushKind = BrushKind.INK
     var brushDiameter = 24f
     var brushOpacity = 1f
@@ -55,6 +62,8 @@ class CanvasView(context: Context) : SurfaceView(context) {
     var eraserKind = BrushKind.ERASE_INK
     var alphaLock = false
     var stabilizerStrength = 0f
+    var pressureGamma = 0.75f
+    var selectionTool = SelectionTool.NONE
     var transformMode = false
         private set
     var acceptsInput = false
@@ -66,6 +75,13 @@ class CanvasView(context: Context) : SurfaceView(context) {
     var onToggleInterface: () -> Unit = {}
     var onViewChanged: () -> Unit = {}
     var onFillTap: (Int, Int) -> Unit = { _, _ -> }
+    var onWandTap: (Int, Int) -> Unit = { _, _ -> }
+    var onLassoMove: (Float, Float) -> Unit = { _, _ -> }
+    var onLassoDone: (FloatArray) -> Unit = {}
+    var onGradientMove: (FloatArray) -> Unit = {}
+    var onGradientDone: () -> Unit = {}
+    var onPickMove: (Int, Float, Float) -> Unit = { _, _, _ -> }
+    var onPickEnd: () -> Unit = {}
     var onStrokeCommitted: () -> Unit = {}
     var onUndoGesture: () -> Unit = {}
     var onRedoGesture: () -> Unit = {}
@@ -96,6 +112,10 @@ class CanvasView(context: Context) : SurfaceView(context) {
     private var strokeKind = BrushKind.INK
     private var strokePath = FloatArray(1024)
     private var strokePathSize = 0
+    private var toolGesture = false
+    private var gestureStartX = 0f
+    private var gestureStartY = 0f
+    private var picking = false
     private val stabilizer = LineStabilizer()
     private val layerMatrix = Matrix()
     private var transformLayer = 0
@@ -116,12 +136,12 @@ class CanvasView(context: Context) : SurfaceView(context) {
         private val projection = FloatArray(16)
 
         fun drainActions() {
-            if (engine == 0L) engine = NativeEngine.create(CANVAS_WIDTH, CANVAS_HEIGHT)
+            if (engine == 0L) engine = NativeEngine.create(canvasWidth, canvasHeight)
             while (true) (pendingActions.poll() ?: break).invoke(engine)
         }
 
         private fun prepare(bufferInfo: BufferInfo, transform: FloatArray) {
-            if (engine == 0L) engine = NativeEngine.create(CANVAS_WIDTH, CANVAS_HEIGHT)
+            if (engine == 0L) engine = NativeEngine.create(canvasWidth, canvasHeight)
             GlMatrix.orthoM(
                 ortho, 0,
                 0f, bufferInfo.width.toFloat(),
@@ -155,6 +175,7 @@ class CanvasView(context: Context) : SurfaceView(context) {
                     Color.blue(brush.color) / 255f,
                     kind.stampFlow(brush.opacity), kind.minScale, kind.spacing,
                     kind.pressureFlow, kind.hardness, kind.grain, kind.isEraser, brush.alphaLock,
+                    kind.mode == BrushMode.SMUDGE, brush.pressureGamma, kind.tip,
                 )
             }
             NativeEngine.drawFront(
@@ -248,11 +269,11 @@ class CanvasView(context: Context) : SurfaceView(context) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
         if (width == 0 || height == 0) return
         if (!fitted) {
-            val scale = min(width / CANVAS_WIDTH.toFloat(), height / CANVAS_HEIGHT.toFloat()) * 0.95f
+            val scale = min(width / canvasWidth.toFloat(), height / canvasHeight.toFloat()) * 0.95f
             viewMatrix.setScale(scale, scale)
             viewMatrix.postTranslate(
-                (width - CANVAS_WIDTH * scale) / 2f,
-                (height - CANVAS_HEIGHT * scale) / 2f,
+                (width - canvasWidth * scale) / 2f,
+                (height - canvasHeight * scale) / 2f,
             )
             fitted = true
         }
@@ -347,6 +368,7 @@ class CanvasView(context: Context) : SurfaceView(context) {
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (transformMode) return onTransformEvent(event)
+        if (toolGesture) return onToolGesture(event)
         val index = event.actionIndex
         val startsStroke = acceptsInput &&
             event.actionMasked == MotionEvent.ACTION_DOWN && isPen(event, index)
@@ -365,12 +387,25 @@ class CanvasView(context: Context) : SurfaceView(context) {
     }
 
     private fun onPenEvent(event: MotionEvent): Boolean {
-        if (event.actionMasked == MotionEvent.ACTION_DOWN && brushKind.isFill &&
+        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
             event.getToolType(0) != MotionEvent.TOOL_TYPE_ERASER
         ) {
             val spot = screenToCanvas(event.x, event.y)
-            onFillTap(spot[0].toInt(), spot[1].toInt())
-            return true
+            if (selectionTool == SelectionTool.WAND) {
+                onWandTap(spot[0].toInt(), spot[1].toInt())
+                return true
+            }
+            if (selectionTool == SelectionTool.LASSO || brushKind.mode == BrushMode.GRADIENT) {
+                toolGesture = true
+                strokePathSize = 0
+                gestureStartX = spot[0]
+                gestureStartY = spot[1]
+                return onToolGesture(event)
+            }
+            if (brushKind.mode == BrushMode.FILL) {
+                onFillTap(spot[0].toInt(), spot[1].toInt())
+                return true
+            }
         }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -402,6 +437,26 @@ class CanvasView(context: Context) : SurfaceView(context) {
         return true
     }
 
+    private fun onToolGesture(event: MotionEvent): Boolean {
+        val spot = screenToCanvas(event.x, event.y)
+        val lasso = selectionTool == SelectionTool.LASSO
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                if (lasso) {
+                    rememberPath(floatArrayOf(spot[0], spot[1], 0f, 0f, 0f))
+                    onLassoMove(event.x, event.y)
+                } else {
+                    onGradientMove(floatArrayOf(gestureStartX, gestureStartY, spot[0], spot[1]))
+                }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                toolGesture = false
+                if (lasso) onLassoDone(strokePath.copyOf(strokePathSize)) else onGradientDone()
+            }
+        }
+        return true
+    }
+
     private fun finishStroke(event: MotionEvent) {
         predictor.record(event)
         sendStroke(event, begin = false, end = true)
@@ -419,7 +474,7 @@ class CanvasView(context: Context) : SurfaceView(context) {
         val op = RenderOp.Stroke(
             begin = begin,
             end = end,
-            brush = BrushState(strokeKind, brushDiameter, brushColor, brushOpacity, alphaLock),
+            brush = BrushState(strokeKind, brushDiameter, brushColor, brushOpacity, alphaLock, pressureGamma),
             view = viewValues(),
             samples = samples,
             predicted = predicted?.let { readSamples(it, stabilize = false) } ?: FloatArray(0),
@@ -495,17 +550,23 @@ class CanvasView(context: Context) : SurfaceView(context) {
                 captureGesture(event, skip = -1)
             }
             MotionEvent.ACTION_MOVE -> {
-                if (event.pointerCount >= 2) {
+                if (picking) {
+                    pickAt(event.x, event.y)
+                } else if (event.pointerCount >= 2) {
                     applyGesture(event)
                 } else if (hypot(event.x - pressX, event.y - pressY) > tapTravel) {
                     removeCallbacks(pickAtPress)
                 }
             }
-            MotionEvent.ACTION_CANCEL -> removeCallbacks(pickAtPress)
+            MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(pickAtPress)
+                endPick()
+            }
             MotionEvent.ACTION_POINTER_UP ->
                 if (event.pointerCount >= 3) captureGesture(event, skip = event.actionIndex)
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(pickAtPress)
+                endPick()
                 val isTap = travel < tapTravel && event.eventTime - gestureStart < TAP_TIMEOUT_MS
                 if (isTap && maxFingers == 2) onUndoGesture()
                 if (isTap && maxFingers == 3) onRedoGesture()
@@ -515,19 +576,26 @@ class CanvasView(context: Context) : SurfaceView(context) {
         return true
     }
 
-    private val pickAtPress = Runnable {
-        point[0] = pressX
-        point[1] = pressY
-        viewMatrix.invert(inverseMatrix)
-        inverseMatrix.mapPoints(point)
-        val x = point[0].toInt()
-        val y = point[1].toInt()
-        if (x in 0 until CANVAS_WIDTH && y in 0 until CANVAS_HEIGHT) {
-            act { engine ->
-                val color = NativeEngine.pickColor(engine, x, y)
-                post { onColorPicked(color or 0xFF000000.toInt()) }
-            }
+    private fun pickAt(screenX: Float, screenY: Float) {
+        val spot = screenToCanvas(screenX, screenY)
+        val x = spot[0].toInt()
+        val y = spot[1].toInt()
+        if (x !in 0 until canvasWidth || y !in 0 until canvasHeight) return
+        act { engine ->
+            val color = NativeEngine.pickColor(engine, x, y) or 0xFF000000.toInt()
+            post { onPickMove(color, screenX, screenY) }
         }
+    }
+
+    private val pickAtPress = Runnable {
+        picking = true
+        pickAt(pressX, pressY)
+    }
+
+    private fun endPick() {
+        if (!picking) return
+        picking = false
+        onPickEnd()
     }
 
     private fun gesturePointers(event: MotionEvent, skip: Int): Pair<Int, Int> {

@@ -30,7 +30,15 @@ class ArtworkDocument(
     val layers: MutableList<LayerInfo>,
     var perspective: List<Float> = emptyList(),
     var references: List<ReferenceState> = emptyList(),
-)
+    val width: Int = DEFAULT_CANVAS_WIDTH,
+    val height: Int = DEFAULT_CANVAS_HEIGHT,
+    val groups: MutableList<LayerGroup> = mutableListOf(),
+    var nextGroupId: Int = 1,
+    var light: Light = Light.OFF,
+    var figure: List<Float> = emptyList(),
+) {
+    val thumbnailHeight get() = ArtworkStore.thumbnailHeight(width, height)
+}
 
 class ArtworkSnapshot(
     val layers: List<LayerInfo>,
@@ -38,6 +46,8 @@ class ArtworkSnapshot(
     val nextLayerId: Int,
     val pixels: Map<Int, ByteBuffer>,
     val thumbnail: ByteBuffer,
+    val groups: List<LayerGroup> = emptyList(),
+    val nextGroupId: Int = 1,
 )
 
 /**
@@ -98,24 +108,113 @@ class ArtworkStore(context: Context) {
         val array = JSONArray(file.readText())
         return (0 until array.length()).map {
             val item = array.getJSONObject(it)
-            Project(item.getString("id"), item.getString("name"))
+            Project(item.getString("id"), item.getString("name"), item.optInt("color"))
         }
     }
 
     private fun writeProjects(projects: List<Project>) {
         val array = JSONArray()
-        projects.forEach { array.put(JSONObject().put("id", it.id).put("name", it.name)) }
+        projects.forEach {
+            array.put(JSONObject().put("id", it.id).put("name", it.name).put("color", it.color))
+        }
         writeAtomically(projectsFile, array.toString().toByteArray())
     }
 
     fun createProject(name: String): Project {
-        val project = Project(UUID.randomUUID().toString(), name)
-        writeProjects(projects() + project)
+        val existing = projects()
+        val project = Project(UUID.randomUUID().toString(), name, existing.size % SKETCHBOOK_COLORS.size)
+        writeProjects(existing + project)
         return project
     }
 
     fun renameProject(id: String, name: String) {
-        writeProjects(projects().map { if (it.id == id) Project(id, name) else it })
+        writeProjects(projects().map { if (it.id == id) it.copy(name = name) else it })
+    }
+
+    fun recolorProject(id: String) {
+        writeProjects(
+            projects().map {
+                if (it.id == id) it.copy(color = (it.color + 1) % SKETCHBOOK_COLORS.size) else it
+            },
+        )
+    }
+
+    private val brushesFile = File(root, "brushes.json")
+
+    fun customBrushes(): List<BrushKind> {
+        if (!brushesFile.exists()) return emptyList()
+        val array = JSONArray(brushesFile.readText())
+        return (0 until array.length()).map { index ->
+            val item = array.getJSONObject(index)
+            val id = item.getString("id")
+            BrushKind(
+                id,
+                item.getString("label"),
+                item.getDouble("minScale").toFloat(),
+                item.getDouble("spacing").toFloat(),
+                item.getDouble("flow").toFloat(),
+                item.getDouble("pressureFlow").toFloat(),
+                item.getDouble("hardness").toFloat(),
+                item.getDouble("grain").toFloat(),
+                item.getDouble("size").toFloat(),
+                tip = File(root, "brush-$id.tip").takeIf { it.exists() }?.readBytes(),
+                custom = true,
+            )
+        }
+    }
+
+    fun saveBrush(brush: BrushKind) {
+        val all = customBrushes().filter { it.id != brush.id } + brush
+        val array = JSONArray()
+        all.forEach {
+            array.put(
+                JSONObject()
+                    .put("id", it.id)
+                    .put("label", it.label)
+                    .put("minScale", it.minScale.toDouble())
+                    .put("spacing", it.spacing.toDouble())
+                    .put("flow", it.flow.toDouble())
+                    .put("pressureFlow", it.pressureFlow.toDouble())
+                    .put("hardness", it.hardness.toDouble())
+                    .put("grain", it.grain.toDouble())
+                    .put("size", it.defaultSize.toDouble()),
+            )
+        }
+        writeAtomically(brushesFile, array.toString().toByteArray())
+        brush.tip?.let { File(root, "brush-${brush.id}.tip").writeBytes(it) }
+    }
+
+    fun deleteBrush(id: String) {
+        val remaining = customBrushes().filter { it.id != id }
+        brushesFile.delete()
+        File(root, "brush-$id.tip").delete()
+        remaining.forEach(::saveBrush)
+    }
+
+    private fun timelapseDir(id: String) = File(artworkDir(id), "timelapse")
+
+    fun addTimelapseFrame(id: String, frame: ByteBuffer, height: Int) {
+        val dir = timelapseDir(id).apply { mkdirs() }
+        val bitmap = Bitmap.createBitmap(THUMBNAIL_WIDTH, height, Bitmap.Config.ARGB_8888)
+        frame.rewind()
+        bitmap.copyPixelsFromBuffer(frame)
+        val index = dir.list().orEmpty().size
+        File(dir, "%06d.jpg".format(index)).outputStream().use {
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it)
+        }
+        bitmap.recycle()
+    }
+
+    fun timelapseFrames(id: String): List<File> =
+        timelapseDir(id).listFiles().orEmpty().sortedBy { it.name }
+
+    fun exportTimelapseTarget(name: String): android.net.Uri? {
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, "$name time-lapse.mp4")
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Cappuccino")
+        }
+        return resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
     }
 
     /** Removes the project and its references. Its artworks become unsorted. */
@@ -184,6 +283,7 @@ class ArtworkStore(context: Context) {
                 item.optBoolean("alphaLock"),
                 item.optString("file").ifEmpty { null },
                 item.optBoolean("clip"),
+                item.optInt("group"),
             )
         }.toMutableList()
         return ArtworkDocument(
@@ -198,6 +298,25 @@ class ArtworkStore(context: Context) {
             }.orEmpty(),
             manifest.optJSONArray("references")?.let { items ->
                 (0 until items.length()).map { parseReference(items.getJSONObject(it)) }
+            }.orEmpty(),
+            manifest.optInt("width", DEFAULT_CANVAS_WIDTH),
+            manifest.optInt("height", DEFAULT_CANVAS_HEIGHT),
+            manifest.optJSONArray("groups")?.let { items ->
+                (0 until items.length()).map {
+                    val item = items.getJSONObject(it)
+                    LayerGroup(
+                        item.getInt("id"),
+                        item.getString("name"),
+                        item.getBoolean("visible"),
+                        item.getDouble("opacity").toFloat(),
+                        item.getBoolean("collapsed"),
+                    )
+                }
+            }.orEmpty().toMutableList(),
+            manifest.optInt("nextGroupId", 1),
+            Light.valueOf(manifest.optString("light", Light.OFF.name)),
+            manifest.optJSONArray("figure")?.let { points ->
+                (0 until points.length()).map { points.getDouble(it).toFloat() }
             }.orEmpty(),
         )
     }
@@ -229,8 +348,8 @@ class ArtworkStore(context: Context) {
         .put("opacity", state.opacity.toDouble())
         .put("pinned", state.pinned)
 
-    fun readLayer(artworkId: String, file: String): ByteBuffer {
-        val buffer = layerBuffer()
+    fun readLayer(artworkId: String, file: String, width: Int, height: Int): ByteBuffer {
+        val buffer = pixelBuffer(width, height)
         InflaterInputStream(File(artworkDir(artworkId), file).inputStream()).use { input ->
             val chunk = ByteArray(1 shl 16)
             while (buffer.hasRemaining()) {
@@ -261,17 +380,33 @@ class ArtworkStore(context: Context) {
                     .put("blend", layer.blend)
                     .put("alphaLock", layer.alphaLock)
                     .put("clip", layer.clip)
+                    .put("group", layer.groupId)
                     .put("file", layer.file ?: ""),
             )
         }
-        writeThumbnail(thumbnail(document.id), snapshot.thumbnail)
+        writeThumbnail(thumbnail(document.id), snapshot.thumbnail, document.thumbnailHeight)
+        val groups = JSONArray()
+        snapshot.groups.forEach {
+            groups.put(
+                JSONObject()
+                    .put("id", it.id)
+                    .put("name", it.name)
+                    .put("visible", it.visible)
+                    .put("opacity", it.opacity.toDouble())
+                    .put("collapsed", it.collapsed),
+            )
+        }
 
         val manifest = JSONObject()
             .put("version", 1)
             .put("name", document.name)
             .put("project", document.projectId)
-            .put("width", CANVAS_WIDTH)
-            .put("height", CANVAS_HEIGHT)
+            .put("width", document.width)
+            .put("height", document.height)
+            .put("groups", groups)
+            .put("nextGroupId", snapshot.nextGroupId)
+            .put("light", document.light.name)
+            .put("figure", JSONArray(document.figure.map { it.toDouble() }))
             .put("activeLayer", snapshot.activeLayer)
             .put("nextLayerId", snapshot.nextLayerId)
             .put("updated", generation)
@@ -315,8 +450,8 @@ class ArtworkStore(context: Context) {
         temporary.renameTo(file)
     }
 
-    private fun writeThumbnail(file: File, pixels: ByteBuffer) {
-        val bitmap = Bitmap.createBitmap(THUMBNAIL_WIDTH, THUMBNAIL_HEIGHT, Bitmap.Config.ARGB_8888)
+    private fun writeThumbnail(file: File, pixels: ByteBuffer, height: Int) {
+        val bitmap = Bitmap.createBitmap(THUMBNAIL_WIDTH, height, Bitmap.Config.ARGB_8888)
         pixels.rewind()
         bitmap.copyPixelsFromBuffer(pixels)
         val temporary = File(file.path + ".tmp")
@@ -347,7 +482,40 @@ class ArtworkStore(context: Context) {
         return target
     }
 
-    fun exportPsd(name: String, layers: List<PsdLayer>, merged: ByteArray): Boolean {
+    /** Creates a new artwork from a PSD file and returns its id. */
+    fun importPsd(image: PsdImage, name: String, projectId: String): String {
+        val id = UUID.randomUUID().toString()
+        val infos = image.layers.mapIndexed { index, layer ->
+            LayerInfo(index + 1, layer.name, layer.opacity, layer.visible, layer.blend, clip = layer.clipped)
+        }
+        val document = ArtworkDocument(
+            id, name, projectId, infos.last().id, infos.size + 1, infos.toMutableList(),
+            width = image.width, height = image.height,
+        )
+        val pixels = image.layers.mapIndexed { index, layer ->
+            index + 1 to ByteBuffer.wrap(layer.rgba)
+        }.toMap()
+        val thumbnailHeight = document.thumbnailHeight
+        val thumbnail = Bitmap.createBitmap(THUMBNAIL_WIDTH, thumbnailHeight, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(thumbnail)
+        canvas.drawColor(android.graphics.Color.WHITE)
+        val target = android.graphics.RectF(0f, 0f, THUMBNAIL_WIDTH.toFloat(), thumbnailHeight.toFloat())
+        val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+        image.layers.filter { it.visible }.forEach { layer ->
+            val bitmap = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+            bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(layer.rgba))
+            paint.alpha = (layer.opacity * 255).toInt()
+            canvas.drawBitmap(bitmap, null, target, paint)
+            bitmap.recycle()
+        }
+        val buffer = pixelBuffer(THUMBNAIL_WIDTH, thumbnailHeight)
+        thumbnail.copyPixelsToBuffer(buffer)
+        thumbnail.recycle()
+        save(document, ArtworkSnapshot(infos, document.activeLayer, document.nextLayerId, pixels, buffer))
+        return id
+    }
+
+    fun exportPsd(name: String, width: Int, height: Int, layers: List<PsdLayer>, merged: ByteArray): Boolean {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, "$name.psd")
             put(MediaStore.Downloads.MIME_TYPE, "image/vnd.adobe.photoshop")
@@ -355,14 +523,14 @@ class ArtworkStore(context: Context) {
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
         val output = resolver.openOutputStream(uri) ?: return false
-        output.use { PsdWriter(CANVAS_WIDTH, CANVAS_HEIGHT).write(it, layers, merged) }
+        output.use { PsdWriter(width, height).write(it, layers, merged) }
         return true
     }
 
     /** Packs all artworks, references, projects, and palettes into one zip file. */
     fun backup(output: OutputStream) {
         ZipOutputStream(output.buffered()).use { zip ->
-            listOf(artworks, references, projectsFile, palettesFile).forEach { item ->
+            listOf(artworks, references, projectsFile, palettesFile, brushesFile).forEach { item ->
                 item.walkTopDown().filter { it.isFile && !it.name.endsWith(".tmp") }.forEach { file ->
                     zip.putNextEntry(ZipEntry(file.relativeTo(root).path))
                     file.inputStream().use { it.copyTo(zip) }
@@ -406,8 +574,8 @@ class ArtworkStore(context: Context) {
         incoming.deleteRecursively()
     }
 
-    fun exportPng(name: String, pixels: ByteBuffer): Boolean {
-        val bitmap = Bitmap.createBitmap(CANVAS_WIDTH, CANVAS_HEIGHT, Bitmap.Config.ARGB_8888)
+    fun exportPng(name: String, width: Int, height: Int, pixels: ByteBuffer): Boolean {
+        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         pixels.rewind()
         bitmap.copyPixelsFromBuffer(pixels)
         val values = ContentValues().apply {
@@ -427,12 +595,11 @@ class ArtworkStore(context: Context) {
 
     companion object {
         const val THUMBNAIL_WIDTH = 480
-        const val THUMBNAIL_HEIGHT = 320
         private const val MANIFEST = "manifest.json"
         private const val PREVIOUS_MANIFEST = "manifest.prev.json"
         private const val THUMBNAIL = "thumbnail.png"
 
-        fun layerBuffer(): ByteBuffer = pixelBuffer(CANVAS_WIDTH, CANVAS_HEIGHT)
+        fun thumbnailHeight(width: Int, height: Int) = maxOf(1, THUMBNAIL_WIDTH * height / width)
 
         fun pixelBuffer(width: Int, height: Int): ByteBuffer =
             ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())

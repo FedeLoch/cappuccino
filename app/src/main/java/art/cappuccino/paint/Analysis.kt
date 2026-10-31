@@ -1,6 +1,7 @@
 package art.cappuccino.paint
 
 import kotlin.math.abs
+import kotlin.math.atan2
 import kotlin.math.max
 import kotlin.math.min
 
@@ -18,7 +19,7 @@ private const val PAPER_DISTANCE = 18
 private const val HUE_BINS = 12
 
 /** Reads a small flattened copy of the artwork on white paper, without any network or AI model. */
-fun analyzeArtwork(pixels: IntArray, width: Int, height: Int): AnalysisReport {
+fun analyzeArtwork(pixels: IntArray, width: Int, height: Int, lightDegrees: Int? = null): AnalysisReport {
     val values = IntArray(pixels.size)
     val silhouette = IntArray(pixels.size)
     val hues = FloatArray(HUE_BINS)
@@ -29,6 +30,9 @@ fun analyzeArtwork(pixels: IntArray, width: Int, height: Int): AnalysisReport {
     var weightTotal = 0f
     var weightX = 0f
     var weightY = 0f
+    var lightTotal = 0f
+    var lightX = 0f
+    var lightY = 0f
     var left = width
     var top = height
     var right = -1
@@ -58,6 +62,9 @@ fun analyzeArtwork(pixels: IntArray, width: Int, height: Int): AnalysisReport {
             weightTotal += weight
             weightX += x * weight
             weightY += y * weight
+            lightTotal += luminance
+            lightX += x * luminance
+            lightY += y * luminance
 
             val high = max(max(red, green), blue)
             val low = min(min(red, green), blue)
@@ -73,13 +80,42 @@ fun analyzeArtwork(pixels: IntArray, width: Int, height: Int): AnalysisReport {
     if (markCount < pixels.size * 0.015f) {
         return AnalysisReport(emptyList(), width, height, values, silhouette)
     }
-    val tips = listOf(
+    val coverage = markCount / pixels.size.toFloat()
+    val lightDirection = Math.toDegrees(
+        atan2(
+            (lightY / max(lightTotal, 1f) - weightY / weightTotal).toDouble(),
+            (lightX / max(lightTotal, 1f) - weightX / weightTotal).toDouble(),
+        ),
+    ).toFloat()
+    val tips = listOfNotNull(
+        stageTip(coverage, coloredWeight, markCount),
+        lightDegrees?.let { lightTip(it, lightDirection, lightTotal) },
         paletteTip(hues, coloredWeight, saturationTotal, markCount),
         valueTip(luminances),
         compositionTip(weightX / weightTotal / width, weightY / weightTotal / height),
         silhouetteTip(markCount, left, top, right, bottom),
     )
     return AnalysisReport(tips, width, height, values, silhouette)
+}
+
+private fun stageTip(coverage: Float, colored: Float, marks: Int): Tip? = when {
+    coverage < 0.12f && colored < marks * 0.1f ->
+        Tip("Next step", "This looks like an early sketch. Block in the biggest shapes before adding detail.")
+    coverage < 0.4f && colored < marks * 0.1f ->
+        Tip("Next step", "The drawing has a clear structure. A simple light and dark pass could give it form next.")
+    else -> null
+}
+
+/** Compares where the lighter marks gather with the light direction the artist chose. */
+private fun lightTip(chosen: Int, measured: Float, light: Float): Tip? {
+    if (light <= 0f) return null
+    val gap = abs(((measured - chosen + 540f) % 360f) - 180f)
+    val text = if (gap < 70f) {
+        "Your lighter areas follow the chosen light direction."
+    } else {
+        "Your lighter areas gather away from the chosen light. Check which side your shadows fall on."
+    }
+    return Tip("Light", text)
 }
 
 private fun hueBin(red: Int, green: Int, blue: Int, high: Int, low: Int): Int {

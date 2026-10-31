@@ -16,14 +16,12 @@ int distance(const uint8_t* a, const uint8_t* b) {
 
 }  // namespace
 
-bool floodFill(uint8_t* pixels, int width, int height, int x, int y, const uint8_t color[4],
-               int tolerance, FillBounds* bounds) {
+bool floodMask(const uint8_t* pixels, int width, int height, int x, int y, int tolerance,
+               std::vector<uint8_t>& mask, FillBounds* bounds) {
     if (x < 0 || y < 0 || x >= width || y >= height) return false;
     uint8_t seed[4];
     std::memcpy(seed, pixels + (static_cast<size_t>(y) * width + x) * 4, 4);
-    if (distance(seed, color) == 0) return false;
-
-    std::vector<uint8_t> mask(static_cast<size_t>(width) * height, 0);
+    mask.assign(static_cast<size_t>(width) * height, 0);
     const auto matches = [&](int px, int py) {
         const size_t index = static_cast<size_t>(py) * width + px;
         return mask[index] == 0 && distance(pixels + index * 4, seed) <= tolerance;
@@ -54,6 +52,45 @@ bool floodFill(uint8_t* pixels, int width, int height, int x, int y, const uint8
             }
         }
     }
+    if (bounds) *bounds = box;
+    return true;
+}
+
+void rasterizePolygon(const float* points, int count, int width, int height,
+                      std::vector<uint8_t>& mask) {
+    mask.assign(static_cast<size_t>(width) * height, 0);
+    std::vector<float> crossings;
+    for (int row = 0; row < height; ++row) {
+        const float y = row + 0.5f;
+        crossings.clear();
+        for (int i = 0; i < count; ++i) {
+            const int next = (i + 1) % count;
+            const float y1 = points[i * 2 + 1];
+            const float y2 = points[next * 2 + 1];
+            if ((y1 <= y) == (y2 <= y)) continue;
+            const float x1 = points[i * 2];
+            const float x2 = points[next * 2];
+            crossings.push_back(x1 + (y - y1) / (y2 - y1) * (x2 - x1));
+        }
+        std::sort(crossings.begin(), crossings.end());
+        for (size_t i = 0; i + 1 < crossings.size(); i += 2) {
+            const int left = std::clamp(static_cast<int>(crossings[i] + 0.5f), 0, width);
+            const int right = std::clamp(static_cast<int>(crossings[i + 1] + 0.5f), 0, width);
+            if (right > left) {
+                std::memset(mask.data() + static_cast<size_t>(row) * width + left, 255,
+                            right - left);
+            }
+        }
+    }
+}
+
+bool floodFill(uint8_t* pixels, int width, int height, int x, int y, const uint8_t color[4],
+               int tolerance, FillBounds* bounds) {
+    if (x < 0 || y < 0 || x >= width || y >= height) return false;
+    if (distance(pixels + (static_cast<size_t>(y) * width + x) * 4, color) == 0) return false;
+    std::vector<uint8_t> mask;
+    FillBounds box;
+    floodMask(pixels, width, height, x, y, tolerance, mask, &box);
 
     box.left = std::max(0, box.left - 1);
     box.top = std::max(0, box.top - 1);

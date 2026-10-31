@@ -37,9 +37,19 @@ object NativeEngine {
     )
     external fun setViewOptions(handle: Long, mode: Int, guide: Int)
     external fun setPerspective(handle: Long, points: FloatArray)
+    external fun setFigureGuide(handle: Long, top: Float, bottom: Float, divisions: Float)
     external fun fillAt(handle: Long, x: Int, y: Int, red: Float, green: Float, blue: Float): Boolean
     external fun setLayerTransform(handle: Long, id: Int, transform: FloatArray)
     external fun commitLayerTransform(handle: Long)
+    external fun setSelectionPolygon(handle: Long, points: FloatArray)
+    external fun selectColorAt(handle: Long, x: Int, y: Int, tolerance: Int)
+    external fun clearSelection(handle: Long)
+    external fun invertSelection(handle: Long)
+    external fun copySelectionToLayer(handle: Long, newId: Int, cut: Boolean)
+    external fun setGradientPreview(handle: Long, active: Boolean, points: FloatArray, color: FloatArray)
+    external fun commitGradient(handle: Long)
+    external fun setAdjustment(handle: Long, active: Boolean, values: FloatArray)
+    external fun commitAdjustment(handle: Long)
     external fun takeLayerDirty(handle: Long, id: Int): Boolean
     external fun readLayer(handle: Long, id: Int, pixels: ByteBuffer)
     external fun writeLayer(handle: Long, id: Int, pixels: ByteBuffer)
@@ -59,6 +69,9 @@ object NativeEngine {
         grain: Float,
         eraser: Boolean,
         alphaLock: Boolean,
+        smudge: Boolean,
+        pressureGamma: Float,
+        tip: ByteArray?,
     )
     external fun drawFront(
         handle: Long,

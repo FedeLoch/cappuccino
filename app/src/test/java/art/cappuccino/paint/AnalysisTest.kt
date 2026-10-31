@@ -16,6 +16,25 @@ class AnalysisTest {
         report.tips.first { it.topic == topic }.text
 
     @Test
+    fun lightGuideFollowsWhereLighterMarksGather() {
+        val pixels = image { x, _ ->
+            when {
+                x < 30 -> 0xFFC8C8C8.toInt()
+                x > 70 -> 0xFF202020.toInt()
+                else -> null
+            }
+        }
+        assertTrue(tip(analyzeArtwork(pixels, SIZE, SIZE, 180), "Light").contains("follow"))
+        assertTrue(tip(analyzeArtwork(pixels, SIZE, SIZE, 0), "Light").contains("away"))
+    }
+
+    @Test
+    fun lightSketchGetsANextStep() {
+        val report = analyzeArtwork(image { x, _ -> if (x < 8) 0xFF303030.toInt() else null }, SIZE, SIZE)
+        assertTrue(tip(report, "Next step").contains("early sketch"))
+    }
+
+    @Test
     fun blankPaperGivesNoTips() {
         assertTrue(analyzeArtwork(image { _, _ -> null }, SIZE, SIZE).tips.isEmpty())
     }

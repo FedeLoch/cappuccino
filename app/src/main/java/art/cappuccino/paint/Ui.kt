@@ -21,6 +21,19 @@ const val SURFACE_RAISED = 0xFF444441.toInt()
 const val TEXT_COLOR = 0xFFF1EFE8.toInt()
 const val MUTED_TEXT = 0xFFB4B2A9.toInt()
 const val ACCENT = 0xFFD85A30.toInt()
+const val ESPRESSO = 0xFF2A1D16.toInt()
+const val ROAST = 0xFF3A291F.toInt()
+const val FOAM = 0xFFF4E9D8.toInt()
+const val LATTE = 0xFFD8C4AC.toInt()
+
+val SKETCHBOOK_COLORS = listOf(
+    0xFFD85A30.toInt() to 0xFF993C1D.toInt(),
+    0xFF1D9E75.toInt() to 0xFF0F6E56.toInt(),
+    0xFF534AB7.toInt() to 0xFF3C3489.toInt(),
+    0xFFBA7517.toInt() to 0xFF854F0B.toInt(),
+    0xFFD4537E.toInt() to 0xFF993556.toInt(),
+    0xFF378ADD.toInt() to 0xFF185FA5.toInt(),
+)
 
 fun Context.dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
@@ -68,7 +81,7 @@ class BrushPreview(
     private val color: Int,
 ) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
-    private val random = Random(kind.ordinal.toLong())
+    private val random = Random(kind.id.hashCode().toLong())
 
     init {
         setLayerType(LAYER_TYPE_SOFTWARE, null)
@@ -76,7 +89,7 @@ class BrushPreview(
     }
 
     override fun onDraw(canvas: Canvas) {
-        random.setSeed(kind.ordinal.toLong())
+        random.setSeed(kind.id.hashCode().toLong())
         val maxRadius = height * 0.22f
         val softness = (1f - kind.hardness) * maxRadius
         paint.maskFilter = if (softness > 0.5f) BlurMaskFilter(softness, BlurMaskFilter.Blur.NORMAL) else null

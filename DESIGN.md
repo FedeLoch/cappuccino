@@ -67,7 +67,8 @@ Gestures:
 A small, original mascot lives on the canvas screen. It is the app's signature and
 the one allowed exception to the main-screen control rule.
 
-The app has four mascots, and the artist picks one in the companion panel. Only one
+The app has four mascots, and the artist picks one in the companion panel. Light direction,
+figure height, and sketch-stage notes join the color, value, composition, and silhouette tips. Only one
 appears at a time, and both share the same behavior and advice.
 
 - Paint drop: a warm drop that takes on the current brush color.
@@ -178,8 +179,18 @@ history ends when the artwork closes. Selecting a layer is not an undo step.
 - Backup packs artworks, references, projects, and palettes into one zip file. Restore adds
   to the current library and keeps existing files.
 
-Next: selection, smudge, gradients, layer groups, PSD import, custom canvas sizes, custom
-brushes, and a stroke recovery journal.
+- Selection uses a lasso or magic wand. Painting, fill, smudge, and gradients stay inside it,
+  and it can be copied, cut, or transformed as a new layer.
+- Fill reads the visible artwork, so it stops at line art on other layers.
+- Layer groups can collapse, hide together, and share visibility. They flatten in PSD export.
+- Adjustments cover hue, saturation, brightness, shadows, midtones, and highlights.
+- Custom brushes save shape settings and an optional imported grayscale tip.
+- Canvases can be any size from 64 to 8192 pixels per side.
+- PSD import reads 8-bit RGB files and flattens group folders into their layers.
+- A time-lapse frame is saved with each autosave at low resolution.
+
+Layer limits now depend on canvas size and device memory. Layers are still full textures, so
+tile storage remains future work, along with a stroke recovery journal.
 
 ## Projects and references
 
@@ -194,7 +205,7 @@ brushes, and a stroke recovery journal.
 
 ## Current storage limits
 
-Layers are full 4096 x 2732 textures, capped at 12 per artwork, until tiles replace them.
+Layers are full textures, limited by canvas size and device memory, until tiles replace them.
 Autosave runs after each pause of 2.5 seconds and when the app leaves the screen, so a crash
 can lose strokes since the last save. The recovery journal is still planned.
 

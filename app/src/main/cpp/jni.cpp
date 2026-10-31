@@ -135,6 +135,60 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_commitLayerTransfo
     renderer(handle)->commitLayerTransform();
 }
 
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setSelectionPolygon(
+    JNIEnv* env, jobject, jlong handle, jfloatArray points) {
+    const FloatArray values(env, points);
+    renderer(handle)->setSelectionPolygon(values.get(), values.size() / 2);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_selectColorAt(
+    JNIEnv*, jobject, jlong handle, jint x, jint y, jint tolerance) {
+    renderer(handle)->selectColorAt(x, y, tolerance);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_clearSelection(JNIEnv*, jobject,
+                                                                             jlong handle) {
+    renderer(handle)->clearSelection();
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_invertSelection(JNIEnv*, jobject,
+                                                                              jlong handle) {
+    renderer(handle)->invertSelection();
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_copySelectionToLayer(
+    JNIEnv*, jobject, jlong handle, jint newId, jboolean cut) {
+    renderer(handle)->copySelectionToLayer(newId, cut);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setGradientPreview(
+    JNIEnv* env, jobject, jlong handle, jboolean active, jfloatArray points, jfloatArray color) {
+    const FloatArray pointValues(env, points);
+    const FloatArray colorValues(env, color);
+    renderer(handle)->setGradientPreview(active, pointValues.get(), colorValues.get());
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_commitGradient(JNIEnv*, jobject,
+                                                                             jlong handle) {
+    renderer(handle)->commitGradient();
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setAdjustment(
+    JNIEnv* env, jobject, jlong handle, jboolean active, jfloatArray values) {
+    const FloatArray adjustment(env, values);
+    renderer(handle)->setAdjustment(active, adjustment.get());
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_commitAdjustment(JNIEnv*, jobject,
+                                                                               jlong handle) {
+    renderer(handle)->commitAdjustment();
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setFigureGuide(
+    JNIEnv*, jobject, jlong handle, jfloat top, jfloat bottom, jfloat divisions) {
+    renderer(handle)->setFigureGuide(top, bottom, divisions);
+}
+
 JNIEXPORT jboolean JNICALL Java_art_cappuccino_paint_NativeEngine_takeLayerDirty(JNIEnv*, jobject,
                                                                                  jlong handle,
                                                                                  jint id) {
@@ -165,9 +219,10 @@ JNIEXPORT jint JNICALL Java_art_cappuccino_paint_NativeEngine_pickColor(JNIEnv*,
 }
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_beginStroke(
-    JNIEnv*, jobject, jlong handle, jfloat diameter, jfloat red, jfloat green, jfloat blue,
+    JNIEnv* env, jobject, jlong handle, jfloat diameter, jfloat red, jfloat green, jfloat blue,
     jfloat flow, jfloat minScale, jfloat spacingRatio, jfloat pressureFlow, jfloat hardness,
-    jfloat grain, jboolean eraser, jboolean alphaLock) {
+    jfloat grain, jboolean eraser, jboolean alphaLock, jboolean smudge, jfloat pressureGamma,
+    jbyteArray tip) {
     cappuccino::BrushParams brush;
     brush.diameter = diameter;
     brush.color[0] = red;
@@ -181,6 +236,13 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_beginStroke(
     brush.grain = grain;
     brush.eraser = eraser;
     brush.alphaLock = alphaLock;
+    brush.smudge = smudge;
+    brush.shape.pressureGamma = pressureGamma;
+    if (tip != nullptr) {
+        brush.tip.resize(env->GetArrayLength(tip));
+        env->GetByteArrayRegion(tip, 0, static_cast<jsize>(brush.tip.size()),
+                                reinterpret_cast<jbyte*>(brush.tip.data()));
+    }
     renderer(handle)->beginStroke(brush);
 }
 

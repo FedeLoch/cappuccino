@@ -4,11 +4,16 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.BitmapFactory
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.text.InputType
 import android.text.format.DateUtils
 import android.view.Gravity
 import android.view.View
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
@@ -16,6 +21,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.Toast
 import java.io.File
+import java.util.Calendar
 import java.util.concurrent.Executors
 import kotlin.math.max
 
@@ -23,6 +29,9 @@ private const val ALL = "all"
 private const val PICK_REFERENCES = 42
 private const val CREATE_BACKUP = 43
 private const val OPEN_BACKUP = 44
+private const val OPEN_PSD = 45
+private const val CONTINUE_WIDTH = 380
+private const val CONTINUE_HEIGHT = 250
 
 /** Shows projects, the artworks inside them, and each project's reference library. */
 class GalleryActivity : Activity() {
@@ -41,7 +50,7 @@ class GalleryActivity : Activity() {
         }
         setContentView(
             ScrollView(this).apply {
-                setBackgroundColor(0xFF1F1E1D.toInt())
+                setBackgroundColor(ESPRESSO)
                 isFillViewport = true
                 addView(root)
             },
@@ -53,6 +62,16 @@ class GalleryActivity : Activity() {
         render()
     }
 
+    private fun quietChip(content: String, selected: Boolean = false, onClick: () -> Unit) =
+        chip(content, selected, onClick).apply {
+            if (!selected) background = rounded(ROAST, 20)
+            setTextColor(FOAM)
+        }
+
+    private fun wordmark(content: String, size: Float) = label(content, size, FOAM).apply {
+        typeface = Typeface.create(Typeface.SERIF, Typeface.NORMAL)
+    }
+
     private fun render() {
         root.removeAllViews()
         val projects = store.projects()
@@ -60,45 +79,255 @@ class GalleryActivity : Activity() {
         root.addView(
             LinearLayout(this).apply {
                 gravity = Gravity.CENTER_VERTICAL
-                addView(label("Cappuccino", 26f), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(chip("Backup") { backupOptions() })
+                addView(wordmark("Cappuccino", 34f), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(quietChip("Backup") { backupOptions() })
                 addView(
-                    chip("New artwork", true) { openStudio(null) },
+                    quietChip("Import PSD") { pickPsd() },
+                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
+                )
+                addView(
+                    chip("New artwork", true) { chooseCanvas() },
                     LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
                 )
             },
         )
-        val tabs = ArrayList<View>()
-        tabs += chip("All", selected == ALL) { select(ALL) }
-        tabs += chip("Unsorted", selected.isEmpty()) { select("") }
+        if (selected == ALL) renderHome(projects) else renderSketchbook(projects)
+    }
+
+    private fun renderHome(projects: List<Project>) {
+        val artworks = store.artworks()
+        root.addView(greeting(), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        val shelf = ArrayList<View>()
         projects.forEach { project ->
-            tabs += chip(project.name, selected == project.id) { select(project.id) }.apply {
+            shelf += sketchbook(project.name, artworks.count { it.projectId == project.id }, project.color) {
+                select(project.id)
+            }.apply {
                 setOnLongClickListener {
                     projectOptions(project)
                     true
                 }
             }
         }
-        tabs += chip("New project") {
-            ask("New project", "") {
+        shelf += sketchbook("Unsorted", artworks.count { it.projectId.isEmpty() }, null) { select("") }
+        shelf += newSketchbook()
+        root.addView(
+            LinearLayout(this).apply {
+                artworks.firstOrNull()?.let { latest ->
+                    addView(
+                        continueCard(latest),
+                        LinearLayout.LayoutParams(dp(CONTINUE_WIDTH), dp(CONTINUE_HEIGHT)).apply { marginEnd = dp(20) },
+                    )
+                }
+                addView(
+                    LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(label("Your sketchbooks", 14f, LATTE))
+                        addView(row(shelf), spaced())
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f),
+                )
+            },
+            spaced(),
+        )
+        if (artworks.size > 1) {
+            root.addView(label("Recent", 14f, LATTE), spaced())
+            val cell = dp(220)
+            val layout = grid(cell)
+            artworks.drop(1).forEach { layout.addView(card(it, cell)) }
+            root.addView(layout, spaced())
+        }
+    }
+
+    private fun continueCard(art: ArtworkInfo) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = rounded(FOAM, 14)
+        setPadding(dp(10), dp(10), dp(10), dp(10))
+        addView(
+            ImageView(context).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = rounded(Color.WHITE, 8)
+                clipToOutline = true
+                contentDescription = art.name
+                setImageBitmap(BitmapFactory.decodeFile(store.thumbnail(art.id).path))
+            },
+            LinearLayout.LayoutParams(-1, 0, 1f),
+        )
+        addView(
+            label("Continue ${art.name}", 15f, ESPRESSO),
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) },
+        )
+        setOnClickListener { openStudio(art.id) }
+        setOnLongClickListener {
+            artworkOptions(art)
+            true
+        }
+    }
+
+    private fun greeting() = LinearLayout(this).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        val preferences = getSharedPreferences("studio", MODE_PRIVATE)
+        addView(
+            CompanionView(context).apply {
+                mascot = Mascot.valueOf(preferences.getString("mascot", null) ?: Mascot.COFFEE_DROP.name)
+                contentDescription = "Your companion"
+            },
+            LinearLayout.LayoutParams(dp(36), dp(36)),
+        )
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        val greeting = when {
+            hour < 12 -> "Good morning."
+            hour < 19 -> "Good afternoon."
+            else -> "Good evening."
+        }
+        addView(
+            label("$greeting Ready for another layer?", 14f, LATTE),
+            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
+        )
+    }
+
+    private fun sketchbook(name: String, count: Int, color: Int?, onClick: () -> Unit) = FrameLayout(this).apply {
+        val (cover, spine) = color?.let { SKETCHBOOK_COLORS[it % SKETCHBOOK_COLORS.size] } ?: (ROAST to SURFACE_RAISED)
+        background = rounded(cover, 12)
+        addView(View(context).apply { background = rounded(spine, 6) }, FrameLayout.LayoutParams(dp(10), -1))
+        addView(
+            LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(22), dp(14), dp(14), dp(14))
+                addView(label(name, 16f, Color.WHITE))
+                addView(label(if (count == 1) "1 artwork" else "$count artworks", 12f, Color.WHITE))
+            },
+        )
+        layoutParams = LinearLayout.LayoutParams(dp(170), dp(104))
+        minimumWidth = dp(170)
+        minimumHeight = dp(104)
+        contentDescription = "Open $name"
+        setOnClickListener { onClick() }
+    }
+
+    private fun newSketchbook() = label("New sketchbook", 14f, LATTE).apply {
+        gravity = Gravity.CENTER
+        minWidth = dp(170)
+        minHeight = dp(104)
+        background = GradientDrawable().apply {
+            cornerRadius = dp(12).toFloat()
+            setStroke(dp(2), LATTE, dp(8).toFloat(), dp(6).toFloat())
+        }
+        setOnClickListener {
+            ask("New sketchbook", "") {
                 selected = store.createProject(it).id
                 render()
             }
         }
-        root.addView(row(tabs), spaced())
+    }
 
-        if (selected != ALL) {
-            root.addView(
-                row(
-                    listOf(
-                        chip("Artworks", !showingReferences) { showReferences(false) },
-                        chip("References", showingReferences) { showReferences(true) },
-                    ),
+    private fun renderSketchbook(projects: List<Project>) {
+        val project = projects.firstOrNull { it.id == selected }
+        root.addView(
+            LinearLayout(this).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(quietChip("Back") { select(ALL) })
+                addView(
+                    wordmark(project?.name ?: "Unsorted", 24f),
+                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(14) },
+                )
+            },
+            spaced(),
+        )
+        root.addView(
+            row(
+                listOf(
+                    quietChip("Artworks", !showingReferences) { showReferences(false) },
+                    quietChip("References", showingReferences) { showReferences(true) },
                 ),
-                spaced(),
-            )
+            ),
+            spaced(),
+        )
+        if (showingReferences) renderReferences() else renderArtworks()
+    }
+
+    private fun chooseCanvas() {
+        val sizes = listOf(
+            Triple("Default, 4096 x 2732", 4096, 2732),
+            Triple("Square, 3000 x 3000", 3000, 3000),
+            Triple("A4 at 300 dpi, 2480 x 3508", 2480, 3508),
+            Triple("A3 at 300 dpi, 3508 x 4961", 3508, 4961),
+            Triple("Phone story, 1080 x 1920", 1080, 1920),
+            Triple("Wide video, 3840 x 2160", 3840, 2160),
+        )
+        AlertDialog.Builder(this)
+            .setTitle("New artwork")
+            .setItems((sizes.map { it.first } + "Custom size").toTypedArray()) { _, choice ->
+                val size = sizes.getOrNull(choice)
+                if (size != null) openNew(size.second, size.third) else askCustomSize()
+            }
+            .show()
+    }
+
+    private fun askCustomSize() {
+        val width = EditText(this).apply {
+            hint = "Width in pixels"
+            inputType = InputType.TYPE_CLASS_NUMBER
         }
-        if (selected != ALL && showingReferences) renderReferences() else renderArtworks()
+        val height = EditText(this).apply {
+            hint = "Height in pixels"
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Custom size")
+            .setView(
+                LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dp(24), dp(8), dp(24), 0)
+                    addView(width)
+                    addView(height)
+                },
+            )
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Create") { _, _ ->
+                val w = width.text.toString().toIntOrNull() ?: 0
+                val h = height.text.toString().toIntOrNull() ?: 0
+                if (w in 64..MAX_CANVAS_SIDE && h in 64..MAX_CANVAS_SIDE) {
+                    openNew(w, h)
+                } else {
+                    Toast.makeText(this, "Use sizes from 64 to $MAX_CANVAS_SIDE pixels", Toast.LENGTH_LONG).show()
+                }
+            }
+            .show()
+    }
+
+    private fun openNew(width: Int, height: Int) {
+        val project = if (selected == ALL) "" else selected
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_PROJECT, project)
+                .putExtra(MainActivity.EXTRA_WIDTH, width)
+                .putExtra(MainActivity.EXTRA_HEIGHT, height),
+        )
+    }
+
+    private fun pickPsd() {
+        startActivityForResult(
+            Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),
+            OPEN_PSD,
+        )
+    }
+
+    private fun importPsd(uri: android.net.Uri) {
+        val project = if (selected == ALL) "" else selected
+        Toast.makeText(this, "Importing PSD", Toast.LENGTH_SHORT).show()
+        background.execute {
+            val failure = runCatching {
+                val image = PsdReader.read(contentResolver.openInputStream(uri)!!.use { it.readBytes() })
+                check(image.width <= MAX_CANVAS_SIDE && image.height <= MAX_CANVAS_SIDE) { "too large" }
+                store.importPsd(image, "Imported PSD", project)
+            }.exceptionOrNull()
+            runOnUiThread {
+                if (failure != null) {
+                    Toast.makeText(this, "Couldn't import this PSD. Use an 8-bit RGB file.", Toast.LENGTH_LONG).show()
+                }
+                render()
+            }
+        }
     }
 
     private fun select(id: String) {
@@ -119,7 +348,7 @@ class GalleryActivity : Activity() {
         addView(
             LinearLayout(context).apply {
                 views.forEach {
-                    addView(it, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) })
+                    addView(it, LinearLayout.LayoutParams(it.layoutParams?.width ?: -2, it.layoutParams?.height ?: -2).apply { marginEnd = dp(10) })
                 }
             },
         )
@@ -133,7 +362,7 @@ class GalleryActivity : Activity() {
     private fun renderArtworks() {
         val artworks = store.artworks().filter { selected == ALL || it.projectId == selected }
         if (artworks.isEmpty()) {
-            root.addView(label("Start your first artwork here.", 16f, MUTED_TEXT), spaced())
+            root.addView(label("Start your first artwork here.", 16f, LATTE), spaced())
             return
         }
         val cell = dp(240)
@@ -151,15 +380,15 @@ class GalleryActivity : Activity() {
         addView(
             ImageView(context).apply {
                 scaleType = ImageView.ScaleType.CENTER_CROP
-                background = rounded(SURFACE_RAISED, 8)
+                background = rounded(Color.WHITE, 8)
                 clipToOutline = true
                 contentDescription = art.name
                 setImageBitmap(BitmapFactory.decodeFile(store.thumbnail(art.id).path))
             },
             LinearLayout.LayoutParams(-1, width * 2 / 3),
         )
-        addView(label(art.name), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
-        addView(label(DateUtils.getRelativeTimeSpanString(art.updated).toString(), 12f, MUTED_TEXT))
+        addView(label(art.name, 14f, FOAM), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        addView(label(DateUtils.getRelativeTimeSpanString(art.updated).toString(), 12f, LATTE))
         setOnClickListener { openStudio(art.id) }
         setOnLongClickListener {
             artworkOptions(art)
@@ -212,12 +441,15 @@ class GalleryActivity : Activity() {
     private fun projectOptions(project: Project) {
         AlertDialog.Builder(this)
             .setTitle(project.name)
-            .setItems(arrayOf("Rename", "Delete")) { _, choice ->
+            .setItems(arrayOf("Rename", "Change cover color", "Delete")) { _, choice ->
                 if (choice == 0) {
-                    ask("Rename project", project.name) {
+                    ask("Rename sketchbook", project.name) {
                         store.renameProject(project.id, it)
                         render()
                     }
+                } else if (choice == 1) {
+                    store.recolorProject(project.id)
+                    render()
                 } else {
                     confirm(
                         "Delete ${project.name}?",
@@ -278,6 +510,10 @@ class GalleryActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (resultCode != RESULT_OK || data == null) return
+        if (requestCode == OPEN_PSD) {
+            data.data?.let(::importPsd)
+            return
+        }
         if (requestCode == CREATE_BACKUP || requestCode == OPEN_BACKUP) {
             data.data?.let { runBackup(it, requestCode == OPEN_BACKUP) }
             return
