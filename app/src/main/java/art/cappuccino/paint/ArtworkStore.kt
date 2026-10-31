@@ -43,10 +43,44 @@ class ArtworkStore(context: Context) {
     private val artworks = File(root, "artworks").apply { mkdirs() }
     private val references = File(root, "references").apply { mkdirs() }
     private val projectsFile = File(root, "projects.json")
+    private val palettesFile = File(root, "palettes.json")
 
     private fun artworkDir(id: String) = File(artworks, id)
 
     fun thumbnail(id: String) = File(artworkDir(id), THUMBNAIL)
+
+    fun palettes(): List<Palette> {
+        if (!palettesFile.exists()) return emptyList()
+        val array = JSONArray(palettesFile.readText())
+        return (0 until array.length()).map { index ->
+            val item = array.getJSONObject(index)
+            val colors = item.getJSONArray("colors")
+            Palette(
+                item.getString("id"),
+                item.getString("name"),
+                (0 until colors.length()).map { colors.getInt(it) },
+            )
+        }
+    }
+
+    private fun writePalettes(palettes: List<Palette>) {
+        val array = JSONArray()
+        palettes.forEach { palette ->
+            array.put(
+                JSONObject()
+                    .put("id", palette.id)
+                    .put("name", palette.name)
+                    .put("colors", JSONArray(palette.colors)),
+            )
+        }
+        writeAtomically(palettesFile, array.toString().toByteArray())
+    }
+
+    fun addPalette(name: String, colors: List<Int>) {
+        writePalettes(listOf(Palette(UUID.randomUUID().toString(), name, colors)) + palettes())
+    }
+
+    fun deletePalette(id: String) = writePalettes(palettes().filter { it.id != id })
 
     fun projects(): List<Project> {
         if (!projectsFile.exists()) return emptyList()
@@ -136,6 +170,7 @@ class ArtworkStore(context: Context) {
                 item.getDouble("opacity").toFloat(),
                 item.getBoolean("visible"),
                 item.getInt("blend"),
+                item.optBoolean("alphaLock"),
                 item.optString("file").ifEmpty { null },
             )
         }.toMutableList()
@@ -179,6 +214,7 @@ class ArtworkStore(context: Context) {
                     .put("opacity", layer.opacity.toDouble())
                     .put("visible", layer.visible)
                     .put("blend", layer.blend)
+                    .put("alphaLock", layer.alphaLock)
                     .put("file", layer.file ?: ""),
             )
         }

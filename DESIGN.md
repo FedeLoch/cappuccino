@@ -139,6 +139,17 @@ then spills to disk, and is limited by a storage budget rather than a step count
 - The gallery keeps the previous good version of each artwork.
 - The first version exports PNG and JPEG. PSD import and export come later.
 
+## Art direction tools
+
+- Brushes and erasers are chosen from cards with stroke previews, and each tool remembers
+  its own size and opacity.
+- The color panel has a picker with value steps, harmony suggestions, and palettes. Palettes
+  can be collected from the artwork or an open reference.
+- Layers show thumbnails and support transparency lock, drag reordering, duplicate, and
+  merge down.
+- Grayscale, two-value, and three-value views, composition guides, and canvas flip change
+  only the view, never the artwork or exports.
+
 ## Projects and references
 
 - The home screen is the projects view. Artworks can be grouped into projects, renamed,

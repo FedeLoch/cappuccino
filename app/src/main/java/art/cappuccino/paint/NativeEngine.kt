@@ -24,6 +24,16 @@ object NativeEngine {
         blend: Int,
     )
     external fun moveLayer(handle: Long, id: Int, index: Int)
+    external fun duplicateLayer(handle: Long, id: Int, newId: Int)
+    external fun mergeLayerDown(handle: Long, id: Int, belowId: Int)
+    external fun readLayerThumbnail(
+        handle: Long,
+        id: Int,
+        width: Int,
+        height: Int,
+        pixels: ByteBuffer,
+    )
+    external fun setViewOptions(handle: Long, mode: Int, guide: Int)
     external fun takeLayerDirty(handle: Long, id: Int): Boolean
     external fun readLayer(handle: Long, id: Int, pixels: ByteBuffer)
     external fun writeLayer(handle: Long, id: Int, pixels: ByteBuffer)
@@ -42,6 +52,7 @@ object NativeEngine {
         hardness: Float,
         grain: Float,
         eraser: Boolean,
+        alphaLock: Boolean,
     )
     external fun drawFront(
         handle: Long,

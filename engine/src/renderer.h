@@ -30,6 +30,7 @@ struct BrushParams {
     float hardness = 1.0f;
     float grain = 0.0f;
     bool eraser = false;
+    bool alphaLock = false;
 };
 
 // Owns the artwork on the GPU. All methods must run on the thread that holds the GL
@@ -44,6 +45,10 @@ public:
     void setActiveLayer(int id);
     void setLayerProperties(int id, float opacity, bool visible, BlendMode blend);
     void moveLayer(int id, int index);
+    void duplicateLayer(int id, int newId);
+    void mergeLayerDown(int id, int belowId);
+    void readLayerThumbnail(int id, int width, int height, void* pixels);
+    void setViewOptions(int mode, int guide);
     bool takeLayerDirty(int id);
     void readLayer(int id, void* pixels);
     void writeLayer(int id, const void* pixels);
@@ -82,6 +87,11 @@ private:
     void drawStamps(const std::vector<Stamp>& stamps, const float* matrix);
     void drawCanvas(const float* matrix);
     void drawQuad(const float* matrix);
+    void drawScene(const float* matrix, int bufferWidth, int bufferHeight,
+                   const std::vector<Stamp>* stamps);
+    void drawGuides(const float* matrix);
+    void fillCanvasRect(const float* matrix, float x, float y, float width, float height);
+    void clearLayerHistory(int id);
     Layer* findLayer(int id);
     bool swapHistory(std::vector<HistoryEntry>& from, std::vector<HistoryEntry>& to);
     void copyRegion(GLuint fromFbo, GLuint toFbo, const Rect& rect);
@@ -106,6 +116,14 @@ private:
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
     GLuint canvasVao_ = 0;
+    GLuint filterProgram_ = 0;
+    GLint filterMode_ = -1;
+    GLuint viewTexture_ = 0;
+    GLuint viewFbo_ = 0;
+    int viewWidth_ = 0;
+    int viewHeight_ = 0;
+    int viewMode_ = 0;
+    int guide_ = 0;
 
     std::unique_ptr<StrokeBuilder> stroke_;
     BrushParams brush_;

@@ -1,7 +1,10 @@
 package art.cappuccino.paint
 
 import android.content.Context
+import android.graphics.BlurMaskFilter
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
@@ -9,6 +12,9 @@ import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import java.util.Random
+import kotlin.math.PI
+import kotlin.math.sin
 
 const val SURFACE = 0xFF2C2C2A.toInt()
 const val SURFACE_RAISED = 0xFF444441.toInt()
@@ -53,6 +59,42 @@ fun Context.pill(vertical: Boolean = false) = LinearLayout(this).apply {
     gravity = Gravity.CENTER
     background = rounded(SURFACE, 24)
     setPadding(dp(6), dp(2), dp(6), dp(2))
+}
+
+/** Paints a sample stroke with a rough match of the brush, without using the GL engine. */
+class BrushPreview(
+    context: Context,
+    private val kind: BrushKind,
+    private val color: Int,
+) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val random = Random(kind.ordinal.toLong())
+
+    init {
+        setLayerType(LAYER_TYPE_SOFTWARE, null)
+        contentDescription = "${kind.label} preview"
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        random.setSeed(kind.ordinal.toLong())
+        val maxRadius = height * 0.22f
+        val softness = (1f - kind.hardness) * maxRadius
+        paint.maskFilter = if (softness > 0.5f) BlurMaskFilter(softness, BlurMaskFilter.Blur.NORMAL) else null
+        val steps = 90
+        for (step in 0..steps) {
+            val t = step / steps.toFloat()
+            val pressure = sin(t * PI.toFloat())
+            val scale = kind.minScale + (1f - kind.minScale) * pressure
+            val x = width * (0.1f + 0.8f * t)
+            val y = height * (0.5f + 0.26f * sin(t * 2f * PI.toFloat()))
+            val grainHole = kind.grain * 0.55f > random.nextFloat()
+            if (grainHole) continue
+            val flow = kind.flow * (1f - kind.pressureFlow * (1f - pressure))
+            paint.color = color
+            paint.alpha = (255 * minOf(1f, flow * 1.6f + 0.05f)).toInt()
+            canvas.drawCircle(x, y, maxOf(1.5f, maxRadius * scale), paint)
+        }
+    }
 }
 
 fun SeekBar.onChange(change: (Int) -> Unit) {

@@ -44,6 +44,7 @@ class BrushState(
     val diameter: Float,
     val color: Int,
     val opacity: Float,
+    val alphaLock: Boolean,
 )
 
 class CanvasView(context: Context) : SurfaceView(context) {
@@ -51,6 +52,8 @@ class CanvasView(context: Context) : SurfaceView(context) {
     var brushDiameter = 24f
     var brushOpacity = 1f
     var brushColor = 0xFF2C2C2A.toInt()
+    var eraserKind = BrushKind.ERASER_HARD
+    var alphaLock = false
     var acceptsInput = false
 
     var onStrokeStart: () -> Unit = {}
@@ -137,7 +140,7 @@ class CanvasView(context: Context) : SurfaceView(context) {
                     Color.green(brush.color) / 255f,
                     Color.blue(brush.color) / 255f,
                     kind.stampFlow(brush.opacity), kind.minScale, kind.spacing,
-                    kind.pressureFlow, kind.hardness, kind.grain, kind == BrushKind.ERASER,
+                    kind.pressureFlow, kind.hardness, kind.grain, kind.isEraser, brush.alphaLock,
                 )
             }
             NativeEngine.drawFront(
@@ -203,6 +206,11 @@ class CanvasView(context: Context) : SurfaceView(context) {
         renderer.execute { glCallback.drainActions() }
     }
 
+    fun flip() {
+        viewMatrix.postScale(-1f, 1f, width / 2f, height / 2f)
+        publishView()
+    }
+
     fun undo() = act { NativeEngine.undo(it) }
 
     fun redo() = act { NativeEngine.redo(it) }
@@ -265,7 +273,7 @@ class CanvasView(context: Context) : SurfaceView(context) {
                 requestUnbufferedDispatch(event)
                 viewMatrix.invert(inverseMatrix)
                 val tool = event.getToolType(0)
-                strokeKind = if (tool == MotionEvent.TOOL_TYPE_ERASER) BrushKind.ERASER else brushKind
+                strokeKind = if (tool == MotionEvent.TOOL_TYPE_ERASER) eraserKind else brushKind
                 onStrokeStart()
                 predictor.record(event)
                 sendStroke(event, begin = true, end = false)
@@ -300,7 +308,7 @@ class CanvasView(context: Context) : SurfaceView(context) {
         val op = RenderOp.Stroke(
             begin = begin,
             end = end,
-            brush = BrushState(strokeKind, brushDiameter, brushColor, brushOpacity),
+            brush = BrushState(strokeKind, brushDiameter, brushColor, brushOpacity, alphaLock),
             view = viewValues(),
             samples = readSamples(event),
             predicted = predicted?.let(::readSamples) ?: FloatArray(0),

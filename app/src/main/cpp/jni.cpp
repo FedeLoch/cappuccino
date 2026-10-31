@@ -78,6 +78,30 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_moveLayer(JNIEnv*,
     renderer(handle)->moveLayer(id, index);
 }
 
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_duplicateLayer(JNIEnv*, jobject,
+                                                                             jlong handle, jint id,
+                                                                             jint newId) {
+    renderer(handle)->duplicateLayer(id, newId);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_mergeLayerDown(JNIEnv*, jobject,
+                                                                             jlong handle, jint id,
+                                                                             jint belowId) {
+    renderer(handle)->mergeLayerDown(id, belowId);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_readLayerThumbnail(
+    JNIEnv* env, jobject, jlong handle, jint id, jint width, jint height, jobject buffer) {
+    renderer(handle)->readLayerThumbnail(id, width, height, env->GetDirectBufferAddress(buffer));
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setViewOptions(JNIEnv*, jobject,
+                                                                             jlong handle,
+                                                                             jint mode,
+                                                                             jint guide) {
+    renderer(handle)->setViewOptions(mode, guide);
+}
+
 JNIEXPORT jboolean JNICALL Java_art_cappuccino_paint_NativeEngine_takeLayerDirty(JNIEnv*, jobject,
                                                                                  jlong handle,
                                                                                  jint id) {
@@ -110,7 +134,7 @@ JNIEXPORT jint JNICALL Java_art_cappuccino_paint_NativeEngine_pickColor(JNIEnv*,
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_beginStroke(
     JNIEnv*, jobject, jlong handle, jfloat diameter, jfloat red, jfloat green, jfloat blue,
     jfloat flow, jfloat minScale, jfloat spacingRatio, jfloat pressureFlow, jfloat hardness,
-    jfloat grain, jboolean eraser) {
+    jfloat grain, jboolean eraser, jboolean alphaLock) {
     cappuccino::BrushParams brush;
     brush.diameter = diameter;
     brush.color[0] = red;
@@ -123,6 +147,7 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_beginStroke(
     brush.hardness = hardness;
     brush.grain = grain;
     brush.eraser = eraser;
+    brush.alphaLock = alphaLock;
     renderer(handle)->beginStroke(brush);
 }
 

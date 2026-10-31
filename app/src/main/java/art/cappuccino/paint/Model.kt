@@ -14,12 +14,20 @@ enum class BrushKind(
     val pressureFlow: Float,
     val hardness: Float,
     val grain: Float,
+    val defaultSize: Float,
+    val isEraser: Boolean = false,
 ) {
-    INK("Ink", 0.12f, 0.08f, 1f, 0f, 1f, 0f),
-    PENCIL("Pencil", 0.5f, 0.1f, 0.35f, 0.8f, 0.7f, 0.8f),
-    CHALK("Chalk", 0.8f, 0.12f, 0.6f, 0.3f, 0.8f, 0.9f),
-    SOFT("Soft", 0.6f, 0.06f, 0.08f, 0.7f, 0f, 0f),
-    ERASER("Eraser", 0.5f, 0.08f, 1f, 0f, 0.9f, 0f);
+    INK("Ink", 0.12f, 0.08f, 1f, 0f, 1f, 0f, 24f),
+    LINER("Liner", 0.85f, 0.06f, 1f, 0f, 1f, 0f, 12f),
+    PENCIL("Pencil", 0.5f, 0.1f, 0.35f, 0.8f, 0.7f, 0.8f, 16f),
+    CHARCOAL("Charcoal", 0.7f, 0.1f, 0.55f, 0.6f, 0.6f, 1f, 60f),
+    CHALK("Chalk", 0.8f, 0.12f, 0.6f, 0.3f, 0.8f, 0.9f, 80f),
+    MARKER("Marker", 0.9f, 0.05f, 0.18f, 0.2f, 0.9f, 0f, 70f),
+    SOFT("Soft", 0.6f, 0.06f, 0.08f, 0.7f, 0f, 0f, 160f),
+    WASH("Wash", 0.7f, 0.08f, 0.05f, 0.5f, 0.2f, 0.35f, 220f),
+    ERASER_HARD("Hard", 0.5f, 0.08f, 1f, 0f, 0.9f, 0f, 60f, true),
+    ERASER_SOFT("Soft", 0.6f, 0.06f, 0.15f, 0.5f, 0f, 0f, 140f, true),
+    ERASER_TEXTURE("Texture", 0.7f, 0.1f, 0.6f, 0.4f, 0.6f, 0.9f, 80f, true);
 
     /** Stamp alpha that builds up to about [opacity] across one stamp width. */
     fun stampFlow(opacity: Float): Float =
@@ -34,8 +42,15 @@ data class LayerInfo(
     var opacity: Float = 1f,
     var visible: Boolean = true,
     var blend: Int = 0,
+    var alphaLock: Boolean = false,
     var file: String? = null,
 )
+
+val VIEW_MODES = listOf("Color", "Grayscale", "Two values", "Three values")
+
+val GUIDES = listOf("None", "Thirds", "Golden", "Grid")
+
+class ToolSettings(var diameter: Float, var opacity: Float = 1f)
 
 data class Project(val id: String, var name: String)
 
