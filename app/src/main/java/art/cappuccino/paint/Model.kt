@@ -45,6 +45,56 @@ class BrushKind(
         private val MARKER = BrushKind("marker", "Marker", 0.9f, 0.05f, 0.18f, 0.2f, 0.9f, 0f, 70f)
         private val SOFT = BrushKind("soft", "Soft", 0.6f, 0.06f, 0.08f, 0.7f, 0f, 0f, 160f)
         private val WASH = BrushKind("wash", "Wash", 0.7f, 0.08f, 0.05f, 0.5f, 0.2f, 0.35f, 220f)
+        private const val TIP_SIZE = 128
+
+        /** Scattered soft dots, repeatable because the seed is fixed. */
+        private fun spongeTip(): ByteArray {
+            val random = java.util.Random(11)
+            val tip = ByteArray(TIP_SIZE * TIP_SIZE)
+            repeat(420) {
+                val x = random.nextInt(TIP_SIZE)
+                val y = random.nextInt(TIP_SIZE)
+                val radius = 1 + random.nextInt(4)
+                for (dy in -radius..radius) {
+                    for (dx in -radius..radius) {
+                        val px = x + dx
+                        val py = y + dy
+                        if (px in 0 until TIP_SIZE && py in 0 until TIP_SIZE && dx * dx + dy * dy <= radius * radius) {
+                            tip[py * TIP_SIZE + px] = -1
+                        }
+                    }
+                }
+            }
+            return tip
+        }
+
+        /** Broken parallel bristle lines. */
+        private fun dryBrushTip(): ByteArray {
+            val random = java.util.Random(23)
+            val tip = ByteArray(TIP_SIZE * TIP_SIZE)
+            var row = 0
+            while (row < TIP_SIZE) {
+                val thickness = 1 + random.nextInt(3)
+                val start = random.nextInt(24)
+                val end = TIP_SIZE - random.nextInt(24)
+                for (y in row until minOf(TIP_SIZE, row + thickness)) {
+                    for (x in start until end) {
+                        if (random.nextInt(9) != 0) tip[y * TIP_SIZE + x] = -1
+                    }
+                }
+                row += thickness + 1 + random.nextInt(3)
+            }
+            return tip
+        }
+
+        private val SPONGE = BrushKind(
+            "sponge", "Sponge", 0.8f, 0.45f, 0.55f, 0.5f, 0.5f, 0f, 120f, tip = spongeTip(),
+        )
+        private val DRY_BRUSH = BrushKind(
+            "dry-brush", "Dry brush", 0.7f, 0.12f, 0.45f, 0.5f, 0.5f, 0.3f, 110f, tip = dryBrushTip(),
+        )
+        val TEXTURE_BRUSHES = listOf(SPONGE, DRY_BRUSH)
+
         val SMUDGE = BrushKind(
             "smudge", "Smudge", 0.6f, 0.2f, 0.65f, 0.4f, 0.5f, 0f, 90f, mode = BrushMode.SMUDGE,
         )
@@ -64,11 +114,11 @@ class BrushKind(
             BrushKind("erase-wash", "Wash", 0.7f, 0.08f, 0.08f, 0.5f, 0.2f, 0.35f, 220f, true),
         )
         val PAINT_BRUSHES = listOf(INK, LINER, PENCIL, CHARCOAL, CHALK, MARKER, SOFT, WASH)
-        val entries = PAINT_BRUSHES + listOf(SMUDGE, FILL, GRADIENT) + ERASERS
+        val entries = PAINT_BRUSHES + TEXTURE_BRUSHES + listOf(SMUDGE, FILL, GRADIENT) + ERASERS
     }
 }
 
-val BLEND_MODES = listOf("Normal", "Multiply", "Screen", "Add")
+val BLEND_MODES = listOf("Normal", "Multiply", "Screen", "Additive")
 
 data class LayerInfo(
     val id: Int,

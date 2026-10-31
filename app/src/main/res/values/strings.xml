@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">Cappuccino</string>
+    <string name="share_label">Add to Cappuccino references</string>
 </resources>

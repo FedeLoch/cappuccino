@@ -87,10 +87,12 @@ class PerspectiveLog {
         if (drifts.isEmpty()) return null
         val off = drifts.filter { it > PERSPECTIVE_TOLERANCE }
         return if (off.isEmpty()) {
-            "Your last ${drifts.size} straight lines follow the guide."
+            tr("Your last %1 straight lines follow the guide.", drifts.size)
         } else {
-            "${off.size} of your last ${drifts.size} straight lines drift from the guide, " +
-                "up to ${off.max().roundToInt()}°. That can be a deliberate choice."
+            tr(
+                "%1 of your last %2 straight lines drift from the guide, up to %3°. That can be a deliberate choice.",
+                off.size, drifts.size, off.max().roundToInt(),
+            )
         }
     }
 }

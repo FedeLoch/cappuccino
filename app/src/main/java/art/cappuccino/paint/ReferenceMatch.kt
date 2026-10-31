@@ -140,11 +140,11 @@ private fun missingBins(art: VisualProfile, references: List<VisualProfile>): Li
 }
 
 private fun colorAdvice(art: VisualProfile, references: List<VisualProfile>): String {
-    val names = missingBins(art, references).take(2).map { HUE_NAMES[it] }
+    val names = missingBins(art, references).take(2).map { tr(HUE_NAMES[it]) }
     return when {
-        names.isEmpty() -> "Your colors are on track. Check that the main color takes the most area."
-        names.size == 1 -> "Your references lean on ${names[0]}. Try bringing more of it in."
-        else -> "Your references lean on ${names[0]} and ${names[1]}. Try bringing more of them in."
+        names.isEmpty() -> tr("Your colors are on track. Check that the main color takes the most area.")
+        names.size == 1 -> tr("Your references lean on %1. Try bringing more of it in.", names[0])
+        else -> tr("Your references lean on %1 and %2. Try bringing more of them in.", names[0], names[1])
     }
 }
 
@@ -152,10 +152,10 @@ private fun valueAdvice(art: VisualProfile, references: List<VisualProfile>): St
     val brightness = mean(references) { it.brightness }
     val contrast = mean(references) { it.contrast }
     return when {
-        art.brightness > brightness + 0.1f -> "Your references are darker overall. Block in deeper shadow shapes."
-        art.brightness < brightness - 0.1f -> "Your references are lighter overall. Open up more light areas."
-        art.contrast < contrast - 0.1f -> "Your references have stronger contrast. Push your darks and lights further apart."
-        else -> "Your values are on track. Keep the strongest contrast at your focus."
+        art.brightness > brightness + 0.1f -> tr("Your references are darker overall. Block in deeper shadow shapes.")
+        art.brightness < brightness - 0.1f -> tr("Your references are lighter overall. Open up more light areas.")
+        art.contrast < contrast - 0.1f -> tr("Your references have stronger contrast. Push your darks and lights further apart.")
+        else -> tr("Your values are on track. Keep the strongest contrast at your focus.")
     }
 }
 
@@ -166,9 +166,9 @@ private fun layoutAdvice(art: VisualProfile, references: List<VisualProfile>): S
     val target = references.map(::topMinusBottom).average().toFloat()
     val current = topMinusBottom(art)
     return when {
-        target > current + 0.08f -> "Your references keep more dark weight low. Try anchoring the bottom of the image."
-        target < current - 0.08f -> "Your references keep more dark weight high. Try a heavier top."
-        else -> "Compare your big light and dark shapes with the reference layout."
+        target > current + 0.08f -> tr("Your references keep more dark weight low. Try anchoring the bottom of the image.")
+        target < current - 0.08f -> tr("Your references keep more dark weight high. Try a heavier top.")
+        else -> tr("Compare your big light and dark shapes with the reference layout.")
     }
 }
 
@@ -176,11 +176,11 @@ private fun moodAdvice(art: VisualProfile, references: List<VisualProfile>): Str
     val saturation = mean(references) { it.saturation }
     val warmth = mean(references) { it.warmth }
     return when {
-        art.saturation < saturation - 0.1f -> "Your references feel more colorful. Try richer color in your focus areas."
-        art.saturation > saturation + 0.1f -> "Your references feel more muted. Try softening your strongest colors."
-        art.warmth < warmth - 0.08f -> "Your references feel warmer. Lean into warm lights."
-        art.warmth > warmth + 0.08f -> "Your references feel cooler. Try cooler shadows."
-        else -> "The mood is on track."
+        art.saturation < saturation - 0.1f -> tr("Your references feel more colorful. Try richer color in your focus areas.")
+        art.saturation > saturation + 0.1f -> tr("Your references feel more muted. Try softening your strongest colors.")
+        art.warmth < warmth - 0.08f -> tr("Your references feel warmer. Lean into warm lights.")
+        art.warmth > warmth + 0.08f -> tr("Your references feel cooler. Try cooler shadows.")
+        else -> tr("The mood is on track.")
     }
 }
 
@@ -188,13 +188,13 @@ private fun percent(value: Float) = "${(value * 100).toInt()}%"
 
 private fun matchWhy(art: VisualProfile, references: List<VisualProfile>): String {
     val notes = arrayListOf(
-        "Canvas filled: ${percent(art.coverage)}.",
-        "Brightness: yours ${percent(art.brightness)}, references ${percent(mean(references) { it.brightness })}.",
-        "Contrast: yours ${percent(art.contrast)}, references ${percent(mean(references) { it.contrast })}.",
-        "Color strength: yours ${percent(art.saturation)}, references ${percent(mean(references) { it.saturation })}.",
+        tr("Canvas filled: %1.", percent(art.coverage)),
+        tr("Brightness: yours %1, references %2.", percent(art.brightness), percent(mean(references) { it.brightness })),
+        tr("Contrast: yours %1, references %2.", percent(art.contrast), percent(mean(references) { it.contrast })),
+        tr("Color strength: yours %1, references %2.", percent(art.saturation), percent(mean(references) { it.saturation })),
     )
-    val missing = missingBins(art, references).take(3).map { HUE_NAMES[it] }
-    if (missing.isNotEmpty()) notes += "Stronger in references: ${missing.joinToString(", ")}."
+    val missing = missingBins(art, references).take(3).map { tr(HUE_NAMES[it]) }
+    if (missing.isNotEmpty()) notes += tr("Stronger in references: %1.", missing.joinToString(", "))
     return notes.joinToString(" ")
 }
 
@@ -215,10 +215,10 @@ fun compareWithReferences(art: VisualProfile, references: List<VisualProfile>): 
     )
     val overall = color * 0.35f + value * 0.3f + layout * 0.2f + mood * 0.15f
     val summary = when {
-        art.coverage < EARLY_COVERAGE -> "It's still early to compare with your references."
-        overall >= CLOSE -> "You're close to your references."
-        overall >= CLOSER -> "You're getting closer to your references."
-        else -> "You're still far from your references."
+        art.coverage < EARLY_COVERAGE -> tr("It's still early to compare with your references.")
+        overall >= CLOSE -> tr("You're close to your references.")
+        overall >= CLOSER -> tr("You're getting closer to your references.")
+        else -> tr("You're still far from your references.")
     }
     val advice = when (areas.minBy { it.score }.name) {
         "Palette" -> colorAdvice(art, references)

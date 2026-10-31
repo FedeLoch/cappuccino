@@ -48,7 +48,7 @@ private const val PICK_REFERENCES = 41
 private const val REFERENCE_SIZE = 2048
 private const val PREFERENCES = "studio"
 private const val PANEL_WIDTH = 340
-private const val BUBBLE_WIDTH = 280
+private const val BUBBLE_WIDTH = 308
 private const val THUMBNAIL_WIDTH = 72
 private const val THUMBNAIL_HEIGHT = 48
 private const val LAYER_ROW = 56
@@ -96,6 +96,7 @@ class MainActivity : Activity(), ReferenceHost {
     private var pickView: PickRing? = null
     private var hasSelection = false
     private var tipIndex = 0
+    private var ideaIndex = 0
     private var matchedFiles: List<File> = emptyList()
     private var peek: CompanionView? = null
     private var peekFrame: View? = null
@@ -137,7 +138,7 @@ class MainActivity : Activity(), ReferenceHost {
         val artworkId = intent.getStringExtra(EXTRA_ARTWORK)
         val loaded = artworkId?.let(store::load)
         if (artworkId != null && loaded == null) {
-            Toast.makeText(this, "Couldn't open this artwork", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, tr("Couldn't open this artwork"), Toast.LENGTH_LONG).show()
             finish()
             return
         }
@@ -207,9 +208,9 @@ class MainActivity : Activity(), ReferenceHost {
     private fun openDocument(id: String?, loaded: ArtworkDocument?, width: Int, height: Int) {
         if (id == null || loaded == null) {
             val project = intent.getStringExtra(EXTRA_PROJECT).orEmpty()
-            val first = LayerInfo(1, "Layer 1")
+            val first = LayerInfo(1, tr("Layer %1", 1))
             document = ArtworkDocument(
-                UUID.randomUUID().toString(), "Untitled", project, 1, 2, mutableListOf(first),
+                UUID.randomUUID().toString(), tr("Untitled"), project, 1, 2, mutableListOf(first),
                 width = width, height = height,
             )
             engineLayers.add(1)
@@ -295,7 +296,7 @@ class MainActivity : Activity(), ReferenceHost {
                 }.onFailure {
                     runOnUiThread {
                         unsaved = true
-                        Toast.makeText(this, "Couldn't save your artwork", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, tr("Couldn't save your artwork"), Toast.LENGTH_LONG).show()
                     }
                 }
                 analyze(thumbnail, referenceSet)
@@ -400,7 +401,7 @@ class MainActivity : Activity(), ReferenceHost {
         if (isDestroyed) return
         val left = pill().apply {
             addView(
-                iconButton(R.drawable.ic_gallery, "Projects") {
+                iconButton(R.drawable.ic_gallery, tr("Projects")) {
                     save()
                     startActivity(
                         Intent(this@MainActivity, GalleryActivity::class.java)
@@ -409,10 +410,10 @@ class MainActivity : Activity(), ReferenceHost {
                     finish()
                 },
             )
-            addView(iconButton(R.drawable.ic_actions, "Actions") { togglePanel("actions", ::actionsPanel) })
-            addView(iconButton(R.drawable.ic_references, "References") { togglePanel("references", ::referencesPanel) })
-            addView(iconButton(R.drawable.ic_view, "Art direction") { togglePanel("view", ::viewPanel) })
-            selectButton = iconButton(R.drawable.ic_select, "Selection") { togglePanel("selection", ::selectionPanel) }
+            addView(iconButton(R.drawable.ic_actions, tr("Actions")) { togglePanel("actions", ::actionsPanel) })
+            addView(iconButton(R.drawable.ic_references, tr("References")) { togglePanel("references", ::referencesPanel) })
+            addView(iconButton(R.drawable.ic_view, tr("Art direction")) { togglePanel("view", ::viewPanel) })
+            selectButton = iconButton(R.drawable.ic_select, tr("Selection")) { togglePanel("selection", ::selectionPanel) }
             addView(selectButton)
         }
         left.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
@@ -421,7 +422,7 @@ class MainActivity : Activity(), ReferenceHost {
 
         val colorButton = View(this).apply {
             background = swatchBackground(canvas.brushColor)
-            contentDescription = "Color"
+            contentDescription = tr("Color")
             layoutParams = LinearLayout.LayoutParams(dp(24), dp(24)).apply {
                 setMargins(dp(10), dp(10), dp(10), dp(10))
             }
@@ -432,28 +433,28 @@ class MainActivity : Activity(), ReferenceHost {
         }
         swatch = colorButton
         val right = pill().apply {
-            brushButton = iconButton(R.drawable.ic_brush, "Brushes") {
+            brushButton = iconButton(R.drawable.ic_brush, tr("Brushes")) {
                 if (canvas.brushKind.isEraser) selectTool(lastBrush)
                 togglePanel("brushes", ::brushPanel)
             }
-            eraserButton = iconButton(R.drawable.ic_eraser, "Eraser") {
+            eraserButton = iconButton(R.drawable.ic_eraser, tr("Eraser")) {
                 if (!canvas.brushKind.isEraser) selectTool(lastEraser)
                 togglePanel("erasers", ::eraserPanel)
             }
             addView(brushButton)
             addView(eraserButton)
-            addView(iconButton(R.drawable.ic_layers, "Layers") { togglePanel("layers", ::layersPanel) })
+            addView(iconButton(R.drawable.ic_layers, tr("Layers")) { togglePanel("layers", ::layersPanel) })
             addView(colorButton)
         }
         place(right, Gravity.TOP or Gravity.END, dp(12), dp(12))
 
         val sliders = pill(vertical = true).apply {
-            addView(verticalSlider("Brush size", sizeProgress(), { sizeBar = it }) {
+            addView(verticalSlider(tr("Brush size"), sizeProgress(), { sizeBar = it }) {
                 val share = it / 1000f
                 canvas.brushDiameter = MIN_BRUSH + (MAX_BRUSH - MIN_BRUSH) * share * share
                 toolFor(canvas.brushKind).diameter = canvas.brushDiameter
             })
-            addView(verticalSlider("Brush opacity", (canvas.brushOpacity * 1000f).roundToInt(), { opacityBar = it }) {
+            addView(verticalSlider(tr("Brush opacity"), (canvas.brushOpacity * 1000f).roundToInt(), { opacityBar = it }) {
                 canvas.brushOpacity = max(it, 10) / 1000f
                 toolFor(canvas.brushKind).opacity = canvas.brushOpacity
             })
@@ -560,7 +561,7 @@ class MainActivity : Activity(), ReferenceHost {
         peek = resting
         val hidden = !preferences.getBoolean("companion", true)
         val frame = FrameLayout(this).apply {
-            contentDescription = "Wake your companion"
+            contentDescription = tr("Wake your companion")
             visibility = if (hidden) View.VISIBLE else View.INVISIBLE
             addView(resting, FrameLayout.LayoutParams(dp(PEEK_SIZE), dp(PEEK_SIZE), Gravity.CENTER))
             setOnClickListener { setCompanionVisible(true) }
@@ -659,7 +660,7 @@ class MainActivity : Activity(), ReferenceHost {
     private fun companionTips(): List<Tip> = listOfNotNull(
         referenceMatch?.let { Tip("Your references", "${it.summary} ${it.advice}", it.why) },
         perspectiveLog.summary()?.let {
-            Tip("Perspective", it, "A straight line counts as drifted when it's over 4° from the guide.")
+            Tip("Perspective", it, tr("A straight line counts as drifted when it's over 4° from the guide."))
         },
     ) + report?.tips.orEmpty()
 
@@ -667,48 +668,77 @@ class MainActivity : Activity(), ReferenceHost {
         val tips = companionTips()
         val tip = tips.getOrNull(tipIndex.mod(max(tips.size, 1)))
         if (tip == null) {
-            addView(label("Draw a little more, then pause. I'll have a note for you.", 14f))
+            addView(label(tr("Draw a little more, then pause. I'll have a note for you."), 14f))
         } else {
-            addView(label(tip.topic, 13f, MUTED_TEXT))
+            addView(label(tr(tip.topic), 13f, MUTED_TEXT))
             addView(label(tip.text, 14f))
         }
         val actions = ArrayList<View>()
         if (tips.size > 1) {
-            actions += smallChip("Next") {
+            actions += smallChip(tr("Next")) {
                 tipIndex++
                 rerender("companion", ::companionPanel)
             }
         }
         if (tip?.why?.isNotEmpty() == true) {
-            actions += smallChip("Why", companionSection == 1) {
+            actions += smallChip(tr("Why"), companionSection == 1) {
                 companionSection = if (companionSection == 1) 0 else 1
                 rerender("companion", ::companionPanel)
             }
         }
         if (referenceMatch != null) {
-            actions += smallChip("Match", companionSection == 3) {
+            actions += smallChip(tr("Match"), companionSection == 3) {
                 companionSection = if (companionSection == 3) 0 else 3
                 rerender("companion", ::companionPanel)
             }
         }
-        actions += smallChip("Companion", companionSection == 2) {
+        if (report?.ideas?.isNotEmpty() == true) {
+            actions += smallChip(tr("Idea"), companionSection == 5) {
+                if (companionSection == 5) ideaIndex++
+                companionSection = 5
+                rerender("companion", ::companionPanel)
+            }
+        }
+        actions += smallChip(tr("Companion"), companionSection == 2) {
             companionSection = if (companionSection == 2) 0 else 2
             rerender("companion", ::companionPanel)
         }
         gapped(wrapRow(actions))
+        report?.ideas?.takeIf { companionSection == 5 && it.isNotEmpty() }?.let { ideas ->
+            val idea = ideas[ideaIndex.mod(ideas.size)]
+            gapped(label(tr("Idea"), 12f, MUTED_TEXT))
+            addView(label(idea.text, 14f))
+            val brush = (BrushKind.entries + customBrushes).firstOrNull { it.id == idea.brushId }
+            if (brush != null || idea.accentHue != null) {
+                gapped(
+                    wrapRow(
+                        listOf(
+                            smallChip(tr("Try it"), true) {
+                                brush?.let(::selectTool)
+                                idea.accentHue?.let { hue ->
+                                    setColor(Color.HSVToColor(floatArrayOf(hue, 0.7f, 0.85f)))
+                                    rememberColor()
+                                }
+                                closePanel()
+                            },
+                        ),
+                    ),
+                )
+            }
+        }
         val match = referenceMatch
         if (companionSection == 3 && match != null) {
             match.areas.forEach { area ->
                 gapped(
                     LinearLayout(context).apply {
                         gravity = Gravity.CENTER_VERTICAL
-                        addView(label(area.name, 13f, MUTED_TEXT), LinearLayout.LayoutParams(dp(96), -2))
+                        addView(label(tr(area.name), 13f, MUTED_TEXT), LinearLayout.LayoutParams(dp(96), -2))
                         addView(
                             android.widget.ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
                                 max = 100
                                 progress = (area.score * 100).roundToInt()
                                 progressTintList = ColorStateList.valueOf(ACCENT)
-                                contentDescription = "${area.name} match"
+                                contentDescription = tr("%1 match", tr(area.name))
                             },
                             LinearLayout.LayoutParams(0, -2, 1f),
                         )
@@ -716,14 +746,14 @@ class MainActivity : Activity(), ReferenceHost {
                 )
             }
             if (match.colors.isNotEmpty()) {
-                gapped(label("Colors to try", 13f, MUTED_TEXT))
+                gapped(label(tr("Colors to try"), 13f, MUTED_TEXT))
                 addView(
                     LinearLayout(context).apply {
                         match.colors.forEach { color ->
                             addView(
                                 View(context).apply {
                                     background = rounded(color, 8)
-                                    contentDescription = "Use this color"
+                                    contentDescription = tr("Use this color")
                                     setOnClickListener {
                                         setColor(color)
                                         rememberColor()
@@ -741,11 +771,11 @@ class MainActivity : Activity(), ReferenceHost {
             val current = report
             val images = ArrayList<Pair<String, Bitmap?>>()
             if (tip.topic == "Your references" && match != null) {
-                images += "Yours" to BitmapFactory.decodeFile(store.thumbnail(document.id).path)
-                images += "Closest reference" to matchedFiles.getOrNull(match.closest)?.let { decodeReference(it, dp(150)) }
+                images += tr("Yours") to BitmapFactory.decodeFile(store.thumbnail(document.id).path)
+                images += tr("Closest reference") to matchedFiles.getOrNull(match.closest)?.let { decodeReference(it, dp(150)) }
             } else if (current != null && (tip.topic == "Values" || tip.topic == "Silhouette")) {
                 val pixels = if (tip.topic == "Values") current.values else current.silhouette
-                images += "Preview" to Bitmap.createBitmap(pixels, current.width, current.height, Bitmap.Config.ARGB_8888)
+                images += tr("Preview") to Bitmap.createBitmap(pixels, current.width, current.height, Bitmap.Config.ARGB_8888)
             }
             if (images.isNotEmpty()) {
                 gapped(
@@ -773,9 +803,9 @@ class MainActivity : Activity(), ReferenceHost {
         if (companionSection == 2) {
             gapped(
                 wrapRow(
-                    listOf(smallChip("Hide") { setCompanionVisible(false) }) +
+                    listOf(smallChip(tr("Hide")) { setCompanionVisible(false) }) +
                         CompanionLook.entries.map { look ->
-                            smallChip(look.label, companion.look == look) { chooseCompanion(look) }
+                            smallChip(tr(look.label), companion.look == look) { chooseCompanion(look) }
                         },
                 ),
             )
@@ -830,7 +860,7 @@ class MainActivity : Activity(), ReferenceHost {
                         }
                     }
                     addView(BrushPreview(context, kind, previewColor), LinearLayout.LayoutParams(-1, dp(48)))
-                    addView(label(if (kind.id in favorites) "★ ${kind.label}" else kind.label, 13f))
+                    addView(label(if (kind.id in favorites) "★ ${tr(kind.label)}" else tr(kind.label), 13f))
                 },
                 GridLayout.LayoutParams().apply {
                     width = dp(144)
@@ -850,21 +880,21 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun brushPanel(): View = column().apply {
-        addView(label("Brushes", 16f))
+        addView(label(tr("Brushes"), 16f))
         val color = if (Color.luminance(canvas.brushColor) < 0.08f) TEXT_COLOR else canvas.brushColor
         val favorites = favoriteIds()
-        val brushes = (BrushKind.PAINT_BRUSHES + customBrushes).sortedBy { it.id !in favorites }
+        val brushes = (BrushKind.PAINT_BRUSHES + BrushKind.TEXTURE_BRUSHES + customBrushes).sortedBy { it.id !in favorites }
         gapped(toolGrid(brushes, color, favorites))
-        gapped(label("Tools", 13f, MUTED_TEXT))
+        gapped(label(tr("Tools"), 13f, MUTED_TEXT))
         gapped(
             LinearLayout(context).apply {
                 listOf(
-                    Triple(BrushKind.SMUDGE, R.drawable.ic_smudge, "Blend colors"),
-                    Triple(BrushKind.FILL, R.drawable.ic_fill, "Fill an area"),
-                    Triple(BrushKind.GRADIENT, R.drawable.ic_gradient, "Fade a color"),
+                    Triple(BrushKind.SMUDGE, R.drawable.ic_smudge, tr("Blend colors")),
+                    Triple(BrushKind.FILL, R.drawable.ic_fill, tr("Fill an area")),
+                    Triple(BrushKind.GRADIENT, R.drawable.ic_gradient, tr("Fade a color")),
                 ).forEachIndexed { index, (kind, icon, detail) ->
                     addView(
-                        toolCard(icon, kind.label, detail, canvas.brushKind === kind) {
+                        toolCard(icon, tr(kind.label), detail, canvas.brushKind === kind) {
                             selectTool(kind)
                             closePanel()
                         },
@@ -873,23 +903,23 @@ class MainActivity : Activity(), ReferenceHost {
                 }
             },
         )
-        addView(toolSlider("Stabilizer", (toolFor(canvas.brushKind).stabilizer * 100).roundToInt()) {
+        addView(toolSlider(tr("Stabilizer"), (toolFor(canvas.brushKind).stabilizer * 100).roundToInt()) {
             toolFor(canvas.brushKind).stabilizer = it / 100f
             canvas.stabilizerStrength = it / 100f
         })
         val gamma = ((canvas.pressureGamma - 0.4f) / 1.2f * 100).roundToInt()
-        addView(toolSlider("Pressure: soft to firm", gamma) {
+        addView(toolSlider(tr("Pressure: soft to firm"), gamma) {
             canvas.pressureGamma = 0.4f + it / 100f * 1.2f
             preferences.edit().putFloat("pressureGamma", canvas.pressureGamma).apply()
         })
         val active = canvas.brushKind
-        val actions = arrayListOf<View>(smallChip("New brush") { openBrushEditor(null) })
+        val actions = arrayListOf<View>(smallChip(tr("New brush")) { openBrushEditor(null) })
         if (active.custom) {
-            actions += smallChip("Edit") { openBrushEditor(active) }
-            actions += smallChip("Delete") { deleteBrush(active) }
+            actions += smallChip(tr("Edit")) { openBrushEditor(active) }
+            actions += smallChip(tr("Delete")) { deleteBrush(active) }
         }
         gapped(wrapRow(actions))
-        gapped(label("Hold a brush to keep it at the top.", 12f, MUTED_TEXT))
+        gapped(label(tr("Hold a brush to keep it at the top."), 12f, MUTED_TEXT))
     }
 
     private fun toolSlider(name: String, value: Int, change: (Int) -> Unit): View = column().apply {
@@ -921,19 +951,19 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun draftBrush(source: BrushKind, name: String, shape: FloatArray) = BrushKind(
-        editingBrush?.id ?: UUID.randomUUID().toString(), name.ifBlank { "My brush" },
+        editingBrush?.id ?: UUID.randomUUID().toString(), name.ifBlank { tr("My brush") },
         shape[0], shape[1], shape[2], shape[3], shape[4], shape[5], source.defaultSize,
         tip = draftTip, custom = true,
     )
 
     private fun brushEditor(source: BrushKind, editing: Boolean): View = column().apply {
-        addView(label(if (editing) "Edit brush" else "New brush", 16f))
+        addView(label(if (editing) tr("Edit brush") else tr("New brush"), 16f))
         val shape = floatArrayOf(
             source.minScale, source.spacing, source.flow, source.pressureFlow, source.hardness, source.grain,
         )
         val name = EditText(context).apply {
             setText(if (editing) source.label else "")
-            hint = "Brush name"
+            hint = tr("Brush name")
             setTextColor(TEXT_COLOR)
             setHintTextColor(MUTED_TEXT)
             isSingleLine = true
@@ -948,12 +978,12 @@ class MainActivity : Activity(), ReferenceHost {
         gapped(preview.apply { minimumHeight = dp(64) })
         preview.layoutParams.height = dp(64)
         listOf(
-            Triple("Size taper", 0, 1f),
-            Triple("Spacing", 1, 0.5f),
-            Triple("Flow", 2, 1f),
-            Triple("Pressure fade", 3, 1f),
-            Triple("Hardness", 4, 1f),
-            Triple("Grain", 5, 1f),
+            Triple(tr("Size taper"), 0, 1f),
+            Triple(tr("Spacing"), 1, 0.5f),
+            Triple(tr("Flow"), 2, 1f),
+            Triple(tr("Pressure fade"), 3, 1f),
+            Triple(tr("Hardness"), 4, 1f),
+            Triple(tr("Grain"), 5, 1f),
         ).forEach { (title, index, range) ->
             addView(toolSlider(title, (shape[index] / range * 100).roundToInt()) {
                 shape[index] = maxOf(0.02f, it / 100f * range)
@@ -963,7 +993,7 @@ class MainActivity : Activity(), ReferenceHost {
         gapped(
             wrapRow(
                 listOf(
-                    smallChip(if (draftTip == null) "Import tip" else "Replace tip") {
+                    smallChip(if (draftTip == null) tr("Import tip") else tr("Replace tip")) {
                         pendingBrushName = name.text.toString()
                         pendingBrushShape = shape
                         startActivityForResult(
@@ -971,7 +1001,7 @@ class MainActivity : Activity(), ReferenceHost {
                             PICK_TIP,
                         )
                     },
-                    smallChip("Save", true) {
+                    smallChip(tr("Save"), true) {
                         val brush = draftBrush(source, name.text.toString(), shape)
                         store.saveBrush(brush)
                         customBrushes.removeAll { it.id == brush.id }
@@ -1021,37 +1051,37 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun selectionPanel(): View = column().apply {
-        addView(label("Selection", 16f))
+        addView(label(tr("Selection"), 16f))
         gapped(
             LinearLayout(context).apply {
                 addView(
-                    toolCard(R.drawable.ic_select, "Lasso", "Draw around an area", false) {
-                        startSelection(SelectionTool.LASSO, "Draw around an area with your pen")
+                    toolCard(R.drawable.ic_select, tr("Lasso"), tr("Draw around an area"), false) {
+                        startSelection(SelectionTool.LASSO, tr("Draw around an area with your pen"))
                     },
                     LinearLayout.LayoutParams(0, -2, 1f),
                 )
                 addView(
-                    toolCard(R.drawable.ic_wand, "Magic wand", "Pick a color area", false) {
-                        startSelection(SelectionTool.WAND, "Tap a color area with your pen")
+                    toolCard(R.drawable.ic_wand, tr("Magic wand"), tr("Pick a color area"), false) {
+                        startSelection(SelectionTool.WAND, tr("Tap a color area with your pen"))
                     },
                     LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(6) },
                 )
             },
         )
         if (!hasSelection) {
-            gapped(label("Make a selection to keep painting inside it, or to move part of a layer.", 13f, MUTED_TEXT))
+            gapped(label(tr("Make a selection to keep painting inside it, or to move part of a layer."), 13f, MUTED_TEXT))
             return@apply
         }
-        gapped(actionRow(R.drawable.ic_transform, "Transform", "Move, scale, or rotate the selection") { selectionToLayer(cut = true, transform = true) })
-        gapped(actionRow(R.drawable.ic_copy, "Copy to layer") { selectionToLayer(cut = false, transform = false) })
-        gapped(actionRow(R.drawable.ic_cut, "Cut to layer") { selectionToLayer(cut = true, transform = false) })
+        gapped(actionRow(R.drawable.ic_transform, tr("Transform"), tr("Move, scale, or rotate the selection")) { selectionToLayer(cut = true, transform = true) })
+        gapped(actionRow(R.drawable.ic_copy, tr("Copy to layer")) { selectionToLayer(cut = false, transform = false) })
+        gapped(actionRow(R.drawable.ic_cut, tr("Cut to layer")) { selectionToLayer(cut = true, transform = false) })
         gapped(
-            actionRow(R.drawable.ic_invert, "Invert") {
+            actionRow(R.drawable.ic_invert, tr("Invert")) {
                 canvas.act { NativeEngine.invertSelection(it) }
                 closePanel()
             },
         )
-        gapped(actionRow(R.drawable.ic_close, "Clear selection") { clearSelection() })
+        gapped(actionRow(R.drawable.ic_close, tr("Clear selection")) { clearSelection() })
     }
 
     private fun startSelection(tool: SelectionTool, hint: String) {
@@ -1097,7 +1127,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     internal fun selectionToLayer(cut: Boolean, transform: Boolean) {
         if (document.layers.size >= maxLayers) {
-            Toast.makeText(this, "This canvas can hold $maxLayers layers", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
             return
         }
         val id = document.nextLayerId++
@@ -1105,7 +1135,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.act { NativeEngine.copySelectionToLayer(it, id, cut) }
         editLayers(pixels = cut) {
             val index = document.layers.indexOfFirst { it.id == document.activeLayer } + 1
-            document.layers.add(index, LayerInfo(id, "Selection $id"))
+            document.layers.add(index, LayerInfo(id, tr("Selection %1", id)))
             document.activeLayer = id
         }
         clearSelection()
@@ -1125,7 +1155,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun adjustPanel(): View = column().apply {
-        addView(label("Adjust layer", 16f))
+        addView(label(tr("Adjust layer"), 16f))
         adjustment = floatArrayOf(0f, 1f, 0f, 0f, 0f, 0f)
         pushAdjustment()
         fun slider(title: String, index: Int, low: Float, high: Float, start: Int) {
@@ -1134,17 +1164,17 @@ class MainActivity : Activity(), ReferenceHost {
                 pushAdjustment()
             })
         }
-        slider("Hue", 0, -0.5f, 0.5f, 50)
-        slider("Saturation", 1, 0f, 2f, 50)
-        slider("Brightness", 2, -0.5f, 0.5f, 50)
-        slider("Shadows", 3, -0.5f, 0.5f, 50)
-        slider("Midtones", 4, -0.5f, 0.5f, 50)
-        slider("Highlights", 5, -0.5f, 0.5f, 50)
+        slider(tr("Hue"), 0, -0.5f, 0.5f, 50)
+        slider(tr("Saturation"), 1, 0f, 2f, 50)
+        slider(tr("Brightness"), 2, -0.5f, 0.5f, 50)
+        slider(tr("Shadows"), 3, -0.5f, 0.5f, 50)
+        slider(tr("Midtones"), 4, -0.5f, 0.5f, 50)
+        slider(tr("Highlights"), 5, -0.5f, 0.5f, 50)
         gapped(
             wrapRow(
                 listOf(
-                    smallChip("Cancel") { closePanel() },
-                    smallChip("Apply", true) {
+                    smallChip(tr("Cancel")) { closePanel() },
+                    smallChip(tr("Apply"), true) {
                         panelKey = ""
                         panel?.dismiss()
                         applyAdjustment()
@@ -1202,7 +1232,7 @@ class MainActivity : Activity(), ReferenceHost {
         for (index in 0..1) {
             val handle = View(this).apply {
                 background = rounded(0xFF1D9E75.toInt(), 18).apply { setStroke(dp(3), TEXT_COLOR) }
-                contentDescription = if (index == 0) "Top of head" else "Bottom of feet"
+                contentDescription = if (index == 0) tr("Top of head") else tr("Bottom of feet")
             }
             val window = PopupWindow(handle, size, size).apply { isClippingEnabled = false }
             handle.setOnTouchListener { _, event ->
@@ -1231,13 +1261,13 @@ class MainActivity : Activity(), ReferenceHost {
     private fun exportTimelapse() {
         val frames = store.timelapseFrames(document.id)
         if (frames.size < 2) {
-            Toast.makeText(this, "Draw a little more to build a time-lapse", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("Draw a little more to build a time-lapse"), Toast.LENGTH_SHORT).show()
             return
         }
         val name = document.name
         val width = ArtworkStore.THUMBNAIL_WIDTH * 2
         val height = document.thumbnailHeight * 2
-        Toast.makeText(this, "Exporting time-lapse", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, tr("Exporting time-lapse"), Toast.LENGTH_SHORT).show()
         saver.execute {
             val saved = runCatching {
                 val target = store.exportTimelapseTarget(name)!!
@@ -1246,7 +1276,7 @@ class MainActivity : Activity(), ReferenceHost {
                 }
             }.isSuccess
             runOnUiThread {
-                val message = if (saved) "Saved to Movies/Cappuccino" else "Couldn't export this time-lapse"
+                val message = if (saved) tr("Saved to Movies/Cappuccino") else tr("Couldn't export this time-lapse")
                 Toast.makeText(this, message, Toast.LENGTH_LONG).show()
             }
         }
@@ -1281,22 +1311,22 @@ class MainActivity : Activity(), ReferenceHost {
         closePanel()
         canvas.beginTransform(layer.id)
         val controls = pill().apply {
-            addView(chip("Cancel") { finishTransform(keep = false) })
+            addView(chip(tr("Cancel")) { finishTransform(keep = false) })
             addView(
-                chip("Done", true) { finishTransform(keep = true) },
+                chip(tr("Done"), true) { finishTransform(keep = true) },
                 LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
             )
         }
         transformControls = PopupWindow(controls, -2, -2).apply {
             showAtLocation(canvas, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, dp(24))
         }
-        Toast.makeText(this, "Drag to move. Pinch to scale and rotate.", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, tr("Drag to move. Pinch to scale and rotate."), Toast.LENGTH_SHORT).show()
     }
 
     private fun eraserPanel() = column().apply {
-        addView(label("Erasers", 16f))
+        addView(label(tr("Erasers"), 16f))
         gapped(toolGrid(BrushKind.entries.filter { it.isEraser }, TEXT_COLOR))
-        gapped(label("Every brush shape can erase, and each one remembers its own size and opacity.", 13f, MUTED_TEXT))
+        gapped(label(tr("Every brush shape can erase, and each one remembers its own size and opacity."), 13f, MUTED_TEXT))
     }
 
     private fun swatchRow(colors: List<Int>, size: Int = 34, onLongPress: (() -> Unit)? = null) =
@@ -1305,7 +1335,7 @@ class MainActivity : Activity(), ReferenceHost {
                 addView(
                     View(context).apply {
                         background = rounded(color, 8)
-                        contentDescription = "Color swatch"
+                        contentDescription = tr("Color swatch")
                         setOnClickListener {
                             setColor(color)
                             rerender("color", ::colorPanel)
@@ -1329,7 +1359,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun colorPanel(): View = column().apply {
         addView(
-            segmented(listOf("Picker", "Harmony", "Palettes"), colorTab) {
+            segmented(listOf(tr("Picker"), tr("Harmony"), tr("Palettes")), colorTab) {
                 colorTab = it
                 rerender("color", ::colorPanel)
             },
@@ -1342,7 +1372,7 @@ class MainActivity : Activity(), ReferenceHost {
                         addView(
                             View(context).apply {
                                 background = swatchBackground(colorBeforePanel)
-                                contentDescription = "Previous color"
+                                contentDescription = tr("Previous color")
                                 setOnClickListener {
                                     setColor(colorBeforePanel)
                                     rerender("color", ::colorPanel)
@@ -1371,35 +1401,35 @@ class MainActivity : Activity(), ReferenceHost {
                         header.findViewWithTag<android.widget.TextView>("hex")?.text = hex(it)
                     }.apply { minimumHeight = dp(230) },
                 )
-                gapped(label("Values of this hue", 13f, MUTED_TEXT))
+                gapped(label(tr("Values of this hue"), 13f, MUTED_TEXT))
                 addView(swatchRow(valueScale(canvas.brushColor)))
                 if (recentColors.isNotEmpty()) {
-                    gapped(label("Recent", 13f, MUTED_TEXT))
+                    gapped(label(tr("Recent"), 13f, MUTED_TEXT))
                     addView(swatchRow(recentColors, 28))
                 }
             }
             1 -> harmoniesFor(canvas.brushColor).forEach { harmony ->
-                gapped(label(harmony.name, 13f, MUTED_TEXT))
+                gapped(label(tr(harmony.name), 13f, MUTED_TEXT))
                 addView(swatchRow(harmony.colors))
             }
             else -> {
                 gapped(
                     wrapRow(
                         listOf(
-                            smallChip("From artwork") { paletteFromArtwork() },
-                            chip("From reference") {
+                            smallChip(tr("From artwork")) { paletteFromArtwork() },
+                            chip(tr("From reference")) {
                         val reference = references.values.lastOrNull()
                         if (reference == null) {
-                            Toast.makeText(context, "Open a reference first", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, tr("Open a reference first"), Toast.LENGTH_SHORT).show()
                         } else {
                             onReferencePalette(reference)
                         }
                     },
-                            smallChip("Save recent") {
+                            smallChip(tr("Save recent")) {
                                 if (recentColors.size < 2) {
-                                    Toast.makeText(context, "Use at least two colors first", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, tr("Use at least two colors first"), Toast.LENGTH_SHORT).show()
                                 } else {
-                                    store.addPalette("Recent colors", recentColors.toList())
+                                    store.addPalette(tr("Recent colors"), recentColors.toList())
                                     rerender("color", ::colorPanel)
                                 }
                             },
@@ -1407,11 +1437,11 @@ class MainActivity : Activity(), ReferenceHost {
                     ),
                 )
                 store.palettes().forEach { palette ->
-                    gapped(label(palette.name, 13f, MUTED_TEXT))
+                    gapped(label(tr(palette.name), 13f, MUTED_TEXT))
                     addView(swatchRow(palette.colors, onLongPress = { confirmDeletePalette(palette) }))
                 }
                 STARTER_PALETTES.forEach { palette ->
-                    gapped(label(palette.name, 13f, MUTED_TEXT))
+                    gapped(label(tr(palette.name), 13f, MUTED_TEXT))
                     addView(swatchRow(palette.colors))
                 }
             }
@@ -1422,9 +1452,9 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun confirmDeletePalette(palette: Palette) {
         AlertDialog.Builder(this)
-            .setTitle("Delete ${palette.name}?")
-            .setNegativeButton("Keep", null)
-            .setPositiveButton("Delete") { _, _ ->
+            .setTitle(tr("Delete %1?", tr(palette.name)))
+            .setNegativeButton(tr("Keep"), null)
+            .setPositiveButton(tr("Delete")) { _, _ ->
                 store.deletePalette(palette.id)
                 rerender("color", ::colorPanel)
             }
@@ -1435,7 +1465,7 @@ class MainActivity : Activity(), ReferenceHost {
         runOnUiThread {
             if (isDestroyed) return@runOnUiThread
             if (colors.isEmpty()) {
-                Toast.makeText(this, "There aren't any colors to collect yet", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, tr("There aren't any colors to collect yet"), Toast.LENGTH_SHORT).show()
                 return@runOnUiThread
             }
             store.addPalette(name, colors)
@@ -1455,46 +1485,46 @@ class MainActivity : Activity(), ReferenceHost {
                 val pixels = IntArray(width * height)
                 bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
                 bitmap.recycle()
-                savePalette("${document.name} colors", extractPalette(pixels))
+                savePalette(tr("%1 colors", document.name), extractPalette(pixels))
             }
         }
     }
 
     private fun viewPanel(): View = column().apply {
-        addView(label("Art direction", 16f))
-        gapped(label("Check your image", 12f, MUTED_TEXT))
-        addView(segmented(listOf("Color", "Gray", "2 values", "3 values"), viewMode) {
+        addView(label(tr("Art direction"), 16f))
+        gapped(label(tr("Check your image"), 12f, MUTED_TEXT))
+        addView(segmented(listOf(tr("Color"), tr("Gray"), tr("2 values"), tr("3 values")), viewMode) {
             viewMode = it
             applyViewOptions()
         })
-        gapped(label("Composition", 12f, MUTED_TEXT))
-        addView(segmented(GUIDES.map { if (it == "None") "Off" else it }, guide) {
+        gapped(label(tr("Composition"), 12f, MUTED_TEXT))
+        addView(segmented(GUIDES.map { tr(if (it == "None") tr("Off") else it) }, guide) {
             guide = it
             applyViewOptions()
         })
-        gapped(label("Perspective", 12f, MUTED_TEXT))
-        addView(segmented(listOf("Off", "1 point", "2 points", "3 points"), document.perspective.size / 2) {
+        gapped(label(tr("Perspective"), 12f, MUTED_TEXT))
+        addView(segmented(listOf(tr("Off"), tr("1 point"), tr("2 points"), tr("3 points")), document.perspective.size / 2) {
             setPerspectiveCount(it)
         })
-        gapped(label("Light direction", 12f, MUTED_TEXT))
-        addView(segmented(Light.entries.map { it.label }, document.light.ordinal) {
+        gapped(label(tr("Light direction"), 12f, MUTED_TEXT))
+        addView(segmented(Light.entries.map { tr(it.label) }, document.light.ordinal) {
             document.light = Light.entries[it]
             markUnsaved()
             rerender("view", ::viewPanel)
         })
-        gapped(label("Figure height", 12f, MUTED_TEXT))
+        gapped(label(tr("Figure height"), 12f, MUTED_TEXT))
         val figures = listOf(0f, 6f, 7.5f, 8f)
         addView(
             segmented(
-                listOf("Off", "6 heads", "7.5 heads", "8 heads"),
+                listOf(tr("Off"), tr("6 heads"), tr("7.5 heads"), tr("8 heads")),
                 figures.indexOf(document.figure.getOrElse(2) { 0f }).coerceAtLeast(0),
             ) { setFigure(figures[it]) },
         )
         if (document.perspective.isNotEmpty() || document.figure.isNotEmpty()) {
-            gapped(label("Drag the circles to place your guides.", 12f, MUTED_TEXT))
+            gapped(label(tr("Drag the circles to place your guides."), 12f, MUTED_TEXT))
         }
-        gapped(actionRow(R.drawable.ic_flip, "Flip canvas", "A fresh look at your drawing") { canvas.flip() })
-        gapped(label("These change your view only, never your artwork.", 12f, MUTED_TEXT))
+        gapped(actionRow(R.drawable.ic_flip, tr("Flip canvas"), tr("A fresh look at your drawing")) { canvas.flip() })
+        gapped(label(tr("These change your view only, never your artwork."), 12f, MUTED_TEXT))
     }
 
     private fun setPerspectiveCount(count: Int) {
@@ -1518,7 +1548,7 @@ class MainActivity : Activity(), ReferenceHost {
         for (index in 0 until document.perspective.size / 2) {
             val handle = View(this).apply {
                 background = rounded(colors[index], 18).apply { setStroke(dp(3), TEXT_COLOR) }
-                contentDescription = "Vanishing point ${index + 1}"
+                contentDescription = tr("Vanishing point %1", index + 1)
             }
             val window = PopupWindow(handle, size, size).apply { isClippingEnabled = false }
             handle.setOnTouchListener { _, event ->
@@ -1628,7 +1658,7 @@ class MainActivity : Activity(), ReferenceHost {
         history.clear()
         engineLayers.removeAll(retired)
         canvas.act { engine -> retired.forEach { NativeEngine.deleteLayer(engine, it) } }
-        Toast.makeText(this, "Older undo steps were cleared to free memory", Toast.LENGTH_LONG).show()
+        Toast.makeText(this, tr("Older undo steps were cleared to free memory"), Toast.LENGTH_LONG).show()
     }
 
     private fun restoreLayers(state: LayerState) {
@@ -1687,8 +1717,8 @@ class MainActivity : Activity(), ReferenceHost {
         addView(
             LinearLayout(context).apply {
                 gravity = Gravity.CENTER_VERTICAL
-                addView(label("Layers", 16f), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(iconButton(R.drawable.ic_add, "Add layer") { addLayer() })
+                addView(label(tr("Layers"), 16f), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(iconButton(R.drawable.ic_add, tr("Add layer")) { addLayer() })
             },
         )
         val rows = ArrayList<View>()
@@ -1715,14 +1745,14 @@ class MainActivity : Activity(), ReferenceHost {
         requestLayerThumbnails()
         if (active == null) return@apply
 
-        gapped(label("Opacity", 12f, MUTED_TEXT))
+        gapped(label(tr("Opacity"), 12f, MUTED_TEXT))
         addView(
             SeekBar(context).apply {
                 max = 100
                 progress = (active.opacity * 100).roundToInt()
                 progressTintList = ColorStateList.valueOf(ACCENT)
                 thumbTintList = ColorStateList.valueOf(ACCENT)
-                contentDescription = "Layer opacity"
+                contentDescription = tr("Layer opacity")
                 onChange {
                     val value = it / 100f
                     editLayers(mergeKey = "opacity${active.id}", structural = false) {
@@ -1734,9 +1764,9 @@ class MainActivity : Activity(), ReferenceHost {
         gapped(
             LinearLayout(context).apply {
                 gravity = Gravity.CENTER_VERTICAL
-                addView(label("Blend", 12f, MUTED_TEXT), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(label(tr("Blend"), 12f, MUTED_TEXT), LinearLayout.LayoutParams(0, -2, 1f))
                 addView(
-                    smallChip("${BLEND_MODES[active.blend]} ▾") { }.apply {
+                    smallChip("${tr(BLEND_MODES[active.blend])} ▾") { }.apply {
                         setOnClickListener { chooseBlend(this, active) }
                     },
                 )
@@ -1745,23 +1775,23 @@ class MainActivity : Activity(), ReferenceHost {
         gapped(
             tileGrid(
                 listOf(
-                    iconTile(R.drawable.ic_transform, "Transform") { startTransform() },
-                    iconTile(R.drawable.ic_adjust, "Adjust") {
+                    iconTile(R.drawable.ic_transform, tr("Transform")) { startTransform() },
+                    iconTile(R.drawable.ic_adjust, tr("Adjust")) {
                         closePanel()
                         showPanel("adjust", adjustPanel())
                     },
-                    iconTile(R.drawable.ic_clip, "Clip", active.clip) {
+                    iconTile(R.drawable.ic_clip, tr("Clip"), active.clip) {
                         setClip(active, !active.clip)
                         refreshLayers()
                     },
-                    iconTile(R.drawable.ic_group, if (active.groupId != 0) "Ungroup" else "Group") { toggleGroup(active) },
-                    iconTile(R.drawable.ic_duplicate, "Duplicate") { duplicateLayer(active) },
-                    iconTile(R.drawable.ic_merge, "Merge") { mergeDown(active) },
-                    iconTile(R.drawable.ic_trash, "Delete") { deleteLayer(active) },
+                    iconTile(R.drawable.ic_group, if (active.groupId != 0) tr("Ungroup") else tr("Group")) { toggleGroup(active) },
+                    iconTile(R.drawable.ic_duplicate, tr("Duplicate")) { duplicateLayer(active) },
+                    iconTile(R.drawable.ic_merge, tr("Merge")) { mergeDown(active) },
+                    iconTile(R.drawable.ic_trash, tr("Delete")) { deleteLayer(active) },
                 ),
             ),
         )
-        gapped(label("Hold a layer to rename it. Drag its lines to reorder.", 12f, MUTED_TEXT))
+        gapped(label(tr("Hold a layer to rename it. Drag its lines to reorder."), 12f, MUTED_TEXT))
     }
 
     private fun groupRow(group: LayerGroup): View = LinearLayout(this).apply {
@@ -1774,7 +1804,7 @@ class MainActivity : Activity(), ReferenceHost {
             refreshLayers()
         }
         setOnLongClickListener {
-            askForName("Rename group", group.name) { name ->
+            askForName(tr("Rename group"), group.name) { name ->
                 editLayers(structural = false) { group.name = name }
                 refreshLayers()
             }
@@ -1785,7 +1815,7 @@ class MainActivity : Activity(), ReferenceHost {
             LinearLayout.LayoutParams(0, -2, 1f),
         )
         addView(
-            iconButton(if (group.visible) R.drawable.ic_visible else R.drawable.ic_hidden, "Show or hide ${group.name}") {
+            iconButton(if (group.visible) R.drawable.ic_visible else R.drawable.ic_hidden, tr("Show or hide %1", group.name)) {
                 editLayers(structural = false) { group.visible = !group.visible }
                 refreshLayers()
             },
@@ -1804,7 +1834,7 @@ class MainActivity : Activity(), ReferenceHost {
             val below = document.layers.getOrNull(index - 1)
             val id = below?.groupId?.takeIf { it != 0 } ?: document.nextGroupId++
             editLayers {
-                if (document.groups.none { it.id == id }) document.groups.add(LayerGroup(id, "Group $id"))
+                if (document.groups.none { it.id == id }) document.groups.add(LayerGroup(id, tr("Group %1", id)))
                 layer.groupId = id
                 below?.groupId = id
             }
@@ -1814,7 +1844,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun chooseBlend(anchor: View, layer: LayerInfo) {
         PopupMenu(this, anchor).apply {
-            BLEND_MODES.forEachIndexed { index, name -> menu.add(0, index, index, name) }
+            BLEND_MODES.forEachIndexed { index, name -> menu.add(0, index, index, tr(name)) }
             setOnMenuItemClickListener {
                 val blend = it.itemId
                 editLayers(structural = false) { layerById(layer.id)?.blend = blend }
@@ -1831,12 +1861,12 @@ class MainActivity : Activity(), ReferenceHost {
         val thumbnail = ImageView(this).apply {
             background = rounded(Color.WHITE, 4)
             scaleType = ImageView.ScaleType.CENTER_CROP
-            contentDescription = "${layer.name} preview"
+            contentDescription = tr("%1 preview", layer.name)
         }
         layerThumbnails[layer.id] = thumbnail
         val handle = ImageView(this).apply {
             setImageResource(R.drawable.ic_handle)
-            contentDescription = "Reorder ${layer.name}"
+            contentDescription = tr("Reorder %1", layer.name)
             setPadding(dp(6), dp(10), dp(6), dp(10))
         }
         val row = LinearLayout(this).apply {
@@ -1861,14 +1891,14 @@ class MainActivity : Activity(), ReferenceHost {
                 LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) },
             )
             addView(
-                iconButton(if (layer.alphaLock) R.drawable.ic_lock else R.drawable.ic_unlock, "Lock transparency") {
+                iconButton(if (layer.alphaLock) R.drawable.ic_lock else R.drawable.ic_unlock, tr("Lock transparency")) {
                     editLayers(structural = false) { layer.alphaLock = !layer.alphaLock }
                     syncAlphaLock()
                     refreshLayers()
                 },
             )
             addView(
-                iconButton(if (layer.visible) R.drawable.ic_visible else R.drawable.ic_hidden, "Show or hide ${layer.name}") {
+                iconButton(if (layer.visible) R.drawable.ic_visible else R.drawable.ic_hidden, tr("Show or hide %1", layer.name)) {
                     editLayers(structural = false) { layer.visible = !layer.visible }
                     refreshLayers()
                 },
@@ -1917,7 +1947,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     internal fun addLayer() {
         if (document.layers.size >= maxLayers) {
-            Toast.makeText(this, "This canvas can hold $maxLayers layers", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
             return
         }
         val id = document.nextLayerId++
@@ -1925,7 +1955,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.act { NativeEngine.createLayer(it, id) }
         editLayers {
             val index = document.layers.indexOfFirst { it.id == document.activeLayer } + 1
-            document.layers.add(index, LayerInfo(id, "Layer $id"))
+            document.layers.add(index, LayerInfo(id, tr("Layer %1", id)))
             document.activeLayer = id
         }
         refreshLayers()
@@ -1933,14 +1963,14 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun duplicateLayer(layer: LayerInfo) {
         if (document.layers.size >= maxLayers) {
-            Toast.makeText(this, "This canvas can hold $maxLayers layers", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
             return
         }
         val id = document.nextLayerId++
         engineLayers.add(id)
         canvas.act { NativeEngine.duplicateLayer(it, layer.id, id) }
         editLayers {
-            val copy = layer.copy(id = id, name = "${layer.name} copy", file = null)
+            val copy = layer.copy(id = id, name = tr("%1 copy", layer.name), file = null)
             document.layers.add(document.layers.indexOf(layer) + 1, copy)
             document.activeLayer = id
         }
@@ -1950,7 +1980,7 @@ class MainActivity : Activity(), ReferenceHost {
     internal fun mergeDown(layer: LayerInfo) {
         val index = document.layers.indexOf(layer)
         if (index == 0) {
-            Toast.makeText(this, "There isn't a layer below this one", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("There isn't a layer below this one"), Toast.LENGTH_SHORT).show()
             return
         }
         val below = document.layers[index - 1]
@@ -1975,7 +2005,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     internal fun deleteLayer(layer: LayerInfo) {
         if (document.layers.size == 1) {
-            Toast.makeText(this, "An artwork needs at least one layer", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("An artwork needs at least one layer"), Toast.LENGTH_SHORT).show()
             return
         }
         editLayers {
@@ -1995,56 +2025,73 @@ class MainActivity : Activity(), ReferenceHost {
         AlertDialog.Builder(this)
             .setTitle(title)
             .setView(field)
-            .setNegativeButton("Cancel", null)
-            .setPositiveButton("Save") { _, _ ->
+            .setNegativeButton(tr("Cancel"), null)
+            .setPositiveButton(tr("Save")) { _, _ ->
                 field.text.toString().trim().takeIf { it.isNotEmpty() }?.let(done)
             }
             .show()
     }
 
-    private fun renameLayer(layer: LayerInfo) = askForName("Rename layer", layer.name) { name ->
+    private fun renameLayer(layer: LayerInfo) = askForName(tr("Rename layer"), layer.name) { name ->
         editLayers(structural = false) { layer.name = name }
         refreshLayers()
     }
 
     private fun actionsPanel() = column().apply {
         addView(label(document.name, 16f))
-        addView(label("${document.width} x ${document.height} pixels · ${document.layers.size} of $maxLayers layers", 12f, MUTED_TEXT))
+        addView(label(tr("%1 x %2 pixels · %3 of %4 layers", document.width, document.height, document.layers.size, maxLayers), 12f, MUTED_TEXT))
         gapped(
-            actionRow(R.drawable.ic_rename, "Rename artwork") {
+            actionRow(R.drawable.ic_rename, tr("Rename artwork")) {
                 closePanel()
-                askForName("Rename artwork", document.name) {
+                askForName(tr("Rename artwork"), document.name) {
                     document.name = it
                     markUnsaved()
                 }
             },
         )
-        gapped(label("Export", 13f, MUTED_TEXT))
+        gapped(label(tr("Export"), 13f, MUTED_TEXT))
         gapped(
-            actionRow(R.drawable.ic_export, "PNG image", "Flattened, saved to Pictures") {
+            actionRow(R.drawable.ic_export, tr("PNG image"), tr("Flattened, saved to Pictures")) {
                 closePanel()
                 exportPng()
             },
         )
         gapped(
-            actionRow(R.drawable.ic_layersfile, "PSD file", "Keeps your layers, saved to Download") {
+            actionRow(R.drawable.ic_layersfile, tr("PSD file"), tr("Keeps your layers, saved to Download")) {
                 closePanel()
                 exportPsd()
             },
         )
         gapped(
-            actionRow(R.drawable.ic_video, "Time-lapse", "A video of your progress") {
+            actionRow(R.drawable.ic_video, tr("Time-lapse"), tr("A video of your progress")) {
                 closePanel()
                 exportTimelapse()
             },
         )
-        gapped(label("Companion", 13f, MUTED_TEXT))
+        gapped(label(tr("Language"), 13f, MUTED_TEXT))
+        gapped(
+            segmented(Language.entries.map { it.label }, I18n.language.ordinal) { index ->
+                setLanguage(Language.entries[index])
+            },
+        )
+        gapped(label(tr("Companion"), 13f, MUTED_TEXT))
         val visible = preferences.getBoolean("companion", true)
         gapped(
-            actionRow(R.drawable.ic_companion, if (visible) "Hide companion" else "Wake companion") {
+            actionRow(R.drawable.ic_companion, if (visible) tr("Hide companion") else tr("Wake companion")) {
                 setCompanionVisible(!visible)
             },
         )
+    }
+
+    private fun setLanguage(language: Language) {
+        if (language == I18n.language) return
+        (application as CappuccinoApp).saveLanguage(language)
+        save()
+        startActivity(
+            Intent(this, GalleryActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        )
+        finish()
     }
 
     /** Sends one layer at a time through the GL thread, so a tablet isn't short of memory. */
@@ -2053,7 +2100,7 @@ class MainActivity : Activity(), ReferenceHost {
         val name = document.name
         val width = document.width
         val height = document.height
-        Toast.makeText(this, "Exporting PSD", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, tr("Exporting PSD"), Toast.LENGTH_SHORT).show()
         canvas.snapshot { engine ->
             val parts = layers.map { layer ->
                 val pixels = ArtworkStore.pixelBuffer(width, height)
@@ -2076,7 +2123,7 @@ class MainActivity : Activity(), ReferenceHost {
                     store.exportPsd(name, width, height, psdLayers, merged)
                 }.getOrDefault(false)
                 runOnUiThread {
-                    val message = if (saved) "Saved to Download/Cappuccino" else "Couldn't export this PSD"
+                    val message = if (saved) tr("Saved to Download/Cappuccino") else tr("Couldn't export this PSD")
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
             }
@@ -2093,7 +2140,7 @@ class MainActivity : Activity(), ReferenceHost {
             saver.execute {
                 val saved = runCatching { store.exportPng(name, width, height, pixels) }.getOrDefault(false)
                 runOnUiThread {
-                    val message = if (saved) "Saved to Pictures/Cappuccino" else "Couldn't export this PNG"
+                    val message = if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG")
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
             }
@@ -2101,7 +2148,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun referencesPanel(): View = column().apply {
-        addView(label("References", 16f))
+        addView(label(tr("References"), 16f))
         val files = store.references(document.projectId)
         val cell = (dp(PANEL_WIDTH) - dp(28) - dp(8)) / 3
         gapped(
@@ -2112,9 +2159,9 @@ class MainActivity : Activity(), ReferenceHost {
                         orientation = LinearLayout.VERTICAL
                         gravity = Gravity.CENTER
                         background = rounded(SURFACE_RAISED, 10)
-                        contentDescription = "Add references"
+                        contentDescription = tr("Add references")
                         addView(ImageView(context).apply { setImageResource(R.drawable.ic_add) }, LinearLayout.LayoutParams(dp(24), dp(24)))
-                        addView(label("Add", 12f), LinearLayout.LayoutParams(-2, -2))
+                        addView(label(tr("Add"), 12f), LinearLayout.LayoutParams(-2, -2))
                         setOnClickListener {
                             startActivityForResult(
                                 Intent(Intent.ACTION_OPEN_DOCUMENT)
@@ -2143,7 +2190,7 @@ class MainActivity : Activity(), ReferenceHost {
                                     background = rounded(SURFACE_RAISED, 8)
                                     clipToOutline = true
                                     setImageBitmap(decodeReference(file, cell))
-                                    contentDescription = if (open) "Close reference" else "Open reference"
+                                    contentDescription = if (open) tr("Close reference") else tr("Open reference")
                                     setOnClickListener {
                                         toggleReference(file)
                                         rerender("references", ::referencesPanel)
@@ -2165,19 +2212,19 @@ class MainActivity : Activity(), ReferenceHost {
             },
         )
         val hint = if (files.isEmpty()) {
-            "Add images, or share them here from another app."
+            tr("Add images, or share them here from another app.")
         } else {
-            "Tap to open. Hold to delete. On a reference, tap for tools."
+            tr("Tap to open. Hold to delete. On a reference, tap for tools.")
         }
         gapped(label(hint, 12f, MUTED_TEXT))
     }
 
     private fun confirmDeleteReference(file: File) {
         AlertDialog.Builder(this)
-            .setTitle("Delete this reference?")
-            .setMessage("It's removed from this project and every artwork using it.")
-            .setNegativeButton("Keep", null)
-            .setPositiveButton("Delete") { _, _ ->
+            .setTitle(tr("Delete this reference?"))
+            .setMessage(tr("It's removed from this project and every artwork using it."))
+            .setNegativeButton(tr("Keep"), null)
+            .setPositiveButton(tr("Delete")) { _, _ ->
                 references.remove(file.name)?.dismiss()
                 file.delete()
                 rememberReferences()
@@ -2192,7 +2239,7 @@ class MainActivity : Activity(), ReferenceHost {
         if (requestCode == PICK_TIP && resultCode == RESULT_OK && data?.data != null) {
             val bitmap = contentResolver.openInputStream(data.data!!)?.use(BitmapFactory::decodeStream)
             if (bitmap == null) {
-                Toast.makeText(this, "Couldn't read this image", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, tr("Couldn't read this image"), Toast.LENGTH_SHORT).show()
                 return
             }
             draftTip = tipFrom(bitmap)
@@ -2235,7 +2282,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
         val bitmap = decodeReference(file, REFERENCE_SIZE)
         if (bitmap == null) {
-            Toast.makeText(this, "Couldn't open this image", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, tr("Couldn't open this image"), Toast.LENGTH_SHORT).show()
             return
         }
         val width = fitReferenceWidth(bitmap.width, bitmap.height, canvas.width, canvas.height)
@@ -2285,16 +2332,16 @@ class MainActivity : Activity(), ReferenceHost {
             val pixels = IntArray(small.width * small.height)
             small.getPixels(pixels, 0, small.width, 0, 0, small.width, small.height)
             val colors = extractPalette(pixels)
-            savePalette("Reference colors", colors)
+            savePalette(tr("Reference colors"), colors)
             runOnUiThread {
-                if (colors.isNotEmpty()) Toast.makeText(this, "Palette saved", Toast.LENGTH_SHORT).show()
+                if (colors.isNotEmpty()) Toast.makeText(this, tr("Palette saved"), Toast.LENGTH_SHORT).show()
             }
         }
     }
 
     override fun onReferenceToLayer(reference: ReferenceWindow) {
         if (document.layers.size >= maxLayers) {
-            Toast.makeText(this, "This canvas can hold $maxLayers layers", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
             return
         }
         val bitmap = reference.bitmap
@@ -2326,7 +2373,7 @@ class MainActivity : Activity(), ReferenceHost {
                 }
                 editLayers {
                     val index = document.layers.indexOfFirst { it.id == document.activeLayer } + 1
-                    document.layers.add(index, LayerInfo(id, "Reference $id"))
+                    document.layers.add(index, LayerInfo(id, tr("Reference %1", id)))
                     document.activeLayer = id
                 }
                 refreshLayers()

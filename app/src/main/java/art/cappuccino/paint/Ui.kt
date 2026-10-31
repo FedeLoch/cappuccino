@@ -1,10 +1,12 @@
 package art.cappuccino.paint
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
@@ -13,9 +15,11 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import java.nio.ByteBuffer
 import java.util.Random
 import kotlin.math.PI
 import kotlin.math.sin
+import kotlin.math.sqrt
 
 const val SURFACE = 0xFF2C2C2A.toInt()
 const val SURFACE_RAISED = 0xFF444441.toInt()
@@ -173,10 +177,16 @@ class BrushPreview(
 ) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val random = Random(kind.id.hashCode().toLong())
+    private val tipBitmap = kind.tip?.let { tip ->
+        val side = sqrt(tip.size.toFloat()).toInt()
+        Bitmap.createBitmap(side, side, Bitmap.Config.ALPHA_8).apply {
+            copyPixelsFromBuffer(ByteBuffer.wrap(tip))
+        }
+    }
 
     init {
         setLayerType(LAYER_TYPE_SOFTWARE, null)
-        contentDescription = "${kind.label} preview"
+        contentDescription = tr("%1 preview", tr(kind.label))
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -196,7 +206,13 @@ class BrushPreview(
             val flow = kind.flow * (1f - kind.pressureFlow * (1f - pressure))
             paint.color = color
             paint.alpha = (255 * minOf(1f, flow * 1.6f + 0.05f)).toInt()
-            canvas.drawCircle(x, y, maxOf(1.5f, maxRadius * scale), paint)
+            val radius = maxOf(1.5f, maxRadius * scale)
+            val stamp = tipBitmap
+            if (stamp != null) {
+                canvas.drawBitmap(stamp, null, RectF(x - radius, y - radius, x + radius, y + radius), paint)
+            } else {
+                canvas.drawCircle(x, y, radius, paint)
+            }
         }
     }
 }

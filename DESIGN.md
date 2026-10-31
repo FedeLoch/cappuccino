@@ -202,6 +202,17 @@ composition, and mood, keeping the closest reference for each area. It names the
 and offers colors to try. Every tip has a Why view with its measurements, and reference tips
 also show the artwork beside the closest reference. It measures art direction, and does not recognize subjects or style.
 
+## Languages
+
+Text is written in English and passed through `tr()`, with translations in `Translations.kt`.
+The app follows the device language, and the artist can override it. A test fails if any text
+in the source is missing a Spanish translation.
+
+## Companion ideas
+
+Ideas are open invitations, separate from feedback. They suggest textures, colors, and layer
+techniques, and Try it sets up the matching tool or color.
+
 ## Projects and references
 
 - The home screen is the projects view. Artworks can be grouped into projects, renamed,

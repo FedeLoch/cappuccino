@@ -21,9 +21,9 @@ class ShareActivity : Activity() {
         }
         val store = ArtworkStore(this)
         val projects = store.projects()
-        val names = listOf("Unsorted") + projects.map { it.name }
+        val names = listOf(tr("Unsorted")) + projects.map { it.name }
         AlertDialog.Builder(this)
-            .setTitle("Add to references")
+            .setTitle(tr("Add to references"))
             .setItems(names.toTypedArray()) { _, index ->
                 val project = projects.getOrNull(index - 1)?.id.orEmpty()
                 background.execute {
@@ -31,7 +31,7 @@ class ShareActivity : Activity() {
                         runCatching { store.addReference(project, uri) }.getOrNull() != null
                     }
                     runOnUiThread {
-                        val message = if (added == images.size) "References added" else "Couldn't add every image"
+                        val message = if (added == images.size) tr("References added") else tr("Couldn't add every image")
                         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
                         finish()
                     }

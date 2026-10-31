@@ -16,6 +16,11 @@ class ModelTest {
     }
 
     @Test
+    fun textureBrushesHaveTips() {
+        assertTrue(BrushKind.TEXTURE_BRUSHES.all { it.tip?.size == 128 * 128 && it.tip.any { value -> value != 0.toByte() } })
+    }
+
+    @Test
     fun smallerCanvasesAllowMoreLayers() {
         val memory = 8_000_000_000L
         assertTrue(layerLimit(2048, 2048, memory) > layerLimit(4096, 2732, memory))

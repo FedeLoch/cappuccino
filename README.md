@@ -11,8 +11,8 @@ Cappuccino is in active development and hasn't had a public release yet.
 
 ### Draw
 
-- Eight brushes, plus smudge, fill, and gradient tools
-- Custom brushes with imported tips, favorites, a stabilizer, and an adjustable pressure curve
+- Ten brushes, including Sponge and Dry brush textures, plus smudge, fill, and gradient tools
+- Custom brushes with imported texture tips, favorites, a stabilizer, and an adjustable pressure curve
 - Every brush shape also works as an eraser
 - Low-latency stylus drawing with pressure, and tilt on pens that support it
 - Hold the pen, or press its side button, to pick a color
@@ -48,9 +48,19 @@ Cappuccino is in active development and hasn't had a public release yet.
 ### Meet your companion
 
 Choose a paint drop, ink blot, foam cup, or coffee drop. It rests out of the way, never
-interrupts you, and only offers a note when you tap it. It looks at palette, values,
-composition, silhouette, and perspective, and each note has a Why view with the measurements
-behind it. It can also compare your artwork with your references.
+interrupts you, and only offers a note when you tap it.
+
+**General feedback works on any drawing, with no references needed.** It covers palette, values,
+composition, silhouette, and the next step in a sketch. It also covers light and perspective
+when those guides are on.
+
+**Reference feedback appears when your artwork's project has reference images.** The companion
+compares your artwork with your open references, or with the project's whole library when none
+are open. It shows how close your palette, values, composition, and mood are, then suggests
+colors to try.
+
+**Why** shows the measurements behind a note. **Idea** suggests something new to explore, such
+as a texture pass or an accent color, and **Try it** sets up the tool or color for you.
 
 The companion runs on your device with image analysis, not AI. It never draws for you, and it
 can't recognize your subject or judge your style.
@@ -64,6 +74,12 @@ can't recognize your subject or judge your style.
 - PSD import for 8-bit RGB files
 - Backup and restore of your whole library in one file
 - No ads, accounts, or tracking
+
+## Languages
+
+Cappuccino is available in English and Spanish. It follows your device language, and you can
+change it from the home screen under Backup, or from the `...` menu while drawing. To add a
+language, add a table to `Translations.kt` and an entry to `Language`.
 
 ## Current limits
 

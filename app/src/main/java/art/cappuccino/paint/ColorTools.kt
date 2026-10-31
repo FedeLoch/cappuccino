@@ -6,6 +6,10 @@ data class Palette(val id: String, val name: String, val colors: List<Int>)
 
 data class Harmony(val name: String, val colors: List<Int>)
 
+val STARTER_PALETTES_NAMES = listOf("Warm dusk", "Cool night", "Earth tones", "Skin range")
+
+val HARMONY_NAMES = listOf("Complementary", "Analogous", "Split complementary", "Triadic")
+
 val STARTER_PALETTES = listOf(
     Palette("warm", "Warm dusk", listOf(0xFF2B1B2E, 0xFF6D2E46, 0xFFC8553D, 0xFFF28F3B, 0xFFFFD5C2).map { it.toInt() }),
     Palette("cool", "Cool night", listOf(0xFF0B132B, 0xFF1C2541, 0xFF3A506B, 0xFF5BC0BE, 0xFFD8E2DC).map { it.toInt() }),

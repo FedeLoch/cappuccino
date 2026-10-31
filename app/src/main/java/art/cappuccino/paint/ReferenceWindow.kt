@@ -103,7 +103,7 @@ class ReferenceWindow(
         setPadding(0, 0, activity.dp(5), activity.dp(1))
         setTextColor(FOAM)
         setShadowLayer(3f, 0f, 0f, SURFACE)
-        contentDescription = "Resize reference"
+        contentDescription = tr("Resize reference")
         var startX = 0f
         var startWidth = 0
         setOnTouchListener { _, event ->
@@ -131,29 +131,29 @@ class ReferenceWindow(
         lateinit var grayButton: View
         lateinit var flipButton: View
         val actions = listOf<Triple<Int, String, () -> Unit>>(
-            Triple(R.drawable.ic_invert, "Grayscale") {
+            Triple(R.drawable.ic_invert, tr("Grayscale")) {
                 state.grayscale = !state.grayscale
                 toggle(grayButton, state.grayscale)
                 image.invalidate()
                 host.onReferenceChanged()
             },
-            Triple(R.drawable.ic_flip, "Flip") {
+            Triple(R.drawable.ic_flip, tr("Flip")) {
                 state.flipped = !state.flipped
                 toggle(flipButton, state.flipped)
                 image.invalidate()
                 host.onReferenceChanged()
             },
-            Triple(R.drawable.ic_fit, "Fit") {
+            Triple(R.drawable.ic_fit, tr("Fit")) {
                 state.zoom = 1f
                 state.panX = 0f
                 state.panY = 0f
                 image.invalidate()
                 host.onReferenceChanged()
             },
-            Triple(R.drawable.ic_pin, "Pin for tracing") { pin() },
-            Triple(R.drawable.ic_palette, "Save its palette") { host.onReferencePalette(this) },
-            Triple(R.drawable.ic_layersfile, "Add as layer") { host.onReferenceToLayer(this) },
-            Triple(R.drawable.ic_close, "Close") { host.onReferenceClosed(this) },
+            Triple(R.drawable.ic_pin, tr("Pin for tracing")) { pin() },
+            Triple(R.drawable.ic_palette, tr("Save its palette")) { host.onReferencePalette(this) },
+            Triple(R.drawable.ic_layersfile, tr("Add as layer")) { host.onReferenceToLayer(this) },
+            Triple(R.drawable.ic_close, tr("Close")) { host.onReferenceClosed(this) },
         )
         val row = LinearLayout(activity).apply {
             gravity = Gravity.CENTER_VERTICAL
@@ -173,7 +173,7 @@ class ReferenceWindow(
             max = 100
             min = 15
             progress = (state.opacity * 100).roundToInt()
-            contentDescription = "Reference opacity"
+            contentDescription = tr("Reference opacity")
             progressTintList = ColorStateList.valueOf(ACCENT)
             thumbTintList = ColorStateList.valueOf(ACCENT)
             onChange {
@@ -203,7 +203,7 @@ class ReferenceWindow(
         window.isTouchable = false
         applyBounds()
         host.onReferenceChanged()
-        Toast.makeText(activity, "Pinned. You can draw over it. Tap it in References to close it.", Toast.LENGTH_LONG).show()
+        Toast.makeText(activity, tr("Pinned. You can draw over it. Tap it in References to close it."), Toast.LENGTH_LONG).show()
     }
 
     private inner class ReferenceImage : View(activity) {
@@ -239,7 +239,7 @@ class ReferenceWindow(
         )
 
         init {
-            contentDescription = "Floating reference"
+            contentDescription = tr("Floating reference")
         }
 
         fun limitPan() {

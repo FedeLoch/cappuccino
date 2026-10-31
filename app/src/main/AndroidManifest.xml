@@ -4,6 +4,7 @@
     <uses-feature android:glEsVersion="0x00030000" android:required="true" />
 
     <application
+        android:name=".CappuccinoApp"
         android:largeHeap="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
@@ -23,7 +24,7 @@
             android:name=".ShareActivity"
             android:exported="true"
             android:theme="@android:style/Theme.DeviceDefault.Panel"
-            android:label="Add to Cappuccino references">
+            android:label="@string/share_label">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <action android:name="android.intent.action.SEND_MULTIPLE" />

@@ -43,6 +43,14 @@ class AnalysisTest {
     }
 
     @Test
+    fun coloredArtGetsAnOppositeColorIdeaAndTextureIdeas() {
+        val report = analyzeArtwork(image { x, _ -> if (x < 40) 0xFFB03030.toInt() else null }, SIZE, SIZE)
+        val accent = report.ideas.first { it.accentHue != null }.accentHue!!
+        assertTrue(accent in 150f..220f)
+        assertTrue(report.ideas.any { it.brushId == "sponge" })
+    }
+
+    @Test
     fun blankPaperGivesNoTips() {
         assertTrue(analyzeArtwork(image { _, _ -> null }, SIZE, SIZE).tips.isEmpty())
     }
