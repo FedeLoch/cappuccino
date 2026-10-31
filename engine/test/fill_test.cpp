@@ -24,7 +24,19 @@ static std::vector<uint8_t> boxedImage() {
     return image;
 }
 
+static void testPolygonCoverage() {
+    const float square[8] = {2.5f, 2.0f, 6.0f, 2.0f, 6.0f, 6.0f, 2.5f, 6.0f};
+    std::vector<uint8_t> coverage(kSize * kSize, 0);
+    FillBounds box{kSize, kSize, 0, 0};
+    polygonCoverage(square, 4, kSize, kSize, coverage, box);
+    assert(coverage[3 * kSize + 4] == 255);
+    assert(coverage[3 * kSize + 2] > 100 && coverage[3 * kSize + 2] < 160);
+    assert(coverage[3 * kSize + 7] == 0);
+    assert(box.left == 2 && box.top == 2 && box.right == 6 && box.bottom == 6);
+}
+
 int main() {
+    testPolygonCoverage();
     auto image = boxedImage();
     FillBounds bounds;
     assert(floodFill(image.data(), kSize, kSize, 10, 10, kRed, 16, &bounds));

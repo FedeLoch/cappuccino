@@ -28,6 +28,7 @@ private const val FIRST_FRAME_RETRY_MS = 100L
 private const val LONG_PRESS_MS = 500L
 private const val PEN_HOLD_MS = 700L
 private const val PEN_HOLD_TRAVEL_DP = 5f
+private const val SNAP_HOLD_MS = 600L
 
 private sealed interface RenderOp {
     class Stroke(
@@ -59,8 +60,26 @@ private inline fun <T> timed(name: String, work: () -> T): T {
     val start = SystemClock.elapsedRealtime()
     val result = work()
     val elapsed = SystemClock.elapsedRealtime() - start
-    if (elapsed >= SLOW_MS) Log.d("CappuccinoPerf", "$name took $elapsed ms")
+    if (elapsed >= SLOW_MS) {
+        Log.d("CappuccinoPerf", "$name took $elapsed ms")
+        SlowLog.add(name, elapsed)
+    }
     return result
+}
+
+/** Starts a stroke in the engine with a brush's settings. */
+internal fun beginEngineStroke(engine: Long, brush: BrushState) {
+    val kind = brush.kind
+    NativeEngine.beginStroke(
+        engine, brush.diameter,
+        Color.red(brush.color) / 255f,
+        Color.green(brush.color) / 255f,
+        Color.blue(brush.color) / 255f,
+        kind.stampFlow(brush.opacity), kind.minScale, kind.spacing,
+        kind.pressureFlow, kind.hardness, kind.grain, kind.isEraser, brush.alphaLock,
+        kind.mode == BrushMode.SMUDGE, brush.pressureGamma,
+        kind.scatter, kind.sizeJitter, kind.angleJitter, kind.shadeJitter, kind.tip,
+    )
 }
 
 enum class SelectionTool { NONE, LASSO, WAND }
@@ -82,6 +101,12 @@ class CanvasView(
     var transformMode = false
         private set
     var acceptsInput = false
+    var snapShapes = true
+    var snapGuides: List<Float> = emptyList()
+
+    /** The active liquify tool, or -1 while drawing normally. */
+    var liquifyTool = -1
+    var liquifyStrength = 0.5f
 
     var onStrokeStart: () -> Unit = {}
     var onStrokeEnd: () -> Unit = {}
@@ -93,6 +118,8 @@ class CanvasView(
     var onWandTap: (Int, Int) -> Unit = { _, _ -> }
     var onLassoMove: (Float, Float) -> Unit = { _, _ -> }
     var onLassoDone: (FloatArray) -> Unit = {}
+    var onLassoFill: (FloatArray, Boolean) -> Unit = { _, _ -> }
+    var onLiquifyRing: (Float, Float, Float) -> Unit = { _, _, _ -> }
     var onGradientMove: (FloatArray) -> Unit = {}
     var onGradientDone: () -> Unit = {}
     var onPickMove: (Int, Float, Float) -> Unit = { _, _, _ -> }
@@ -101,6 +128,8 @@ class CanvasView(
     var onUndoGesture: () -> Unit = {}
     var onRedoGesture: () -> Unit = {}
     var onStrokePath: (FloatArray) -> Unit = {}
+    var onStrokeRecord: (BrushState, FloatArray) -> Unit = { _, _ -> }
+    var onPenNear: () -> Unit = {}
 
     private val viewMatrix = Matrix()
     private val inverseMatrix = Matrix()
@@ -133,7 +162,15 @@ class CanvasView(
     private var gestureStartY = 0f
     private var picking = false
     private var penPicking = false
+    private var shapeFill: BrushKind? = null
+    private var ignorePen = false
+    private var snapAnchorX = 0f
+    private var snapAnchorY = 0f
+    private var pressureTotal = 0f
+    private var pressureSamples = 0
+    private val strokeSamples = ArrayList<FloatArray>()
     private val penHold = Runnable { startPenPick() }
+    private val snapHold = Runnable { snapStroke() }
     private val stabilizer = LineStabilizer()
     private val layerMatrix = Matrix()
     private var transformLayer = 0
@@ -186,19 +223,7 @@ class CanvasView(
 
         private fun drawStroke(op: RenderOp.Stroke, bufferInfo: BufferInfo) {
             op.drawn = true
-            if (op.begin) {
-                val brush = op.brush
-                val kind = brush.kind
-                NativeEngine.beginStroke(
-                    engine, brush.diameter,
-                    Color.red(brush.color) / 255f,
-                    Color.green(brush.color) / 255f,
-                    Color.blue(brush.color) / 255f,
-                    kind.stampFlow(brush.opacity), kind.minScale, kind.spacing,
-                    kind.pressureFlow, kind.hardness, kind.grain, kind.isEraser, brush.alphaLock,
-                    kind.mode == BrushMode.SMUDGE, brush.pressureGamma, kind.tip,
-                )
-            }
+            if (op.begin) beginEngineStroke(engine, op.brush)
             timed(if (op.end) "stroke end" else "stroke frame") {
                 NativeEngine.drawFront(
                     engine, projection, op.view,
@@ -287,6 +312,7 @@ class CanvasView(
         removeCallbacks(publishUntilComposed)
         removeCallbacks(pickAtPress)
         removeCallbacks(penHold)
+        removeCallbacks(snapHold)
         renderer.execute { glCallback.destroyEngine() }
         renderer.release(true)
     }
@@ -392,7 +418,24 @@ class CanvasView(
         return true
     }
 
+    override fun onHoverEvent(event: MotionEvent): Boolean {
+        if (liquifyTool >= 0) showLiquifyRing(event.x, event.y)
+        onPenNear()
+        return super.onHoverEvent(event)
+    }
+
+    private fun showLiquifyRing(x: Float, y: Float) {
+        val values = viewValues()
+        val zoom = hypot(values[Matrix.MSCALE_X], values[Matrix.MSKEW_Y])
+        onLiquifyRing(x, y, brushDiameter / 2f * zoom)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (ignorePen) {
+            val action = event.actionMasked
+            if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) ignorePen = false
+            return true
+        }
         if (transformMode) return onTransformEvent(event)
         if (toolGesture) return onToolGesture(event)
         if (penPicking) return onPenPick(event)
@@ -418,11 +461,19 @@ class CanvasView(
             event.getToolType(0) != MotionEvent.TOOL_TYPE_ERASER
         ) {
             val spot = screenToCanvas(event.x, event.y)
+            shapeFill = null
+            if (liquifyTool >= 0) {
+                toolGesture = true
+                gestureStartX = spot[0]
+                gestureStartY = spot[1]
+                return onToolGesture(event)
+            }
             if (selectionTool == SelectionTool.WAND) {
                 onWandTap(spot[0].toInt(), spot[1].toInt())
                 return true
             }
-            if (selectionTool == SelectionTool.LASSO || brushKind.mode == BrushMode.GRADIENT) {
+            if (selectionTool == SelectionTool.NONE && brushKind.mode == BrushMode.LASSO) shapeFill = brushKind
+            if (selectionTool == SelectionTool.LASSO || brushKind.mode == BrushMode.GRADIENT || shapeFill != null) {
                 toolGesture = true
                 strokePathSize = 0
                 gestureStartX = spot[0]
@@ -434,6 +485,14 @@ class CanvasView(
                 return true
             }
         }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN &&
+            event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER && eraserKind.mode == BrushMode.LASSO
+        ) {
+            shapeFill = eraserKind
+            toolGesture = true
+            strokePathSize = 0
+            return onToolGesture(event)
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 penPointerId = event.getPointerId(0)
@@ -441,6 +500,10 @@ class CanvasView(
                 viewMatrix.invert(inverseMatrix)
                 val tool = event.getToolType(0)
                 strokePathSize = 0
+                pressureTotal = 0f
+                pressureSamples = 0
+                snapAnchorX = event.x
+                snapAnchorY = event.y
                 stabilizer.reset(if (event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER) 0f else stabilizerStrength)
                 strokeKind = if (tool == MotionEvent.TOOL_TYPE_ERASER) eraserKind else brushKind
                 onStrokeStart()
@@ -458,6 +521,14 @@ class CanvasView(
             }
             MotionEvent.ACTION_MOVE -> {
                 if (hypot(event.x - pressX, event.y - pressY) > penHoldTravel) removeCallbacks(penHold)
+                if (snapShapes && strokeKind.mode == BrushMode.PAINT &&
+                    hypot(event.x - snapAnchorX, event.y - snapAnchorY) > penHoldTravel
+                ) {
+                    snapAnchorX = event.x
+                    snapAnchorY = event.y
+                    removeCallbacks(snapHold)
+                    postDelayed(snapHold, SNAP_HOLD_MS)
+                }
                 predictor.record(event)
                 sendStroke(event, begin = false, end = false)
             }
@@ -475,9 +546,28 @@ class CanvasView(
         return true
     }
 
+    private fun onLiquifyEvent(event: MotionEvent, x: Float, y: Float): Boolean {
+        showLiquifyRing(event.x, event.y)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_MOVE -> {
+                val fromX = gestureStartX
+                val fromY = gestureStartY
+                val radius = brushDiameter / 2f
+                val strength = liquifyStrength * event.pressure.coerceIn(0.2f, 1f)
+                val mode = liquifyTool
+                act { NativeEngine.liquifyDab(it, fromX, fromY, x, y, radius, strength, mode) }
+                gestureStartX = x
+                gestureStartY = y
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> toolGesture = false
+        }
+        return true
+    }
+
     private fun onToolGesture(event: MotionEvent): Boolean {
         val spot = screenToCanvas(event.x, event.y)
-        val lasso = selectionTool == SelectionTool.LASSO
+        if (liquifyTool >= 0) return onLiquifyEvent(event, spot[0], spot[1])
+        val lasso = selectionTool == SelectionTool.LASSO || shapeFill != null
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                 if (lasso) {
@@ -489,13 +579,59 @@ class CanvasView(
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 toolGesture = false
-                if (lasso) onLassoDone(strokePath.copyOf(strokePathSize)) else onGradientDone()
+                val fill = shapeFill
+                when {
+                    fill != null -> onLassoFill(strokePath.copyOf(strokePathSize), fill.isEraser)
+                    lasso -> onLassoDone(strokePath.copyOf(strokePathSize))
+                    else -> onGradientDone()
+                }
             }
         }
         return true
     }
 
+    /** Holding the pen at the end of a stroke swaps it for the clean shape it resembles. */
+    private fun snapStroke() {
+        if (penPointerId == MotionEvent.INVALID_POINTER_ID) return
+        val shape = snapShape(strokePath.copyOf(strokePathSize), snapGuides) ?: return
+        val kind = strokeKind
+        val pressure = if (pressureSamples > 0) pressureTotal / pressureSamples else 0.5f
+        ignorePen = true
+        penPointerId = MotionEvent.INVALID_POINTER_ID
+        renderer.cancel()
+        act {
+            NativeEngine.cancelStroke(it)
+            post { drawShape(kind, shape, pressure) }
+        }
+    }
+
+    private fun drawShape(kind: BrushKind, shape: FloatArray, pressure: Float) {
+        val count = shape.size / 2
+        val samples = FloatArray(count * NativeEngine.SAMPLE_STRIDE)
+        for (index in 0 until count) {
+            samples[index * NativeEngine.SAMPLE_STRIDE] = shape[index * 2]
+            samples[index * NativeEngine.SAMPLE_STRIDE + 1] = shape[index * 2 + 1]
+            samples[index * NativeEngine.SAMPLE_STRIDE + 2] = pressure
+        }
+        renderer.renderFrontBufferedLayer(
+            RenderOp.Stroke(
+                begin = true,
+                end = true,
+                brush = BrushState(kind, brushDiameter, brushColor, brushOpacity, alphaLock, pressureGamma),
+                view = viewValues(),
+                samples = samples,
+                predicted = FloatArray(0),
+            ),
+        )
+        renderer.commit()
+        onStrokeRecord(BrushState(kind, brushDiameter, brushColor, brushOpacity, alphaLock, pressureGamma), samples)
+        onStrokeCommitted()
+        onStrokeEnd()
+        if (!kind.isEraser) onStrokePath(shape)
+    }
+
     private fun cancelStroke() {
+        removeCallbacks(snapHold)
         penPointerId = MotionEvent.INVALID_POINTER_ID
         renderer.cancel()
         act { NativeEngine.cancelStroke(it) }
@@ -523,10 +659,20 @@ class CanvasView(
     }
 
     private fun finishStroke(event: MotionEvent) {
+        removeCallbacks(snapHold)
         predictor.record(event)
         sendStroke(event, begin = false, end = true)
         renderer.commit()
         penPointerId = MotionEvent.INVALID_POINTER_ID
+        val total = strokeSamples.sumOf { it.size }
+        val recorded = FloatArray(total)
+        var filled = 0
+        strokeSamples.forEach {
+            it.copyInto(recorded, filled)
+            filled += it.size
+        }
+        strokeSamples.clear()
+        onStrokeRecord(BrushState(strokeKind, brushDiameter, brushColor, brushOpacity, alphaLock, pressureGamma), recorded)
         onStrokeCommitted()
         onStrokeEnd()
         if (!strokeKind.isEraser) onStrokePath(strokePath.copyOf(strokePathSize))
@@ -536,6 +682,8 @@ class CanvasView(
         val predicted = if (end || stabilizer.isActive) null else predictor.predict()
         val samples = readSamples(event, stabilize = true)
         rememberPath(samples)
+        if (begin) strokeSamples.clear()
+        strokeSamples.add(samples)
         val op = RenderOp.Stroke(
             begin = begin,
             end = end,
@@ -554,6 +702,8 @@ class CanvasView(
         for (offset in samples.indices step NativeEngine.SAMPLE_STRIDE) {
             strokePath[strokePathSize++] = samples[offset]
             strokePath[strokePathSize++] = samples[offset + 1]
+            pressureTotal += samples[offset + 2]
+            pressureSamples++
         }
     }
 

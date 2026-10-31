@@ -14,17 +14,27 @@ constexpr int kCarrySize = 128;
 constexpr float kTint[4] = {0.17f, 0.07f, 0.04f, 0.3f};
 constexpr float kPaper[3] = {1.0f, 1.0f, 1.0f};
 constexpr float kBackground[3] = {0.16f, 0.15f, 0.15f};
+constexpr int kStampFloats = 6;  // x, y, local x, local y, alpha, and shade per vertex.
+constexpr int kLiquifyCells = 256;  // Grid cells along the canvas's longer side.
+constexpr int kIsometricGuide = 4;
+constexpr int kViewsGuide = 5;
+constexpr int kFramesGuide = 6;
+constexpr int kHideUnit = 4;
+constexpr int kClipHideUnit = 5;
 
 constexpr char kStampVertex[] = R"(#version 300 es
 layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aLocal;
 layout(location = 2) in float aAlpha;
+layout(location = 3) in float aShade;
 uniform mat4 uMatrix;
 out vec2 vLocal;
 out float vAlpha;
+out float vShade;
 void main() {
     vLocal = aLocal;
     vAlpha = aAlpha;
+    vShade = aShade;
     gl_Position = uMatrix * vec4(aPosition, 0.0, 1.0);
 })";
 
@@ -32,6 +42,7 @@ constexpr char kStampFragment[] = R"(#version 300 es
 precision highp float;
 in vec2 vLocal;
 in float vAlpha;
+in float vShade;
 uniform vec3 uColor;
 uniform float uHardness;
 uniform float uGrain;
@@ -53,7 +64,8 @@ void main() {
         alpha = vAlpha * grain * texture(uTip, vLocal * 0.42 + 0.5).r * step(distance, 1.2);
     }
     if (uUseMask > 0.5) alpha *= texelFetch(uMask, ivec2(gl_FragCoord.xy), 0).r;
-    fragColor = vec4(uColor * alpha, alpha);
+    vec3 color = vShade < 1.0 ? uColor * vShade : mix(uColor, vec3(1.0), vShade - 1.0);
+    fragColor = vec4(color * alpha, alpha);
 })";
 
 constexpr char kSmudgeFragment[] = R"(#version 300 es
@@ -108,6 +120,8 @@ in vec2 vUv;
 uniform sampler2D uTexture;
 uniform sampler2D uMask;
 uniform float uUseMask;
+uniform sampler2D uHide;
+uniform float uUseHide;
 uniform vec3 uValues;
 uniform vec3 uCurve;
 out vec4 fragColor;
@@ -143,26 +157,117 @@ void main() {
     vec4 result = vec4(rgb * source.a, source.a);
     float amount = 1.0;
     if (uUseMask > 0.5) amount = texelFetch(uMask, ivec2(gl_FragCoord.xy), 0).r;
-    fragColor = mix(source, result, amount);
+    fragColor = mix(source, result, amount) * (1.0 - uUseHide * texture(uHide, vUv).a);
+})";
+
+// Kinds: 1 blur, 2 motion blur, 3 sharpen, 4 noise, 5 gradient map, 6 levels, 7 depth fade.
+constexpr char kEffectFragment[] = R"(#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uTexture;
+uniform sampler2D uMask;
+uniform float uUseMask;
+uniform sampler2D uHide;
+uniform float uUseHide;
+uniform vec2 uSize;
+uniform int uKind;
+uniform vec4 uValues;
+uniform vec3 uColor;
+out vec4 fragColor;
+const int kSamples = 48;
+vec4 blur(float radius) {
+    vec2 texel = radius / uSize;
+    vec4 total = texture(uTexture, vUv);
+    float weight = 1.0;
+    for (int i = 1; i < kSamples; ++i) {
+        float share = sqrt(float(i) / float(kSamples));
+        float turn = float(i) * 2.39996;
+        float amount = exp(-3.0 * share * share);
+        total += texture(uTexture, vUv + vec2(cos(turn), sin(turn)) * share * texel) * amount;
+        weight += amount;
+    }
+    return total / weight;
+}
+vec4 motion(float reach, float angle) {
+    vec2 stride = vec2(cos(angle), sin(angle)) * reach / uSize / float(kSamples);
+    vec4 total = vec4(0.0);
+    for (int i = 0; i < kSamples; ++i) {
+        total += texture(uTexture, vUv + stride * (float(i) - float(kSamples) / 2.0));
+    }
+    return total / float(kSamples);
+}
+float noise(vec2 cell) {
+    return fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+}
+vec4 effect(vec4 source) {
+    if (uKind == 1) return blur(uValues.x);
+    if (uKind == 2) return motion(uValues.x, uValues.y);
+    if (uKind == 3) {
+        vec4 soft = blur(3.0);
+        vec4 sharp = source + (source - soft) * uValues.x;
+        return vec4(clamp(sharp.rgb, vec3(0.0), vec3(sharp.a)), sharp.a);
+    }
+    if (source.a <= 0.0) return source;
+    vec3 color = source.rgb / source.a;
+    float value = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    if (uKind == 4) {
+        color += (noise(gl_FragCoord.xy) - 0.5) * uValues.x;
+    } else if (uKind == 5) {
+        vec3 mapped = value < 0.5 ? mix(vec3(0.0), uColor, value * 2.0)
+                                  : mix(uColor, vec3(1.0), value * 2.0 - 1.0);
+        color = mix(color, mapped, uValues.x);
+    } else if (uKind == 6) {
+        vec3 level = clamp((color - uValues.x) / max(uValues.z - uValues.x, 0.01), 0.0, 1.0);
+        color = pow(level, vec3(1.0 / uValues.y));
+    } else if (uKind == 7) {
+        color = mix(color, uColor, uValues.x);
+    }
+    return vec4(clamp(color, 0.0, 1.0) * source.a, source.a);
+}
+void main() {
+    vec4 source = texture(uTexture, vUv);
+    float amount = 1.0;
+    if (uUseMask > 0.5) amount = texelFetch(uMask, ivec2(gl_FragCoord.xy), 0).r;
+    fragColor = mix(source, effect(source), amount) * (1.0 - uUseHide * texture(uHide, vUv).a);
 })";
 
 constexpr char kCanvasVertex[] = R"(#version 300 es
 uniform mat4 uMatrix;
 uniform vec2 uSize;
 out vec2 vUv;
+out vec2 vPlace;
 void main() {
     vec2 corner = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
     vUv = corner;
+    vPlace = corner;
     gl_Position = uMatrix * vec4(corner * uSize, 0.0, 1.0);
+})";
+
+constexpr char kMeshVertex[] = R"(#version 300 es
+layout(location = 0) in vec2 aPosition;
+layout(location = 1) in vec2 aSource;
+uniform mat4 uMatrix;
+uniform vec2 uSize;
+out vec2 vUv;
+out vec2 vPlace;
+void main() {
+    vUv = aSource;
+    vPlace = aPosition / uSize;
+    gl_Position = uMatrix * vec4(aPosition, 0.0, 1.0);
 })";
 
 constexpr char kCanvasFragment[] = R"(#version 300 es
 precision mediump float;
 in vec2 vUv;
+in vec2 vPlace;
 uniform sampler2D uTexture;
 uniform vec4 uSolid;
 uniform sampler2D uClip;
 uniform float uUseClip;
+uniform sampler2D uHide;
+uniform float uUseHide;
+uniform sampler2D uClipHide;
+uniform float uUseClipHide;
 uniform float uOpacity;
 uniform sampler2D uTintMask;
 uniform vec4 uTint;
@@ -172,8 +277,10 @@ void main() {
         fragColor = uTint * (1.0 - texture(uTintMask, vUv).r);
         return;
     }
-    float clip = mix(1.0, texture(uClip, vUv).a, uUseClip);
-    fragColor = uSolid.a > 0.0 ? uSolid : texture(uTexture, vUv) * uOpacity * clip;
+    float clip = mix(1.0, texture(uClip, vPlace).a, uUseClip);
+    clip *= 1.0 - uUseClipHide * texture(uClipHide, vPlace).a;
+    float shown = 1.0 - uUseHide * texture(uHide, vUv).a;
+    fragColor = uSolid.a > 0.0 ? uSolid : texture(uTexture, vUv) * uOpacity * clip * shown;
 })";
 
 constexpr char kFilterVertex[] = R"(#version 300 es
@@ -313,9 +420,15 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     canvasOpacity_ = glGetUniformLocation(canvasProgram_, "uOpacity");
     canvasClip_ = glGetUniformLocation(canvasProgram_, "uClip");
     canvasUseClip_ = glGetUniformLocation(canvasProgram_, "uUseClip");
+    canvasUseHide_ = glGetUniformLocation(canvasProgram_, "uUseHide");
+    canvasUseClipHide_ = glGetUniformLocation(canvasProgram_, "uUseClipHide");
     glUseProgram(canvasProgram_);
     glUniform1i(canvasClip_, 1);
     glUniform1f(canvasUseClip_, 0.0f);
+    glUniform1i(glGetUniformLocation(canvasProgram_, "uHide"), kHideUnit);
+    glUniform1i(glGetUniformLocation(canvasProgram_, "uClipHide"), kClipHideUnit);
+    glUniform1f(canvasUseHide_, 0.0f);
+    glUniform1f(canvasUseClipHide_, 0.0f);
     glUniform1i(glGetUniformLocation(canvasProgram_, "uTintMask"), 2);
     canvasTint_ = glGetUniformLocation(canvasProgram_, "uTint");
     glUniform4f(canvasTint_, 0.0f, 0.0f, 0.0f, 0.0f);
@@ -347,8 +460,39 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     adjustValues_ = glGetUniformLocation(adjustProgram_, "uValues");
     adjustCurve_ = glGetUniformLocation(adjustProgram_, "uCurve");
     adjustUseMask_ = glGetUniformLocation(adjustProgram_, "uUseMask");
+    adjustUseHide_ = glGetUniformLocation(adjustProgram_, "uUseHide");
     glUseProgram(adjustProgram_);
     glUniform1i(glGetUniformLocation(adjustProgram_, "uMask"), 2);
+    glUniform1i(glGetUniformLocation(adjustProgram_, "uHide"), kHideUnit);
+    glUniform1f(adjustUseHide_, 0.0f);
+
+    effectProgram_ = link(kCanvasVertex, kEffectFragment);
+    effectMatrix_ = glGetUniformLocation(effectProgram_, "uMatrix");
+    effectSize_ = glGetUniformLocation(effectProgram_, "uSize");
+    effectKind_ = glGetUniformLocation(effectProgram_, "uKind");
+    effectValues_ = glGetUniformLocation(effectProgram_, "uValues");
+    effectColor_ = glGetUniformLocation(effectProgram_, "uColor");
+    effectUseMask_ = glGetUniformLocation(effectProgram_, "uUseMask");
+    effectUseHide_ = glGetUniformLocation(effectProgram_, "uUseHide");
+    glUseProgram(effectProgram_);
+    glUniform1i(glGetUniformLocation(effectProgram_, "uMask"), 2);
+    glUniform1i(glGetUniformLocation(effectProgram_, "uHide"), kHideUnit);
+
+    liquifyProgram_ = link(kMeshVertex, kCanvasFragment);
+    liquifyMatrix_ = glGetUniformLocation(liquifyProgram_, "uMatrix");
+    liquifyOpacity_ = glGetUniformLocation(liquifyProgram_, "uOpacity");
+    liquifyUseClip_ = glGetUniformLocation(liquifyProgram_, "uUseClip");
+    liquifyUseHide_ = glGetUniformLocation(liquifyProgram_, "uUseHide");
+    liquifyUseClipHide_ = glGetUniformLocation(liquifyProgram_, "uUseClipHide");
+    glUseProgram(liquifyProgram_);
+    glUniform2f(glGetUniformLocation(liquifyProgram_, "uSize"), static_cast<float>(width_),
+                static_cast<float>(height_));
+    glUniform4f(glGetUniformLocation(liquifyProgram_, "uSolid"), 0.0f, 0.0f, 0.0f, 0.0f);
+    glUniform4f(glGetUniformLocation(liquifyProgram_, "uTint"), 0.0f, 0.0f, 0.0f, 0.0f);
+    glUniform1i(glGetUniformLocation(liquifyProgram_, "uClip"), 1);
+    glUniform1i(glGetUniformLocation(liquifyProgram_, "uHide"), kHideUnit);
+    glUniform1i(glGetUniformLocation(liquifyProgram_, "uClipHide"), kClipHideUnit);
+    glUniform1i(glGetUniformLocation(liquifyProgram_, "uTintMask"), 2);
 
     glGenTextures(1, &stampMaskTexture_);
     glBindTexture(GL_TEXTURE_2D, stampMaskTexture_);
@@ -372,12 +516,26 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     glEnableVertexAttribArray(0);
     glEnableVertexAttribArray(1);
     glEnableVertexAttribArray(2);
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), nullptr);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, kStampFloats * sizeof(float), nullptr);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, kStampFloats * sizeof(float),
                           reinterpret_cast<const void*>(2 * sizeof(float)));
-    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 5 * sizeof(float),
+    glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, kStampFloats * sizeof(float),
                           reinterpret_cast<const void*>(4 * sizeof(float)));
+    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, kStampFloats * sizeof(float),
+                          reinterpret_cast<const void*>(5 * sizeof(float)));
     glGenVertexArrays(1, &canvasVao_);
+    glGenVertexArrays(1, &liquifyVao_);
+    glGenBuffers(1, &liquifyVertices_);
+    glGenBuffers(1, &liquifyIndices_);
+    glBindVertexArray(liquifyVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, liquifyVertices_);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, liquifyIndices_);
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), nullptr);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float),
+                          reinterpret_cast<const void*>(2 * sizeof(float)));
     glBindVertexArray(0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, previous);
@@ -386,7 +544,12 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
 Renderer::~Renderer() {
     glDeleteVertexArrays(1, &vao_);
     glDeleteVertexArrays(1, &canvasVao_);
+    glDeleteVertexArrays(1, &liquifyVao_);
     glDeleteBuffers(1, &vbo_);
+    glDeleteBuffers(1, &liquifyVertices_);
+    glDeleteBuffers(1, &liquifyIndices_);
+    glDeleteProgram(liquifyProgram_);
+    glDeleteProgram(effectProgram_);
     glDeleteProgram(stampProgram_);
     glDeleteProgram(canvasProgram_);
     glDeleteProgram(filterProgram_);
@@ -426,6 +589,75 @@ void Renderer::createLayer(int id) {
     glBindFramebuffer(GL_FRAMEBUFFER, target);
 }
 
+void Renderer::createMask(int layerId, int maskId) {
+    if (!findLayer(layerId)) return;
+    const GLint target = currentFramebuffer();
+    createLayer(maskId);
+    setLayerMask(layerId, maskId, true);
+    if (selectionActive_) {
+        std::vector<uint8_t> pixels(static_cast<size_t>(width_) * height_ * 4, 0);
+        for (size_t index = 0; index < selection_.size(); ++index) {
+            pixels[index * 4 + 3] = 255 - selection_[index];
+        }
+        writeLayer(maskId, pixels.data());
+        findLayer(maskId)->dirtyArea = {0, 0, width_, height_};
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+}
+
+void Renderer::setLayerMask(int id, int maskId, bool enabled) {
+    Layer* layer = findLayer(id);
+    if (!layer) return;
+    layer->maskId = maskId;
+    layer->maskEnabled = enabled;
+    if (Layer* mask = findLayer(maskId)) {
+        mask->isMask = true;
+        mask->visible = false;
+    }
+}
+
+void Renderer::useHide(const Layer* layer, int unit, GLint useLocation) {
+    Layer* mask = layer && layer->maskEnabled ? findLayer(layer->maskId) : nullptr;
+    glUniform1f(useLocation, mask ? 1.0f : 0.0f);
+    if (!mask) return;
+    glActiveTexture(GL_TEXTURE0 + unit);
+    glBindTexture(GL_TEXTURE_2D, mask->texture);
+    glActiveTexture(GL_TEXTURE0);
+}
+
+void Renderer::bakeMask(Layer& layer) {
+    const float toCanvas[16] = {2.0f / width_, 0, 0, 0, 0, 2.0f / height_, 0, 0,
+                                0,             0, 1, 0, -1, -1,            0, 1};
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+    glViewport(0, 0, width_, height_);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(canvasProgram_);
+    glUniform2f(canvasSize_, static_cast<float>(width_), static_cast<float>(height_));
+    glUniform4f(canvasSolid_, 0.0f, 0.0f, 0.0f, 0.0f);
+    glUniform1f(canvasOpacity_, 1.0f);
+    useHide(&layer, kHideUnit, canvasUseHide_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, layer.texture);
+    glBindVertexArray(canvasVao_);
+    drawQuad(toCanvas);
+    glBindVertexArray(0);
+    glUniform1f(canvasUseHide_, 0.0f);
+    replaceLayerFromShadow(layer);
+    layer.maskId = 0;
+}
+
+void Renderer::applyMask(int id) {
+    Layer* layer = findLayer(id);
+    if (!layer || !findLayer(layer->maskId)) return;
+    const GLint target = currentFramebuffer();
+    resetState();
+    pushFullHistory(*layer);
+    layer->maskEnabled = true;
+    bakeMask(*layer);
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+}
+
 void Renderer::deleteLayer(int id) {
     Layer* layer = findLayer(id);
     if (!layer) return;
@@ -458,7 +690,8 @@ void Renderer::duplicateLayer(int id, int newId) {
     copy->visible = settings.visible;
     copy->blend = settings.blend;
     copy->clip = settings.clip;
-    copy->dirty = true;
+    copy->isMask = settings.isMask;
+    copy->dirtyArea = {0, 0, width_, height_};
     copyRegion(settings.fbo, copy->fbo, {0, 0, width_, height_});
     moveLayer(newId, index + 1);
     glBindFramebuffer(GL_FRAMEBUFFER, target);
@@ -472,6 +705,7 @@ void Renderer::mergeLayerDown(int id, int belowId) {
     resetState();
 
     pushFullHistory(*lower);
+    if (lower->maskEnabled && findLayer(lower->maskId)) bakeMask(*lower);
 
     const float toCanvas[16] = {2.0f / width_, 0, 0, 0, 0, 2.0f / height_, 0, 0,
                                 0,             0, 1, 0, -1, -1,            0, 1};
@@ -483,6 +717,7 @@ void Renderer::mergeLayerDown(int id, int belowId) {
     glUniform4f(canvasSolid_, 0.0f, 0.0f, 0.0f, 0.0f);
     glUniform1f(canvasOpacity_, upper->opacity);
     glUniform1f(canvasUseClip_, upper->clip ? 1.0f : 0.0f);
+    useHide(upper, kHideUnit, canvasUseHide_);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, shadowTexture_);
     glActiveTexture(GL_TEXTURE0);
@@ -493,8 +728,9 @@ void Renderer::mergeLayerDown(int id, int belowId) {
     drawQuad(toCanvas);
     glDisable(GL_BLEND);
     glUniform1f(canvasUseClip_, 0.0f);
+    glUniform1f(canvasUseHide_, 0.0f);
     glBindVertexArray(0);
-    lower->dirty = true;
+    lower->dirtyArea = {0, 0, width_, height_};
     glBindFramebuffer(GL_FRAMEBUFFER, target);
 }
 
@@ -581,6 +817,7 @@ bool Renderer::fillAt(int x, int y, const float* color) {
             }
         }
     }
+    const Rect filled = entry.rect;
     pushHistory(std::move(entry));
 
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -588,7 +825,7 @@ bool Renderer::fillAt(int x, int y, const float* color) {
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE,
                     pixels.data());
     copyRegion(layer->fbo, shadowFbo_, {box.left, box.top, box.right, box.bottom});
-    layer->dirty = true;
+    layer->dirtyArea = unite(layer->dirtyArea, filled);
     glBindFramebuffer(GL_FRAMEBUFFER, target);
     return true;
 }
@@ -632,9 +869,10 @@ void Renderer::invertSelection() {
     uploadSelection();
 }
 
-void Renderer::pushFullHistory(const Layer& layer) {
+void Renderer::pushFullHistory(const Layer& layer, bool chained) {
     HistoryEntry entry;
     entry.layer = layer.id;
+    entry.chained = chained;
     entry.rect = {0, 0, width_, height_};
     entry.pixels.resize(static_cast<size_t>(width_) * height_ * 4);
     readLayer(layer.id, entry.pixels.data());
@@ -648,7 +886,7 @@ void Renderer::replaceLayerFromShadow(Layer& layer) {
             copyRegion(active->fbo, shadowFbo_, {0, 0, width_, height_});
         }
     }
-    layer.dirty = true;
+    layer.dirtyArea = {0, 0, width_, height_};
 }
 
 void Renderer::copySelectionToLayer(int newId, bool cut) {
@@ -668,11 +906,11 @@ void Renderer::copySelectionToLayer(int newId, bool cut) {
     }
     if (cut) {
         writeLayer(sourceId, pixels.data());
-        findLayer(sourceId)->dirty = true;
+        findLayer(sourceId)->dirtyArea = {0, 0, width_, height_};
     }
     createLayer(newId);
     writeLayer(newId, copy.data());
-    findLayer(newId)->dirty = true;
+    findLayer(newId)->dirtyArea = {0, 0, width_, height_};
     glBindFramebuffer(GL_FRAMEBUFFER, target);
 }
 
@@ -711,7 +949,7 @@ void Renderer::commitGradient() {
     glViewport(0, 0, width_, height_);
     drawGradient(toCanvas);
     copyRegion(layer->fbo, shadowFbo_, {0, 0, width_, height_});
-    layer->dirty = true;
+    layer->dirtyArea = {0, 0, width_, height_};
     gradientActive_ = false;
     glBindFramebuffer(GL_FRAMEBUFFER, target);
 }
@@ -721,12 +959,12 @@ void Renderer::setAdjustment(bool active, const float* values) {
     if (active) std::memcpy(adjustment_, values, sizeof(adjustment_));
 }
 
-void Renderer::commitAdjustment() {
+void Renderer::commitAdjustment(bool chained) {
     Layer* layer = findLayer(activeLayer_);
     if (!layer || !adjustActive_) return;
     const GLint target = currentFramebuffer();
     resetState();
-    pushFullHistory(*layer);
+    pushFullHistory(*layer, chained);
     const float toCanvas[16] = {2.0f / width_, 0, 0, 0, 0, 2.0f / height_, 0, 0,
                                 0,             0, 1, 0, -1, -1,            0, 1};
     glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
@@ -737,14 +975,60 @@ void Renderer::commitAdjustment() {
     glUniform3fv(adjustValues_, 1, adjustment_);
     glUniform3fv(adjustCurve_, 1, adjustment_ + 3);
     glUniform1f(adjustUseMask_, selectionActive_ ? 1.0f : 0.0f);
+    glUniform1f(adjustUseHide_, 0.0f);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, layer->texture);
     glBindVertexArray(canvasVao_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     copyRegion(shadowFbo_, layer->fbo, {0, 0, width_, height_});
-    layer->dirty = true;
+    layer->dirtyArea = {0, 0, width_, height_};
     adjustActive_ = false;
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+}
+
+void Renderer::setFilter(bool active, int kind, const float* values, const float* color) {
+    filterActive_ = active;
+    if (!active) return;
+    filterKind_ = kind;
+    std::memcpy(filterValues_, values, sizeof(filterValues_));
+    std::memcpy(filterColor_, color, sizeof(filterColor_));
+}
+
+void Renderer::useFilter(const float* matrix, bool preview, const Layer& layer) {
+    glUseProgram(effectProgram_);
+    glUniformMatrix4fv(effectMatrix_, 1, GL_FALSE, matrix);
+    glUniform2f(effectSize_, static_cast<float>(width_), static_cast<float>(height_));
+    glUniform1i(effectKind_, filterKind_);
+    glUniform4fv(effectValues_, 1, filterValues_);
+    glUniform3fv(effectColor_, 1, filterColor_);
+    glUniform1f(effectUseMask_, selectionActive_ ? 1.0f : 0.0f);
+    if (preview) {
+        useHide(&layer, kHideUnit, effectUseHide_);
+    } else {
+        glUniform1f(effectUseHide_, 0.0f);
+    }
+}
+
+void Renderer::commitFilter() {
+    Layer* layer = findLayer(activeLayer_);
+    if (!layer || !filterActive_) return;
+    const GLint target = currentFramebuffer();
+    resetState();
+    pushFullHistory(*layer);
+    const float toCanvas[16] = {2.0f / width_, 0, 0, 0, 0, 2.0f / height_, 0, 0,
+                                0,             0, 1, 0, -1, -1,            0, 1};
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+    glViewport(0, 0, width_, height_);
+    useFilter(toCanvas, false, *layer);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, layer->texture);
+    glBindVertexArray(canvasVao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    copyRegion(shadowFbo_, layer->fbo, {0, 0, width_, height_});
+    layer->dirtyArea = {0, 0, width_, height_};
+    filterActive_ = false;
     glBindFramebuffer(GL_FRAMEBUFFER, target);
 }
 
@@ -772,33 +1056,185 @@ void Renderer::commitLayerTransform() {
     if (!layer) return;
     const GLint target = currentFramebuffer();
     resetState();
-    pushFullHistory(*layer);
-
     const float toCanvas[16] = {2.0f / width_, 0, 0, 0, 0, 2.0f / height_, 0, 0,
                                 0,             0, 1, 0, -1, -1,            0, 1};
     float matrix[16];
     multiply(toCanvas, previewTransform_, matrix);
+    // A layer's mask moves with it, and one undo brings both back.
+    Layer* mask = findLayer(layer->maskId);
+    for (Layer* moved : {mask, layer}) {
+        if (!moved) continue;
+        pushFullHistory(*moved, moved == layer && mask != nullptr);
+        glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+        glViewport(0, 0, width_, height_);
+        glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glUseProgram(canvasProgram_);
+        glUniform2f(canvasSize_, static_cast<float>(width_), static_cast<float>(height_));
+        glUniform4f(canvasSolid_, 0.0f, 0.0f, 0.0f, 0.0f);
+        glUniform1f(canvasOpacity_, 1.0f);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, moved->texture);
+        glBindVertexArray(canvasVao_);
+        drawQuad(matrix);
+        glBindVertexArray(0);
+        replaceLayerFromShadow(*moved);
+    }
+    previewLayer_ = 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+}
+
+void Renderer::beginLiquify(int id) {
+    if (!findLayer(id)) return;
+    liquifyLayer_ = id;
+    liquify_ = std::make_unique<LiquifyMesh>(width_, height_,
+                                             std::max(1, std::max(width_, height_) / kLiquifyCells));
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, liquifyIndices_);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(liquify_->indices().size() * sizeof(uint32_t)),
+                 liquify_->indices().data(), GL_STATIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    liquifyDirty_ = true;
+}
+
+void Renderer::liquifyDab(float fromX, float fromY, float toX, float toY, float radius,
+                          float strength, LiquifyMode mode) {
+    if (!liquify_) return;
+    liquify_->dab(fromX, fromY, toX, toY, radius, strength, mode,
+                  selectionActive_ ? selection_.data() : nullptr);
+    liquifyDirty_ = true;
+}
+
+void Renderer::drawLiquify(const float* matrix, float opacity, bool clipped, const Layer& layer) {
+    glUseProgram(liquifyProgram_);
+    glUniformMatrix4fv(liquifyMatrix_, 1, GL_FALSE, matrix);
+    glUniform1f(liquifyOpacity_, opacity);
+    glUniform1f(liquifyUseClip_, clipped ? 1.0f : 0.0f);
+    useHide(&layer, kHideUnit, liquifyUseHide_);
+    glUniform1f(liquifyUseClipHide_, 0.0f);
+    glBindVertexArray(liquifyVao_);
+    glBindBuffer(GL_ARRAY_BUFFER, liquifyVertices_);
+    if (liquifyDirty_) {
+        glBufferData(GL_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(liquify_->vertices().size() * sizeof(float)),
+                     liquify_->vertices().data(), GL_STREAM_DRAW);
+        liquifyDirty_ = false;
+    }
+    glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(liquify_->indices().size()), GL_UNSIGNED_INT,
+                   nullptr);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+}
+
+void Renderer::warpLayer(Layer& layer, bool chained) {
+    const float toCanvas[16] = {2.0f / width_, 0, 0, 0, 0, 2.0f / height_, 0, 0,
+                                0,             0, 1, 0, -1, -1,            0, 1};
+    pushFullHistory(layer, chained);
     glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
     glViewport(0, 0, width_, height_);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
-    glUseProgram(canvasProgram_);
-    glUniform2f(canvasSize_, static_cast<float>(width_), static_cast<float>(height_));
-    glUniform4f(canvasSolid_, 0.0f, 0.0f, 0.0f, 0.0f);
-    glUniform1f(canvasOpacity_, 1.0f);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, layer->texture);
-    glBindVertexArray(canvasVao_);
-    drawQuad(matrix);
-    glBindVertexArray(0);
-    replaceLayerFromShadow(*layer);
-    previewLayer_ = 0;
+    glBindTexture(GL_TEXTURE_2D, layer.texture);
+    Layer plain;
+    drawLiquify(toCanvas, 1.0f, false, plain);
+    replaceLayerFromShadow(layer);
+}
+
+void Renderer::commitLiquify() {
+    Layer* layer = findLayer(liquifyLayer_);
+    if (!layer || !liquify_) return;
+    const GLint target = currentFramebuffer();
+    resetState();
+    Layer* mask = findLayer(layer->maskId);
+    if (mask) warpLayer(*mask, false);
+    warpLayer(*layer, mask != nullptr);
+    cancelLiquify();
     glBindFramebuffer(GL_FRAMEBUFFER, target);
+}
+
+void Renderer::cancelLiquify() {
+    liquify_.reset();
+    liquifyLayer_ = 0;
+}
+
+bool Renderer::fillPolygon(const float* points, int count, const float* color, float opacity,
+                           bool erase, bool alphaLock) {
+    Layer* layer = findLayer(activeLayer_);
+    if (!layer || count < 3) return false;
+    const GLint target = currentFramebuffer();
+    std::vector<uint8_t> coverage(static_cast<size_t>(width_) * height_, 0);
+    FillBounds box{width_, height_, 0, 0};
+    polygonCoverage(points, count, width_, height_, coverage, box);
+    std::vector<float> copy(static_cast<size_t>(count) * 2);
+    for (const Mirror& mirror : mirrors_) {
+        for (int i = 0; i < count; ++i) {
+            const float x = points[i * 2];
+            const float y = points[i * 2 + 1];
+            copy[i * 2] = mirror.a * x + mirror.b * y + mirror.c;
+            copy[i * 2 + 1] = mirror.d * x + mirror.e * y + mirror.f;
+        }
+        polygonCoverage(copy.data(), count, width_, height_, coverage, box);
+    }
+    if (box.right <= box.left || box.bottom <= box.top) return false;
+
+    const Rect rect{box.left, box.top, box.right, box.bottom};
+    HistoryEntry entry;
+    entry.layer = layer->id;
+    entry.rect = rect;
+    entry.pixels.resize(static_cast<size_t>(rect.width()) * rect.height() * 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, layer->fbo);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(rect.left, rect.top, rect.width(), rect.height(), GL_RGBA, GL_UNSIGNED_BYTE,
+                 entry.pixels.data());
+    std::vector<uint8_t> pixels = entry.pixels;
+    size_t offset = 0;
+    for (int y = rect.top; y < rect.bottom; ++y) {
+        for (int x = rect.left; x < rect.right; ++x, offset += 4) {
+            const size_t index = static_cast<size_t>(y) * width_ + x;
+            float amount = coverage[index] / 255.0f * opacity;
+            if (selectionActive_) amount *= selection_[index] / 255.0f;
+            if (amount <= 0.0f) continue;
+            uint8_t* pixel = pixels.data() + offset;
+            const float keep = 1.0f - amount;
+            const float alpha = pixel[3] / 255.0f;
+            for (int channel = 0; channel < 3; ++channel) {
+                float value = pixel[channel] * keep;
+                if (!erase) value += color[channel] * 255.0f * amount * (alphaLock ? alpha : 1.0f);
+                pixel[channel] = static_cast<uint8_t>(std::min(value + 0.5f, 255.0f));
+            }
+            if (erase) {
+                pixel[3] = static_cast<uint8_t>(pixel[3] * keep + 0.5f);
+            } else if (!alphaLock) {
+                pixel[3] = static_cast<uint8_t>(std::min(pixel[3] * keep + 255.0f * amount + 0.5f, 255.0f));
+            }
+        }
+    }
+    pushHistory(std::move(entry));
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glBindTexture(GL_TEXTURE_2D, layer->texture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, rect.left, rect.top, rect.width(), rect.height(), GL_RGBA,
+                    GL_UNSIGNED_BYTE, pixels.data());
+    copyRegion(layer->fbo, shadowFbo_, rect);
+    layer->dirtyArea = unite(layer->dirtyArea, rect);
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+    return true;
 }
 
 void Renderer::setViewOptions(int mode, int guide) {
     viewMode_ = mode;
     guide_ = guide;
+}
+
+void Renderer::setFrames(const float* values, int count) {
+    frames_.assign(values, values + count);
+}
+
+void Renderer::setSymmetry(int mode, float x, float y) {
+    symmetry_ = mode;
+    symmetryX_ = x;
+    symmetryY_ = y;
+    mirrors_ = symmetryMirrors(mode, x, y);
 }
 
 void Renderer::setPerspective(const float* points, int count) {
@@ -819,7 +1255,7 @@ void Renderer::appendLine(float x1, float y1, float x2, float y2) {
     const float corners[6][2] = {{x1 - nx, y1 - ny}, {x2 - nx, y2 - ny}, {x2 + nx, y2 + ny},
                                  {x1 - nx, y1 - ny}, {x2 + nx, y2 + ny}, {x1 + nx, y1 + ny}};
     for (const auto& corner : corners) {
-        vertices_.insert(vertices_.end(), {corner[0], corner[1], 0.0f, 0.0f, 0.55f});
+        vertices_.insert(vertices_.end(), {corner[0], corner[1], 0.0f, 0.0f, 0.55f, 1.0f});
     }
 }
 
@@ -830,7 +1266,7 @@ void Renderer::drawPerspective(const float* matrix) {
                                             {0.11f, 0.62f, 0.46f},
                                             {0.33f, 0.29f, 0.72f}};
     const int count = static_cast<int>(perspective_.size() / 2);
-    if (count == 0 && figureDivisions_ <= 0.0f) return;
+    if (count == 0 && figureDivisions_ <= 0.0f && symmetry_ == 0 && guide_ != kIsometricGuide) return;
     const float reach = (width_ + height_) * 3.0f;
 
     glUseProgram(stampProgram_);
@@ -855,7 +1291,7 @@ void Renderer::drawPerspective(const float* matrix) {
         glUniform3fv(stampColor_, 1, kColors[point % 3]);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices_.size() * sizeof(float)),
                      vertices_.data(), GL_STREAM_DRAW);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size() / 5));
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size() / kStampFloats));
     }
     if (figureDivisions_ > 0.0f) {
         vertices_.clear();
@@ -868,7 +1304,38 @@ void Renderer::drawPerspective(const float* matrix) {
         glUniform3fv(stampColor_, 1, kColors[1]);
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices_.size() * sizeof(float)),
                      vertices_.data(), GL_STREAM_DRAW);
-        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size() / 5));
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size() / kStampFloats));
+    }
+    if (guide_ == kIsometricGuide) {
+        vertices_.clear();
+        const float w = static_cast<float>(width_);
+        const float h = static_cast<float>(height_);
+        const float spacing = h / 12.0f;
+        const float rise = w * 0.57735f;  // How far a 30 degree line climbs across the canvas.
+        for (float y = -rise; y < h + rise; y += spacing) {
+            appendLine(0.0f, y, w, y + rise);
+            appendLine(0.0f, y, w, y - rise);
+        }
+        for (float x = 0.0f; x < w; x += spacing * 0.866f) appendLine(x, 0.0f, x, h);
+        glUniform3fv(stampColor_, 1, kColors[2]);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices_.size() * sizeof(float)),
+                     vertices_.data(), GL_STREAM_DRAW);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size() / kStampFloats));
+    }
+    if (symmetry_ != 0) {
+        vertices_.clear();
+        const float x = symmetryX_;
+        const float y = symmetryY_;
+        if (symmetry_ != 2) appendLine(x, y - reach, x, y + reach);
+        if (symmetry_ != 1) appendLine(x - reach, y, x + reach, y);
+        if (symmetry_ == 4) {
+            appendLine(x - reach, y - reach, x + reach, y + reach);
+            appendLine(x - reach, y + reach, x + reach, y - reach);
+        }
+        glUniform3fv(stampColor_, 1, kColors[0]);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices_.size() * sizeof(float)),
+                     vertices_.data(), GL_STREAM_DRAW);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size() / kStampFloats));
     }
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
@@ -884,7 +1351,7 @@ void Renderer::fillCanvasRect(const float* matrix, float x, float y, float width
 }
 
 void Renderer::drawGuides(const float* matrix) {
-    if (guide_ == 0) return;
+    if (guide_ == 0 || guide_ == kIsometricGuide) return;
     constexpr float kLine = 4.0f;
     const float w = static_cast<float>(width_);
     const float h = static_cast<float>(height_);
@@ -896,9 +1363,11 @@ void Renderer::drawGuides(const float* matrix) {
     } else if (guide_ == 2) {
         columns = {0.382f, 0.618f};
         rows = columns;
-    } else {
+    } else if (guide_ == 3) {
         for (int i = 1; i < 8; ++i) columns.push_back(i / 8.0f);
         rows = columns;
+    } else if (guide_ == kViewsGuide) {
+        columns = {0.25f, 0.5f, 0.75f};
     }
     glUseProgram(canvasProgram_);
     glUniform4f(canvasSolid_, 0.55f, 0.23f, 0.12f, 0.65f);
@@ -907,6 +1376,18 @@ void Renderer::drawGuides(const float* matrix) {
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     for (const float column : columns) fillCanvasRect(matrix, column * w, 0.0f, kLine, h);
     for (const float row : rows) fillCanvasRect(matrix, 0.0f, row * h, w, kLine);
+    if (guide_ == kFramesGuide) {
+        for (size_t i = 0; i + 3 < frames_.size(); i += 4) {
+            const float left = frames_[i];
+            const float top = frames_[i + 1];
+            const float wide = frames_[i + 2] - left;
+            const float tall = frames_[i + 3] - top;
+            fillCanvasRect(matrix, left, top, wide, kLine);
+            fillCanvasRect(matrix, left, top + tall, wide, kLine);
+            fillCanvasRect(matrix, left, top, kLine, tall);
+            fillCanvasRect(matrix, left + wide, top, kLine, tall);
+        }
+    }
     glDisable(GL_BLEND);
     glBindVertexArray(0);
 }
@@ -993,15 +1474,26 @@ void Renderer::setLayerOrder(const int* ids, int count) {
 }
 
 void Renderer::markLayerDirty(int id) {
-    if (Layer* layer = findLayer(id)) layer->dirty = true;
+    if (Layer* layer = findLayer(id)) layer->dirtyArea = {0, 0, width_, height_};
 }
 
-bool Renderer::takeLayerDirty(int id) {
+Rect Renderer::takeLayerDirty(int id) {
     Layer* layer = findLayer(id);
-    if (!layer) return false;
-    const bool dirty = layer->dirty;
-    layer->dirty = false;
-    return dirty;
+    if (!layer) return {};
+    const Rect area = layer->dirtyArea;
+    layer->dirtyArea = {};
+    return area;
+}
+
+void Renderer::readLayerRegion(int id, const Rect& rect, void* pixels) {
+    Layer* layer = findLayer(id);
+    if (!layer) return;
+    const GLint target = currentFramebuffer();
+    glBindFramebuffer(GL_FRAMEBUFFER, layer->fbo);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(rect.left, rect.top, rect.width(), rect.height(), GL_RGBA, GL_UNSIGNED_BYTE,
+                 pixels);
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
 }
 
 void Renderer::readLayer(int id, void* pixels) {
@@ -1043,7 +1535,7 @@ void Renderer::drawStamps(const std::vector<Stamp>& stamps, const float* matrix)
     if (stamps.empty()) return;
     static constexpr float kCorners[6][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, -1}, {1, 1}, {-1, 1}};
     vertices_.clear();
-    vertices_.reserve(stamps.size() * 30);
+    vertices_.reserve(stamps.size() * 6 * kStampFloats);
     for (const Stamp& stamp : stamps) {
         const float cosine = std::cos(stamp.angle);
         const float sine = std::sin(stamp.angle);
@@ -1058,6 +1550,7 @@ void Renderer::drawStamps(const std::vector<Stamp>& stamps, const float* matrix)
             vertices_.push_back(localX);
             vertices_.push_back(localY);
             vertices_.push_back(stamp.alpha);
+            vertices_.push_back(stamp.shade);
         }
     }
     glUseProgram(stampProgram_);
@@ -1079,7 +1572,7 @@ void Renderer::drawStamps(const std::vector<Stamp>& stamps, const float* matrix)
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices_.size() * sizeof(float)),
                  vertices_.data(), GL_STREAM_DRAW);
-    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size() / 5));
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size() / kStampFloats));
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
     glDisable(GL_BLEND);
@@ -1104,13 +1597,15 @@ void Renderer::drawSmudge(const std::vector<Stamp>& stamps, const float* matrix,
         const float r = std::max(stamp.radiusX, 1.0f);
         if (carryReady_) {
             const float corners[6][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, -1}, {1, 1}, {-1, 1}};
-            float vertices[30];
+            float vertices[6 * kStampFloats];
             for (int i = 0; i < 6; ++i) {
-                vertices[i * 5] = stamp.x + corners[i][0] * r;
-                vertices[i * 5 + 1] = stamp.y + corners[i][1] * r;
-                vertices[i * 5 + 2] = corners[i][0];
-                vertices[i * 5 + 3] = corners[i][1];
-                vertices[i * 5 + 4] = stamp.alpha;
+                float* vertex = vertices + i * kStampFloats;
+                vertex[0] = stamp.x + corners[i][0] * r;
+                vertex[1] = stamp.y + corners[i][1] * r;
+                vertex[2] = corners[i][0];
+                vertex[3] = corners[i][1];
+                vertex[4] = stamp.alpha;
+                vertex[5] = 1.0f;
             }
             glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
             glUniform1f(erase, 1.0f);
@@ -1150,6 +1645,7 @@ void Renderer::drawCanvas(const float* matrix) {
     glEnable(GL_BLEND);
     const Layer* base = nullptr;
     for (const Layer& layer : layers_) {
+        if (layer.isMask) continue;
         if (!layer.clip) base = &layer;
         const bool clipped = layer.clip && base != nullptr;
         if (!layer.visible || (clipped && !base->visible)) continue;
@@ -1161,21 +1657,32 @@ void Renderer::drawCanvas(const float* matrix) {
         }
         glUniform1f(canvasOpacity_, layer.opacity);
         glUniform1f(canvasUseClip_, clipped ? 1.0f : 0.0f);
+        useHide(&layer, kHideUnit, canvasUseHide_);
+        useHide(clipped ? base : nullptr, kClipHideUnit, canvasUseClipHide_);
         if (clipped) {
             glActiveTexture(GL_TEXTURE1);
             glBindTexture(GL_TEXTURE_2D, base->texture);
             glActiveTexture(GL_TEXTURE0);
         }
         glBindTexture(GL_TEXTURE_2D, layer.texture);
-        if (adjustActive_ && layer.id == activeLayer_) {
+        if (filterActive_ && layer.id == activeLayer_) {
+            useFilter(matrix, true, layer);
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+            glUseProgram(canvasProgram_);
+        } else if (adjustActive_ && layer.id == activeLayer_) {
             glUseProgram(adjustProgram_);
             glUniformMatrix4fv(adjustMatrix_, 1, GL_FALSE, matrix);
             glUniform2f(adjustSize_, static_cast<float>(width_), static_cast<float>(height_));
             glUniform3fv(adjustValues_, 1, adjustment_);
             glUniform3fv(adjustCurve_, 1, adjustment_ + 3);
             glUniform1f(adjustUseMask_, 0.0f);
+            useHide(&layer, kHideUnit, adjustUseHide_);
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
             glUseProgram(canvasProgram_);
+        } else if (liquify_ && layer.id == liquifyLayer_) {
+            drawLiquify(matrix, layer.opacity, clipped, layer);
+            glUseProgram(canvasProgram_);
+            glBindVertexArray(canvasVao_);
         } else if (layer.id == previewLayer_) {
             float moved[16];
             multiply(matrix, previewTransform_, moved);
@@ -1183,7 +1690,7 @@ void Renderer::drawCanvas(const float* matrix) {
         } else {
             drawQuad(matrix);
         }
-        if (gradientActive_ && layer.id == activeLayer_) {
+        if (gradientActive_ && (layer.id == activeLayer_ || layer.maskId == activeLayer_)) {
             drawGradient(matrix);
             glUseProgram(canvasProgram_);
             glEnable(GL_BLEND);
@@ -1191,6 +1698,8 @@ void Renderer::drawCanvas(const float* matrix) {
         }
     }
     glUniform1f(canvasUseClip_, 0.0f);
+    glUniform1f(canvasUseHide_, 0.0f);
+    glUniform1f(canvasUseClipHide_, 0.0f);
     glDisable(GL_BLEND);
     glBindVertexArray(0);
     drawSelectionTint(matrix);
@@ -1226,10 +1735,15 @@ void Renderer::drawFront(const float* projection, const float* view, int bufferW
     if (end) stroke_->finish(stamps_);
 
     predictedStamps_.clear();
-    if (!end && predictedCount > 0 && !brush_.eraser && !brush_.smudge) {
+    if (!end && predictedCount > 0 && !brush_.eraser && !brush_.smudge && !layer->isMask) {
         StrokeBuilder prediction = *stroke_;
         for (int i = 0; i < predictedCount; ++i) prediction.add(predicted[i], predictedStamps_);
         prediction.finish(predictedStamps_);
+    }
+
+    if (!brush_.smudge && !mirrors_.empty()) {
+        mirrorStamps(stamps_, mirrors_);
+        mirrorStamps(predictedStamps_, mirrors_);
     }
 
     if (!stamps_.empty()) {
@@ -1244,9 +1758,9 @@ void Renderer::drawFront(const float* projection, const float* view, int bufferW
             drawStamps(stamps_, toCanvas);
             maskStamps_ = false;
         }
-        layer->dirty = true;
     }
     const Rect stampDirty = bounds(stamps_);
+    layer->dirtyArea = unite(layer->dirtyArea, stampDirty);
     strokeDirty_ = unite(strokeDirty_, stampDirty);
     const Rect predictedBounds = bounds(predictedStamps_);
     const Rect frameDirty = unite(unite(stampDirty, predictedDirty_), predictedBounds);
@@ -1330,7 +1844,7 @@ bool Renderer::swapHistory(std::vector<HistoryEntry>& from, std::vector<HistoryE
         glTexSubImage2D(GL_TEXTURE_2D, 0, entry.rect.left, entry.rect.top, entry.rect.width(),
                         entry.rect.height(), GL_RGBA, GL_UNSIGNED_BYTE, entry.pixels.data());
     }
-    layer->dirty = true;
+    layer->dirtyArea = unite(layer->dirtyArea, entry.rect);
 
     entry.pixels = std::move(current);
     to.push_back(std::move(entry));
@@ -1338,9 +1852,21 @@ bool Renderer::swapHistory(std::vector<HistoryEntry>& from, std::vector<HistoryE
     return true;
 }
 
-bool Renderer::undo() { return swapHistory(undo_, redo_); }
+bool Renderer::undo() {
+    bool changed = false;
+    bool more = true;
+    while (more && !undo_.empty()) {
+        more = undo_.back().chained;
+        changed = swapHistory(undo_, redo_) || changed;
+    }
+    return changed;
+}
 
-bool Renderer::redo() { return swapHistory(redo_, undo_); }
+bool Renderer::redo() {
+    bool changed = swapHistory(redo_, undo_);
+    while (!redo_.empty() && redo_.back().chained) swapHistory(redo_, undo_);
+    return changed;
+}
 
 void Renderer::compose(const float* projection, const float* view, int bufferWidth,
                        int bufferHeight) {

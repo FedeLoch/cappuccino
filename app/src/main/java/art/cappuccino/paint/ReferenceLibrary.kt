@@ -1,0 +1,151 @@
+package art.cappuccino.paint
+
+import android.app.Activity
+import android.app.AlertDialog
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.util.LruCache
+import android.widget.EditText
+import android.widget.ImageView
+import java.io.File
+import java.util.concurrent.Executors
+import kotlin.math.max
+
+/** The companion compares with at most this many images, so saves stay quick. */
+const val COMPANION_REFERENCE_LIMIT = 40
+const val STARRED_FILTER = "*"
+private const val THUMBNAIL_CACHE_BYTES = 48 * 1024 * 1024
+
+data class ReferenceNote(val starred: Boolean = false, val board: String = "")
+
+enum class ReferenceScope { OPEN, STARRED, NEWEST }
+
+class ReferenceChoice(val names: List<String>, val scope: ReferenceScope)
+
+/** Open references come first, then starred ones, then the newest of the library. */
+fun companionReferences(
+    newestFirst: List<String>,
+    open: Set<String>,
+    notes: Map<String, ReferenceNote>,
+): ReferenceChoice {
+    val opened = newestFirst.filter { it in open }
+    if (opened.isNotEmpty()) return ReferenceChoice(opened, ReferenceScope.OPEN)
+    val starred = newestFirst.filter { notes[it]?.starred == true }
+    if (starred.isNotEmpty()) {
+        return ReferenceChoice(starred.take(COMPANION_REFERENCE_LIMIT), ReferenceScope.STARRED)
+    }
+    return ReferenceChoice(newestFirst.take(COMPANION_REFERENCE_LIMIT), ReferenceScope.NEWEST)
+}
+
+fun referenceBoards(notes: Map<String, ReferenceNote>): List<String> =
+    notes.values.map { it.board }.filter { it.isNotEmpty() }.distinct().sortedBy { it.lowercase() }
+
+/** An empty [filter] keeps everything, [STARRED_FILTER] keeps stars, and others name a board. */
+fun filterReferences(
+    names: List<String>,
+    notes: Map<String, ReferenceNote>,
+    filter: String,
+): List<String> = when (filter) {
+    "" -> names
+    STARRED_FILTER -> names.filter { notes[it]?.starred == true }
+    else -> names.filter { notes[it]?.board == filter }
+}
+
+/** Decodes small previews away from the main thread, so large libraries open at once. */
+class ReferenceThumbnails {
+    private val worker = Executors.newFixedThreadPool(2)
+    private val cache = object : LruCache<String, Bitmap>(THUMBNAIL_CACHE_BYTES) {
+        override fun sizeOf(key: String, value: Bitmap) = value.byteCount
+    }
+
+    fun show(file: File, size: Int, view: ImageView) {
+        val key = "${file.name}:$size"
+        view.tag = key
+        cache.get(key)?.let {
+            view.setImageBitmap(it)
+            return
+        }
+        worker.execute {
+            val bitmap = decode(file, size) ?: return@execute
+            cache.put(key, bitmap)
+            view.post { if (view.tag == key) view.setImageBitmap(bitmap) }
+        }
+    }
+
+    fun close() = worker.shutdown()
+
+    private fun decode(file: File, size: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        var sample = 1
+        while (max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= size) sample *= 2
+        return BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
+}
+
+/** The actions for one reference, shared by the home screen and the studio. */
+fun Activity.referenceOptions(
+    store: ArtworkStore,
+    projectId: String,
+    file: File,
+    changed: () -> Unit,
+    moved: () -> Unit,
+    delete: () -> Unit,
+) {
+    val note = store.referenceNotes(projectId)[file.name] ?: ReferenceNote()
+    val items = arrayOf(
+        if (note.starred) tr("Remove star") else tr("Add star"),
+        if (note.board.isEmpty()) tr("Add to a board") else tr("Change board"),
+        tr("Move to another sketchbook"),
+        tr("Delete"),
+    )
+    AlertDialog.Builder(this).setItems(items) { _, choice ->
+        when (choice) {
+            0 -> {
+                store.updateReferenceNote(projectId, file.name) { it.copy(starred = !it.starred) }
+                changed()
+            }
+            1 -> chooseBoard(store, projectId, file, changed)
+            2 -> chooseSketchbook(store, projectId, file, moved)
+            else -> delete()
+        }
+    }.show()
+}
+
+private fun Activity.chooseBoard(store: ArtworkStore, projectId: String, file: File, changed: () -> Unit) {
+    val boards = referenceBoards(store.referenceNotes(projectId))
+    val items = (boards + tr("New board") + tr("No board")).toTypedArray()
+    AlertDialog.Builder(this).setTitle(tr("Board")).setItems(items) { _, choice ->
+        fun assign(board: String) {
+            store.updateReferenceNote(projectId, file.name) { it.copy(board = board) }
+            changed()
+        }
+        when (choice) {
+            boards.size -> {
+                val input = EditText(this).apply { hint = tr("Costumes, lighting, or forests") }
+                AlertDialog.Builder(this)
+                    .setTitle(tr("New board"))
+                    .setView(input)
+                    .setNegativeButton(tr("Cancel"), null)
+                    .setPositiveButton(tr("Save")) { _, _ ->
+                        input.text.toString().trim().takeIf { it.isNotEmpty() }?.let(::assign)
+                    }
+                    .show()
+            }
+            boards.size + 1 -> assign("")
+            else -> assign(boards[choice])
+        }
+    }.show()
+}
+
+private fun Activity.chooseSketchbook(store: ArtworkStore, projectId: String, file: File, moved: () -> Unit) {
+    val targets = (store.projects().map { it.id to it.name } + ("" to tr("Unsorted")))
+        .filter { it.first != projectId }
+    if (targets.isEmpty()) return
+    AlertDialog.Builder(this)
+        .setTitle(tr("Move to"))
+        .setItems(targets.map { it.second }.toTypedArray()) { _, choice ->
+            if (store.moveReference(file, projectId, targets[choice].first)) moved()
+        }
+        .show()
+}

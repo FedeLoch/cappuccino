@@ -2,7 +2,12 @@ package art.cappuccino.paint
 
 import java.nio.ByteBuffer
 
-class PsdImage(val width: Int, val height: Int, val layers: List<PsdImport>)
+class PsdImage(
+    val width: Int,
+    val height: Int,
+    val layers: List<PsdImport>,
+    val groups: List<String> = emptyList(),
+)
 
 class PsdImport(
     val name: String,
@@ -12,6 +17,8 @@ class PsdImport(
     val clipped: Boolean,
     /** Premultiplied RGBA for the whole canvas. */
     val rgba: ByteArray,
+    /** One-based index into the image's groups, or 0. */
+    var group: Int = 0,
 )
 
 private class ChannelRecord(val id: Int, val length: Int)
@@ -28,9 +35,10 @@ private class LayerRecord(
     val visible: Boolean,
     val name: String,
     val isDivider: Boolean,
+    val section: Int,
 )
 
-/** Reads 8-bit RGB PSD files. Group folders are flattened into their layers. */
+/** Reads 8-bit RGB PSD files. One level of group folders is kept, and nested ones join it. */
 object PsdReader {
     private val BLENDS = mapOf("norm" to 0, "mul " to 1, "scrn" to 2, "lddg" to 3)
 
@@ -46,9 +54,10 @@ object PsdReader {
         skipSection(input)
         val sectionLength = input.int
         val sectionEnd = input.position() + sectionLength
-        val layers = if (sectionLength > 4) readLayers(input, width, height) else emptyList()
+        val groups = ArrayList<String>()
+        val layers = if (sectionLength > 4) readLayers(input, width, height, groups) else emptyList()
         input.position(sectionEnd)
-        if (layers.isNotEmpty()) return PsdImage(width, height, layers)
+        if (layers.isNotEmpty()) return PsdImage(width, height, layers, groups)
         return PsdImage(width, height, listOf(readMerged(input, width, height, colorChannels)))
     }
 
@@ -62,12 +71,20 @@ object PsdReader {
         input.position(input.position() + length)
     }
 
-    private fun readLayers(input: ByteBuffer, width: Int, height: Int): List<PsdImport> {
+    private fun readLayers(input: ByteBuffer, width: Int, height: Int, groups: MutableList<String>): List<PsdImport> {
         input.int
         val count = kotlin.math.abs(input.short.toInt())
         val records = List(count) { readRecord(input) }
         val layers = ArrayList<PsdImport>()
+        var depth = 0
+        var firstInGroup = 0
         for (record in records) {
+            if (record.section == 3) {
+                if (depth++ == 0) firstInGroup = layers.size
+            } else if (record.isDivider && depth > 0 && --depth == 0) {
+                groups += record.name
+                for (index in firstInGroup until layers.size) layers[index].group = groups.size
+            }
             val channels = record.channels.associate { channel ->
                 val start = input.position()
                 val pixels = if (record.isDivider) null else readChannel(input, record, channel)
@@ -98,12 +115,16 @@ object PsdReader {
         var name = ascii(input, nameLength)
         input.position(input.position() + (4 - (nameLength + 1) % 4) % 4)
         var divider = false
+        var section = 0
         while (input.position() + 12 <= extraEnd) {
             ascii(input, 4)
             val key = ascii(input, 4)
             val length = input.int
             val next = input.position() + length + length % 2
-            if (key == "lsct" || key == "lsdk") divider = true
+            if (key == "lsct" || key == "lsdk") {
+                section = input.int
+                divider = section != 0
+            }
             if (key == "luni") {
                 val size = input.int
                 name = String(CharArray(size) { input.char })
@@ -112,7 +133,7 @@ object PsdReader {
         }
         input.position(extraEnd)
         return LayerRecord(
-            top, left, bottom, right, channels, blend, opacity, clipped, flags and 2 == 0, name, divider,
+            top, left, bottom, right, channels, blend, opacity, clipped, flags and 2 == 0, name, divider, section,
         )
     }
 

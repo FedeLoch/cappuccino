@@ -39,6 +39,8 @@ class GalleryActivity : Activity() {
     private lateinit var store: ArtworkStore
     private lateinit var root: LinearLayout
     private val background = Executors.newSingleThreadExecutor()
+    private val thumbnails = ReferenceThumbnails()
+    private var referenceFilter = ""
     private var selected = ALL
     private var showingReferences = false
 
@@ -496,34 +498,78 @@ class GalleryActivity : Activity() {
             },
             spaced(),
         )
-        val files = store.references(selected)
-        if (files.isEmpty()) {
+        val all = store.references(selected)
+        if (all.isEmpty()) {
             root.addView(label(tr("Collect the images that inspire this sketchbook."), 15f, COCOA), spaced())
             return
         }
+        val notes = store.referenceNotes(selected)
+        val boards = referenceBoards(notes)
+        if (referenceFilter.isNotEmpty() && referenceFilter != STARRED_FILTER && referenceFilter !in boards) referenceFilter = ""
+        root.addView(
+            HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(
+                    LinearLayout(context).apply {
+                        val filters = listOf(tr("All") to "", "★" to STARRED_FILTER) + boards.map { it to it }
+                        filters.forEach { (name, value) ->
+                            addView(
+                                quietChip(name, referenceFilter == value) {
+                                    referenceFilter = value
+                                    render()
+                                },
+                                LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) },
+                            )
+                        }
+                    },
+                )
+            },
+            spaced(),
+        )
+        val shown = filterReferences(all.map { it.name }, notes, referenceFilter).toSet()
         val cell = dp(180)
         val layout = grid(cell)
-        files.forEach { file -> layout.addView(referenceCell(file, cell)) }
+        all.filter { it.name in shown }.forEach { file ->
+            layout.addView(referenceCell(file, cell, notes[file.name]?.starred == true))
+        }
         root.addView(layout, spaced())
+        root.addView(label(tr("Hold a reference to star, sort, move, or delete it."), 13f, COCOA), spaced())
     }
 
-    private fun referenceCell(file: File, size: Int) = ImageView(this).apply {
-        scaleType = ImageView.ScaleType.CENTER_CROP
-        background = rounded(OAT, 10)
-        clipToOutline = true
-        contentDescription = tr("Reference")
+    private fun referenceCell(file: File, size: Int, starred: Boolean) = FrameLayout(this).apply {
         layoutParams = GridLayout.LayoutParams().apply {
             width = size
             height = size
             setMargins(0, 0, dp(12), dp(12))
         }
-        setImageBitmap(BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply { inSampleSize = 4 }))
-        setOnLongClickListener {
-            confirm(tr("Delete this reference?"), tr("You can't undo this.")) {
-                file.delete()
-                render()
-            }
-            true
+        addView(
+            ImageView(context).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = rounded(OAT, 10)
+                clipToOutline = true
+                contentDescription = tr("Reference")
+                thumbnails.show(file, size, this)
+                setOnLongClickListener {
+                    referenceOptions(
+                        store, selected, file,
+                        changed = { render() },
+                        moved = { render() },
+                        delete = {
+                            confirm(tr("Delete this reference?"), tr("You can't undo this.")) {
+                                store.deleteReference(selected, file)
+                                render()
+                            }
+                        },
+                    )
+                    true
+                }
+            },
+        )
+        if (starred) {
+            addView(
+                label("★", 18f, Color.WHITE).apply { setShadowLayer(5f, 0f, 1f, Color.BLACK) },
+                FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply { setMargins(0, dp(4), dp(8), 0) },
+            )
         }
     }
 

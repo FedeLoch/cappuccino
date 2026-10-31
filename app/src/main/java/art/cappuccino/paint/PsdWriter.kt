@@ -11,7 +11,45 @@ class PsdLayer(
     val blend: Int,
     val clipped: Boolean,
     val rgba: ByteArray,
+    /** 0 for a normal layer, 1 for a group's folder, and 3 for the marker that opens a group. */
+    val section: Int = 0,
 )
+
+private const val OPEN_FOLDER = 1
+private const val GROUP_START = 3
+
+/**
+ * Wraps each run of layers in a group with the two records PSD uses for it. [groupOf] gives a
+ * layer's group or null, and groups are named by [name].
+ */
+fun <G> withPsdGroups(
+    layers: List<PsdLayer>,
+    groupOf: (Int) -> G?,
+    folder: (G) -> PsdLayer,
+): List<PsdLayer> {
+    val result = ArrayList<PsdLayer>()
+    var open: G? = null
+    fun close() {
+        open?.let { result += folder(it) }
+        open = null
+    }
+    layers.forEachIndexed { index, layer ->
+        val group = groupOf(index)
+        if (group != open) {
+            close()
+            if (group != null) {
+                result += PsdLayer("</Layer group>", 1f, true, 0, false, ByteArray(0), GROUP_START)
+                open = group
+            }
+        }
+        result += layer
+    }
+    close()
+    return result
+}
+
+fun psdFolder(name: String, opacity: Float, visible: Boolean) =
+    PsdLayer(name, opacity, visible, 0, false, ByteArray(0), OPEN_FOLDER)
 
 private val BLEND_KEYS = listOf("norm", "mul ", "scrn", "lddg")
 
@@ -76,7 +114,7 @@ class PsdWriter(private val width: Int, private val height: Int) {
         return result.toByteArray()
     }
 
-    private fun layerExtras(name: String): ByteArray {
+    private fun layerExtras(name: String, section: Int): ByteArray {
         val bytes = ByteArrayOutputStream()
         val out = DataOutputStream(bytes)
         out.writeInt(0)
@@ -95,6 +133,12 @@ class PsdWriter(private val width: Int, private val height: Int) {
         out.writeKey("luni")
         out.writeInt(unicode.size())
         unicode.writeTo(out)
+        if (section != 0) {
+            out.writeKey("8BIM")
+            out.writeKey("lsct")
+            out.writeInt(4)
+            out.writeInt(section)
+        }
         return bytes.toByteArray()
     }
 
@@ -103,6 +147,7 @@ class PsdWriter(private val width: Int, private val height: Int) {
         val out = DataOutputStream(records)
         out.writeShort(layers.size)
         val channels = layers.map { layer ->
+            if (layer.section != 0) return@map Channels(Array(4) { byteArrayOf(0, 0) })
             Channels(
                 arrayOf(
                     encodeChannel(layer.rgba, 3, false, true),
@@ -113,10 +158,11 @@ class PsdWriter(private val width: Int, private val height: Int) {
             )
         }
         layers.forEachIndexed { index, layer ->
+            val empty = layer.section != 0
             out.writeInt(0)
             out.writeInt(0)
-            out.writeInt(height)
-            out.writeInt(width)
+            out.writeInt(if (empty) 0 else height)
+            out.writeInt(if (empty) 0 else width)
             out.writeShort(4)
             listOf(-1, 0, 1, 2).forEachIndexed { position, id ->
                 out.writeShort(id)
@@ -128,7 +174,7 @@ class PsdWriter(private val width: Int, private val height: Int) {
             out.writeByte(if (layer.clipped) 1 else 0)
             out.writeByte(if (layer.visible) 0 else 2)
             out.writeByte(0)
-            val extras = layerExtras(layer.name)
+            val extras = layerExtras(layer.name, layer.section)
             out.writeInt(extras.size)
             out.write(extras)
         }

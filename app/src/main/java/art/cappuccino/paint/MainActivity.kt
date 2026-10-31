@@ -14,6 +14,7 @@ import android.graphics.RectF
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -43,6 +44,8 @@ import kotlin.math.roundToInt
 private const val MIN_BRUSH = 4
 private const val MAX_BRUSH = 300
 private const val AUTOSAVE_DELAY_MS = 2500L
+private const val STROKE_SAVE_DELAY_MS = 8000L
+private const val PEN_NEAR_LIMIT_MS = 30000L
 private const val NAP_DELAY_MS = 90_000L
 private const val PICK_REFERENCES = 41
 private const val REFERENCE_SIZE = 2048
@@ -61,6 +64,7 @@ private const val PEEK_OVERLAP = 16
 private const val PEEK_TOP = 1
 private const val PEEK_TILT = 24f
 private const val REFERENCE_PROFILE_SIZE = 240
+private val TEXT_SIZES = listOf(0.03f, 0.05f, 0.09f)
 private const val BRUSH_TIP_SIZE = 128
 
 class MainActivity : Activity(), ReferenceHost {
@@ -98,6 +102,22 @@ class MainActivity : Activity(), ReferenceHost {
     private var tipIndex = 0
     private var ideaIndex = 0
     private var matchedFiles: List<File> = emptyList()
+    private var matchedScope = ReferenceScope.NEWEST
+    private var referenceFilter = ""
+    private var editingMask = false
+    private var previewStale = false
+    private var everSaved = false
+    private var journalSequence = 1
+    private var saveWaitStart = 0L
+    private val journalWriter = Executors.newSingleThreadExecutor()
+    private var filter = FILTERS.first()
+    private var filterValues = FloatArray(4)
+    private var layersButton: View? = null
+    private var symmetryHandle: PopupWindow? = null
+    private var liquifyControls: PopupWindow? = null
+    private var liquifyRingWindow: PopupWindow? = null
+    private var liquifyRing: BrushRing? = null
+    private val thumbnails = ReferenceThumbnails()
     private var peek: CompanionView? = null
     private var peekFrame: View? = null
     private var peekWindow: PopupWindow? = null
@@ -144,12 +164,14 @@ class MainActivity : Activity(), ReferenceHost {
         }
         val canvasWidth = loaded?.width ?: intent.getIntExtra(EXTRA_WIDTH, DEFAULT_CANVAS_WIDTH)
         val canvasHeight = loaded?.height ?: intent.getIntExtra(EXTRA_HEIGHT, DEFAULT_CANVAS_HEIGHT)
+        SlowLog.file = File(filesDir, "slow.log")
         canvas = CanvasView(this, canvasWidth, canvasHeight)
         maxLayers = layerLimit(
             canvasWidth, canvasHeight,
             ActivityManager.MemoryInfo().also { getSystemService(ActivityManager::class.java).getMemoryInfo(it) }.totalMem,
         )
         canvas.pressureGamma = preferences.getFloat("pressureGamma", 0.75f)
+        canvas.snapShapes = preferences.getBoolean("snapShapes", true)
         customBrushes.addAll(store.customBrushes())
         setContentView(canvas)
         companion = CompanionView(this).apply {
@@ -172,12 +194,14 @@ class MainActivity : Activity(), ReferenceHost {
             references.values.forEach { it.setDrawing(false) }
             if (companion.mood == Mood.NAP) companion.mood = Mood.IDLE
             handler.postDelayed(nap, NAP_DELAY_MS)
-            markUnsaved()
+            markUnsaved(strokeOnly = true)
         }
         canvas.onGestureStart = { closePanel() }
         canvas.onViewChanged = { positionHandles() }
         canvas.onFillTap = { x, y -> fillAt(x, y) }
         canvas.onStrokeCommitted = { history.record(Edit.Stroke) }
+        canvas.onStrokeRecord = { brush, samples -> journalStroke(brush, samples) }
+        canvas.onPenNear = { holdSaveForPen() }
         canvas.onUndoGesture = { undoEdit() }
         canvas.onRedoGesture = { redoEdit() }
         canvas.onStrokePath = { checkPerspective(it) }
@@ -193,6 +217,8 @@ class MainActivity : Activity(), ReferenceHost {
             lassoOverlay.add(x, y)
         }
         canvas.onLassoDone = { finishLasso(it) }
+        canvas.onLassoFill = { path, erase -> finishLassoFill(path, erase) }
+        canvas.onLiquifyRing = { x, y, radius -> showLiquifyRing(x, y, radius) }
         canvas.onWandTap = { x, y -> finishWand(x, y) }
         canvas.onGradientMove = { previewGradient(it) }
         canvas.onGradientDone = { finishGradient() }
@@ -222,28 +248,109 @@ class MainActivity : Activity(), ReferenceHost {
             return
         }
         document = loaded
+        everSaved = true
         engineLayers.addAll(loaded.layers.map { it.id })
+        engineLayers.addAll(loaded.layers.map { it.maskId }.filter { it != 0 })
         pushPerspective()
         pushFigure()
+        pushSymmetry()
         saver.execute {
             for (layer in loaded.layers) {
-                val pixels = layer.file?.let { store.readLayer(id, it, width, height) }
+                val pixels = store.readLayerPixels(loaded, layer.id, layer.file)
+                val mask = store.readLayerPixels(loaded, layer.maskId, layer.maskFile)
+                // Older artworks move to tiles on their next save, all at once.
+                val older = listOf(layer.id, layer.maskId).filter { it != 0 && it !in loaded.tiles }
                 layer.file?.let { savedFiles[layer.id] = it }
+                layer.maskFile?.let { savedFiles[layer.maskId] = it }
                 canvas.act { engine ->
                     NativeEngine.createLayer(engine, layer.id)
                     pixels?.let { NativeEngine.writeLayer(engine, layer.id, it) }
+                    if (layer.maskId != 0) {
+                        NativeEngine.createLayer(engine, layer.maskId)
+                        NativeEngine.setLayerMask(engine, layer.id, layer.maskId, layer.maskEnabled)
+                        mask?.let { NativeEngine.writeLayer(engine, layer.maskId, it) }
+                    }
+                    older.forEach { NativeEngine.markLayerDirty(engine, it) }
                 }
             }
+            if (loaded.layers.any { it.id !in loaded.tiles }) runOnUiThread { markUnsaved() }
             canvas.act { engine ->
                 loaded.layers.forEach { applyLayerProperties(engine, it) }
                 NativeEngine.setActiveLayer(engine, loaded.activeLayer)
             }
+            val journal = store.journal(id)
+            journalSequence = maxOf(loaded.journalSequence, journal.latest()) + 1
+            val recovered = runCatching { journal.read(loaded.journalSequence) }.getOrDefault(emptyList())
+            if (recovered.isNotEmpty()) recoverStrokes(recovered)
             runOnUiThread {
                 syncAlphaLock()
                 canvas.acceptsInput = true
                 canvas.post { restoreReferences() }
             }
         }
+    }
+
+    private fun journalStroke(brush: BrushState, samples: FloatArray) {
+        val entry = JournalEntry.Stroke(
+            paintTarget(), brush.kind.id, brush.diameter, brush.color, brush.opacity, brush.alphaLock,
+            brush.pressureGamma, samples,
+        )
+        writeJournal(entry)
+    }
+
+    private fun writeJournal(entry: JournalEntry) {
+        val journal = store.journal(document.id)
+        val sequence = journalSequence
+        journalWriter.execute { runCatching { journal.append(sequence, entry) } }
+    }
+
+    /** Redraws strokes that finished after the last save, as they were before a crash. */
+    private fun recoverStrokes(entries: List<JournalEntry>) {
+        val brushes = BrushKind.entries + customBrushes
+        val identity = FloatArray(16).also { android.opengl.Matrix.setIdentityM(it, 0) }
+        val view = floatArrayOf(1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f)
+        val active = document.activeLayer
+        val known = engineLayers.toSet()
+        canvas.act { engine ->
+            entries.forEach { entry ->
+                when (entry) {
+                    is JournalEntry.Stroke -> if (entry.target in known) {
+                        val kind = brushes.firstOrNull { it.id == entry.brushId } ?: BrushKind.INK
+                        NativeEngine.setActiveLayer(engine, entry.target)
+                        beginEngineStroke(
+                            engine,
+                            BrushState(kind, entry.diameter, entry.color, entry.opacity, entry.alphaLock, entry.pressureGamma),
+                        )
+                        NativeEngine.drawFront(engine, identity, view, 16, 16, entry.samples, FloatArray(0), true)
+                    }
+                    JournalEntry.Undo -> NativeEngine.undo(engine)
+                    JournalEntry.Redo -> NativeEngine.redo(engine)
+                }
+            }
+            NativeEngine.setActiveLayer(engine, active)
+        }
+        val strokes = entries.filterIsInstance<JournalEntry.Stroke>().filter { it.target in known }
+        runOnUiThread {
+            entries.forEach { entry ->
+                when (entry) {
+                    is JournalEntry.Stroke -> if (entry.target in known) history.record(Edit.Stroke)
+                    JournalEntry.Undo -> history.undo()
+                    JournalEntry.Redo -> history.redo()
+                }
+            }
+            markUnsaved()
+            Toast.makeText(this, tr("Recovered %1 strokes from your last session", strokes.size), Toast.LENGTH_LONG).show()
+        }
+    }
+
+    /** Waits while the pen is near the screen, so a save doesn't land as the next stroke starts. */
+    private fun holdSaveForPen() {
+        if (!unsaved || !handler.hasCallbacks(saveLater)) return
+        val now = SystemClock.elapsedRealtime()
+        if (saveWaitStart == 0L) saveWaitStart = now
+        if (now - saveWaitStart > PEN_NEAR_LIMIT_MS) return
+        handler.removeCallbacks(saveLater)
+        handler.postDelayed(saveLater, AUTOSAVE_DELAY_MS)
     }
 
     private fun applyLayerProperties(engine: Long, layer: LayerInfo) {
@@ -254,21 +361,31 @@ class MainActivity : Activity(), ReferenceHost {
             layer.visible && group?.visible != false,
             layer.blend, layer.clip,
         )
+        NativeEngine.setLayerMask(engine, layer.id, layer.maskId, layer.maskEnabled)
     }
 
-    private fun markUnsaved() {
+    /** Strokes wait longer, since the journal already protects them. */
+    private fun markUnsaved(strokeOnly: Boolean = false) {
         unsaved = true
+        previewStale = true
         handler.removeCallbacks(saveLater)
-        handler.postDelayed(saveLater, AUTOSAVE_DELAY_MS)
+        handler.postDelayed(saveLater, if (strokeOnly && everSaved) STROKE_SAVE_DELAY_MS else AUTOSAVE_DELAY_MS)
     }
 
-    private fun save() {
+    /** Saves changes. [withPreview] adds the sharp image used on sheets, and [then] runs afterward. */
+    private fun save(withPreview: Boolean = false, then: (() -> Unit)? = null) {
         handler.removeCallbacks(saveLater)
-        if (!unsaved) return
-        if (penDown) {
+        if (!unsaved && !withPreview) {
+            then?.let { saver.execute(it) }
+            return
+        }
+        if (penDown && then == null) {
             handler.postDelayed(saveLater, AUTOSAVE_DELAY_MS)
             return
         }
+        if (withPreview) previewStale = false
+        saveWaitStart = 0L
+        val included = journalSequence++
         unsaved = false
         val target = document
         val layers = target.layers.map { it.copy() }
@@ -276,39 +393,63 @@ class MainActivity : Activity(), ReferenceHost {
         val nextId = target.nextLayerId
         val groups = target.groups.map { it.copy() }
         val nextGroup = target.nextGroupId
-        val referenceSet = referenceFiles()
+        val referenceSet = referenceChoice()
         if (!interfaceHidden) companion.mood = Mood.THINKING
         canvas.snapshot { engine ->
-            val pixels = layers.filter { NativeEngine.takeLayerDirty(engine, it.id) }
-                .associate { layer ->
-                    layer.id to ArtworkStore.pixelBuffer(target.width, target.height).also {
-                        NativeEngine.readLayer(engine, layer.id, it)
-                    }
-                }
+            val pixels = HashMap<Int, LayerRegion>()
+            for (id in layers.flatMap { listOf(it.id, it.maskId) }) {
+                if (id == 0) continue
+                val changed = NativeEngine.takeLayerDirty(engine, id) ?: continue
+                val area = alignToTiles(changed, target.width, target.height)
+                val buffer = ArtworkStore.pixelBuffer(area[2] - area[0], area[3] - area[1])
+                NativeEngine.readLayerRegion(engine, id, area[0], area[1], area[2], area[3], buffer)
+                pixels[id] = LayerRegion(area[0], area[1], area[2] - area[0], area[3] - area[1], buffer)
+            }
             val thumbnail = ArtworkStore.pixelBuffer(ArtworkStore.THUMBNAIL_WIDTH, target.thumbnailHeight)
             NativeEngine.readComposite(engine, ArtworkStore.THUMBNAIL_WIDTH, target.thumbnailHeight, thumbnail)
+            val preview = if (withPreview) {
+                val height = ArtworkStore.previewHeight(target.width, target.height)
+                ArtworkStore.pixelBuffer(ArtworkStore.PREVIEW_WIDTH, height).also {
+                    NativeEngine.readComposite(engine, ArtworkStore.PREVIEW_WIDTH, height, it)
+                }
+            } else {
+                null
+            }
             saver.execute {
-                layers.forEach { it.file = savedFiles[it.id] }
+                layers.forEach {
+                    it.file = savedFiles[it.id]
+                    it.maskFile = savedFiles[it.maskId]
+                }
                 runCatching {
-                    store.save(target, ArtworkSnapshot(layers, active, nextId, pixels, thumbnail, groups, nextGroup))
+                    store.save(target, ArtworkSnapshot(layers, active, nextId, pixels, thumbnail, groups, nextGroup, preview, included))
+                    everSaved = true
+                    val journal = store.journal(target.id)
+                    journalWriter.execute { journal.clear(included) }
                     store.addTimelapseFrame(target.id, thumbnail, target.thumbnailHeight)
-                    layers.forEach { layer -> layer.file?.let { savedFiles[layer.id] = it } }
+                    layers.forEach { layer ->
+                        layer.file?.let { savedFiles[layer.id] = it }
+                        layer.maskFile?.let { savedFiles[layer.maskId] = it }
+                    }
                 }.onFailure {
+                    // Those changes never reached disk, so the next save has to include them.
+                    canvas.snapshot { engine -> pixels.keys.forEach { NativeEngine.markLayerDirty(engine, it) } }
                     runOnUiThread {
                         unsaved = true
                         Toast.makeText(this, tr("Couldn't save your artwork"), Toast.LENGTH_LONG).show()
                     }
                 }
-                analyze(thumbnail, referenceSet)
+                then?.invoke()
+                analyze(thumbnail, referenceSet.first, referenceSet.second)
             }
         }
     }
 
-    /** Uses open references, or the whole project's library when none are open. */
-    private fun referenceFiles(): List<File> {
+    /** The images the companion compares with, and why those were chosen. */
+    private fun referenceChoice(): Pair<List<File>, ReferenceScope> {
         val all = store.references(document.projectId)
-        val open = all.filter { references.containsKey(it.name) }
-        return open.ifEmpty { all }
+        val choice = companionReferences(all.map { it.name }, references.keys, store.referenceNotes(document.projectId))
+        val byName = all.associateBy { it.name }
+        return choice.names.mapNotNull(byName::get) to choice.scope
     }
 
     private fun referenceProfiles(files: List<File>): List<VisualProfile> = files.mapNotNull { file ->
@@ -323,7 +464,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
-    private fun analyze(thumbnail: java.nio.ByteBuffer, files: List<File>) {
+    private fun analyze(thumbnail: java.nio.ByteBuffer, files: List<File>, scope: ReferenceScope) {
         thumbnail.rewind()
         val raw = thumbnail.order(ByteOrder.LITTLE_ENDIAN).asIntBuffer()
         val pixels = IntArray(raw.remaining())
@@ -345,6 +486,7 @@ class MainActivity : Activity(), ReferenceHost {
             report = result
             referenceMatch = matched
             matchedFiles = files
+            matchedScope = scope
             if (changed && result.tips.isNotEmpty()) unreadTips = true
             if (unreadTips) peek?.mood = Mood.TIP
             companion.mood = if (unreadTips) Mood.TIP else Mood.IDLE
@@ -443,7 +585,8 @@ class MainActivity : Activity(), ReferenceHost {
             }
             addView(brushButton)
             addView(eraserButton)
-            addView(iconButton(R.drawable.ic_layers, tr("Layers")) { togglePanel("layers", ::layersPanel) })
+            layersButton = iconButton(R.drawable.ic_layers, tr("Layers")) { togglePanel("layers", ::layersPanel) }
+            addView(layersButton)
             addView(colorButton)
         }
         place(right, Gravity.TOP or Gravity.END, dp(12), dp(12))
@@ -461,6 +604,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
         place(sliders, Gravity.START or Gravity.CENTER_VERTICAL, dp(6), 0)
         selectTool(canvas.brushKind)
+        markMaskEditing()
         if (preferences.getBoolean("companion", true)) showCompanion()
     }
 
@@ -635,6 +779,7 @@ class MainActivity : Activity(), ReferenceHost {
         if (key == "view") {
             showHandles()
             showFigureHandles()
+            showSymmetryHandle()
         }
     }
 
@@ -651,6 +796,7 @@ class MainActivity : Activity(), ReferenceHost {
     private fun closePanel() {
         hideHandles()
         if (panelKey == "adjust") canvas.act { NativeEngine.setAdjustment(it, false, FloatArray(6)) }
+        if (panelKey == "filter") canvas.act { NativeEngine.setFilter(it, false, 0, FloatArray(4), FloatArray(3)) }
         if (panelKey == "color") rememberColor()
         panel?.dismiss()
         panel = null
@@ -728,6 +874,16 @@ class MainActivity : Activity(), ReferenceHost {
         }
         val match = referenceMatch
         if (companionSection == 3 && match != null) {
+            gapped(
+                label(
+                    when (matchedScope) {
+                        ReferenceScope.OPEN -> tr("Compared with your open references")
+                        ReferenceScope.STARRED -> tr("Compared with your starred references")
+                        ReferenceScope.NEWEST -> tr("Compared with your %1 newest references", matchedFiles.size)
+                    },
+                    12f, MUTED_TEXT,
+                ),
+            )
             match.areas.forEach { area ->
                 gapped(
                     LinearLayout(context).apply {
@@ -883,7 +1039,7 @@ class MainActivity : Activity(), ReferenceHost {
         addView(label(tr("Brushes"), 16f))
         val color = if (Color.luminance(canvas.brushColor) < 0.08f) TEXT_COLOR else canvas.brushColor
         val favorites = favoriteIds()
-        val brushes = (BrushKind.PAINT_BRUSHES + BrushKind.TEXTURE_BRUSHES + customBrushes).sortedBy { it.id !in favorites }
+        val brushes = (BrushKind.PAINT_BRUSHES + BrushKind.TEXTURE_BRUSHES + BrushKind.SCATTER_BRUSHES + customBrushes).sortedBy { it.id !in favorites }
         gapped(toolGrid(brushes, color, favorites))
         gapped(label(tr("Tools"), 13f, MUTED_TEXT))
         gapped(
@@ -891,18 +1047,26 @@ class MainActivity : Activity(), ReferenceHost {
                 listOf(
                     Triple(BrushKind.SMUDGE, R.drawable.ic_smudge, tr("Blend colors")),
                     Triple(BrushKind.FILL, R.drawable.ic_fill, tr("Fill an area")),
-                    Triple(BrushKind.GRADIENT, R.drawable.ic_gradient, tr("Fade a color")),
-                ).forEachIndexed { index, (kind, icon, detail) ->
-                    addView(
-                        toolCard(icon, tr(kind.label), detail, canvas.brushKind === kind) {
-                            selectTool(kind)
-                            closePanel()
-                        },
-                        LinearLayout.LayoutParams(0, -2, 1f).apply { if (index > 0) marginStart = dp(6) },
-                    )
-                }
+                ).forEachIndexed { index, (kind, icon, detail) -> addTool(kind, icon, detail, index) }
             },
         )
+        gapped(
+            LinearLayout(context).apply {
+                listOf(
+                    Triple(BrushKind.GRADIENT, R.drawable.ic_gradient, tr("Fade a color")),
+                    Triple(BrushKind.LASSO_FILL, R.drawable.ic_lasso_fill, tr("Fill a shape you draw")),
+                ).forEachIndexed { index, (kind, icon, detail) -> addTool(kind, icon, detail, index) }
+            },
+        )
+        gapped(label(tr("Snap shapes"), 12f, MUTED_TEXT))
+        addView(
+            segmented(listOf(tr("Off"), tr("On")), if (canvas.snapShapes) 1 else 0) {
+                canvas.snapShapes = it == 1
+                preferences.edit().putBoolean("snapShapes", canvas.snapShapes).apply()
+                rerender("brushes", ::brushPanel)
+            },
+        )
+        gapped(label(tr("Hold at the end of a stroke for a clean line, ellipse, or box."), 12f, MUTED_TEXT))
         addView(toolSlider(tr("Stabilizer"), (toolFor(canvas.brushKind).stabilizer * 100).roundToInt()) {
             toolFor(canvas.brushKind).stabilizer = it / 100f
             canvas.stabilizerStrength = it / 100f
@@ -920,6 +1084,16 @@ class MainActivity : Activity(), ReferenceHost {
         }
         gapped(wrapRow(actions))
         gapped(label(tr("Hold a brush to keep it at the top."), 12f, MUTED_TEXT))
+    }
+
+    private fun LinearLayout.addTool(kind: BrushKind, icon: Int, detail: String, index: Int) {
+        addView(
+            toolCard(icon, tr(kind.label), detail, canvas.brushKind === kind) {
+                selectTool(kind)
+                closePanel()
+            },
+            LinearLayout.LayoutParams(0, -2, 1f).apply { if (index > 0) marginStart = dp(6) },
+        )
     }
 
     private fun toolSlider(name: String, value: Int, change: (Int) -> Unit): View = column().apply {
@@ -1101,11 +1275,34 @@ class MainActivity : Activity(), ReferenceHost {
         closePanel()
     }
 
-    internal fun finishLasso(path: FloatArray) {
-        canvas.selectionTool = SelectionTool.NONE
+    private fun hideLasso() {
         lassoWindow?.dismiss()
         lassoWindow = null
         lassoOverlay.clear()
+    }
+
+    private fun finishLassoFill(path: FloatArray, erase: Boolean) {
+        hideLasso()
+        val color = canvas.brushColor
+        val opacity = canvas.brushOpacity
+        val lock = canvas.alphaLock
+        canvas.act { engine ->
+            val changed = NativeEngine.fillPolygon(
+                engine, path, Color.red(color) / 255f, Color.green(color) / 255f, Color.blue(color) / 255f,
+                opacity, erase, lock,
+            )
+            if (changed) {
+                runOnUiThread {
+                    history.record(Edit.Stroke)
+                    markUnsaved()
+                }
+            }
+        }
+    }
+
+    internal fun finishLasso(path: FloatArray) {
+        canvas.selectionTool = SelectionTool.NONE
+        hideLasso()
         canvas.act { NativeEngine.setSelectionPolygon(it, path) }
         markSelection(path.size >= 6)
     }
@@ -1126,10 +1323,11 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     internal fun selectionToLayer(cut: Boolean, transform: Boolean) {
-        if (document.layers.size >= maxLayers) {
+        if (layerSlots >= maxLayers) {
             Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
             return
         }
+        setEditingMask(false)
         val id = document.nextLayerId++
         engineLayers.add(id)
         canvas.act { NativeEngine.copySelectionToLayer(it, id, cut) }
@@ -1182,6 +1380,66 @@ class MainActivity : Activity(), ReferenceHost {
                 ),
             ),
         )
+    }
+
+    private fun filterPanel(): View = column().apply {
+        addView(label(tr("Filters"), 16f))
+        gapped(wrapRow(FILTERS.map { kind -> smallChip(tr(kind.label), kind === filter) { chooseFilter(kind) } }))
+        filter.sliders.forEachIndexed { index, slider ->
+            val span = slider.high - slider.low
+            addView(toolSlider(tr(slider.label), ((filterValues[index] - slider.low) / span * 100).roundToInt()) {
+                filterValues[index] = slider.low + span * it / 100f
+                pushFilter()
+            })
+        }
+        if (filter.usesColor) gapped(label(tr("Uses your current color."), 12f, MUTED_TEXT))
+        gapped(
+            wrapRow(
+                listOf(
+                    smallChip(tr("Cancel")) { closePanel() },
+                    smallChip(tr("Apply"), true) {
+                        panelKey = ""
+                        panel?.dismiss()
+                        commitFilter()
+                    },
+                ),
+            ),
+        )
+    }
+
+    private fun chooseFilter(kind: FilterKind) {
+        filter = kind
+        filterValues = FloatArray(4).also { values -> kind.sliders.forEachIndexed { i, s -> values[i] = s.start } }
+        pushFilter()
+        rerender("filter", ::filterPanel)
+    }
+
+    private fun openFilters() {
+        setEditingMask(false)
+        closePanel()
+        chooseFilter(filter)
+        showPanel("filter", filterPanel())
+    }
+
+    private fun pushFilter() {
+        val id = filter.id
+        val values = filterValues.copyOf()
+        val color = canvas.brushColor
+        val rgb = floatArrayOf(Color.red(color) / 255f, Color.green(color) / 255f, Color.blue(color) / 255f)
+        canvas.act { NativeEngine.setFilter(it, true, id, values, rgb) }
+    }
+
+    private fun commitFilter() {
+        pushFilter()
+        canvas.act { NativeEngine.commitFilter(it) }
+        history.record(Edit.Stroke)
+        markUnsaved()
+    }
+
+    internal fun applyFilter(kind: FilterKind, vararg values: Float) {
+        filter = kind
+        filterValues = FloatArray(4).also { values.copyInto(it) }
+        commitFilter()
     }
 
     internal fun applyAdjustment(values: FloatArray = adjustment) {
@@ -1306,9 +1564,81 @@ class MainActivity : Activity(), ReferenceHost {
         transformControls?.dismiss()
     }
 
+    internal fun startLiquify() {
+        val layer = activeLayer() ?: return
+        closePanel()
+        setEditingMask(false)
+        canvas.liquifyTool = 0
+        canvas.act { NativeEngine.beginLiquify(it, layer.id) }
+        val ring = BrushRing(this)
+        liquifyRing = ring
+        liquifyRingWindow = PopupWindow(ring, canvas.width, canvas.height).apply {
+            isTouchable = false
+            isClippingEnabled = false
+            showAtLocation(canvas, Gravity.NO_GRAVITY, 0, 0)
+        }
+        val holder = FrameLayout(this)
+        fun build() {
+            holder.removeAllViews()
+            holder.addView(
+                pill().apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(8), dp(4), dp(8), dp(4))
+                    addView(
+                        segmented(LIQUIFY_TOOLS.map { tr(it) }, canvas.liquifyTool) {
+                            canvas.liquifyTool = it
+                            build()
+                        },
+                        LinearLayout.LayoutParams(dp(280), -2),
+                    )
+                    addView(
+                        SeekBar(context).apply {
+                            max = 100
+                            progress = (canvas.liquifyStrength * 100).roundToInt()
+                            progressTintList = ColorStateList.valueOf(ACCENT)
+                            thumbTintList = ColorStateList.valueOf(ACCENT)
+                            contentDescription = tr("Strength")
+                            onChange { canvas.liquifyStrength = max(it, 5) / 100f }
+                        },
+                        LinearLayout.LayoutParams(dp(120), -2),
+                    )
+                    addView(chip(tr("Cancel")) { finishLiquify(keep = false) })
+                    addView(
+                        chip(tr("Done"), true) { finishLiquify(keep = true) },
+                        LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
+                    )
+                },
+            )
+        }
+        build()
+        liquifyControls = PopupWindow(holder, -2, -2).apply {
+            showAtLocation(canvas, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, dp(24))
+        }
+        Toast.makeText(this, tr("Push the image with your pen. Your size slider sets the brush."), Toast.LENGTH_LONG).show()
+    }
+
+    private fun showLiquifyRing(x: Float, y: Float, radius: Float) {
+        liquifyRing?.move(x, y, radius)
+    }
+
+    internal fun finishLiquify(keep: Boolean) {
+        canvas.liquifyTool = -1
+        canvas.act { if (keep) NativeEngine.commitLiquify(it) else NativeEngine.cancelLiquify(it) }
+        if (keep) {
+            history.record(Edit.Stroke)
+            markUnsaved()
+        }
+        liquifyControls?.dismiss()
+        liquifyControls = null
+        liquifyRingWindow?.dismiss()
+        liquifyRingWindow = null
+        liquifyRing = null
+    }
+
     internal fun startTransform() {
         val layer = activeLayer() ?: return
         closePanel()
+        setEditingMask(false)
         canvas.beginTransform(layer.id)
         val controls = pill().apply {
             addView(chip(tr("Cancel")) { finishTransform(keep = false) })
@@ -1498,14 +1828,22 @@ class MainActivity : Activity(), ReferenceHost {
             applyViewOptions()
         })
         gapped(label(tr("Composition"), 12f, MUTED_TEXT))
-        addView(segmented(GUIDES.map { tr(if (it == "None") tr("Off") else it) }, guide) {
-            guide = it
-            applyViewOptions()
-        })
+        gapped(
+            wrapRow(
+                GUIDES.mapIndexed { index, name ->
+                    smallChip(if (name == "None") tr("Off") else tr(name), guide == index) {
+                        guide = index
+                        applyViewOptions()
+                    }
+                },
+            ),
+        )
         gapped(label(tr("Perspective"), 12f, MUTED_TEXT))
         addView(segmented(listOf(tr("Off"), tr("1 point"), tr("2 points"), tr("3 points")), document.perspective.size / 2) {
             setPerspectiveCount(it)
         })
+        gapped(label(tr("Symmetry"), 12f, MUTED_TEXT))
+        addView(segmented(listOf(tr("Off"), "↔", "↕", "✛", "✺"), document.symmetry) { setSymmetry(it) })
         gapped(label(tr("Light direction"), 12f, MUTED_TEXT))
         addView(segmented(Light.entries.map { tr(it.label) }, document.light.ordinal) {
             document.light = Light.entries[it]
@@ -1520,11 +1858,60 @@ class MainActivity : Activity(), ReferenceHost {
                 figures.indexOf(document.figure.getOrElse(2) { 0f }).coerceAtLeast(0),
             ) { setFigure(figures[it]) },
         )
-        if (document.perspective.isNotEmpty() || document.figure.isNotEmpty()) {
+        if (document.perspective.isNotEmpty() || document.figure.isNotEmpty() || document.symmetry != 0) {
             gapped(label(tr("Drag the circles to place your guides."), 12f, MUTED_TEXT))
         }
         gapped(actionRow(R.drawable.ic_flip, tr("Flip canvas"), tr("A fresh look at your drawing")) { canvas.flip() })
         gapped(label(tr("These change your view only, never your artwork."), 12f, MUTED_TEXT))
+    }
+
+    internal fun setSymmetry(mode: Int) {
+        document.symmetry = mode
+        if (document.symmetryCenter.size != 2) {
+            document.symmetryCenter = listOf(document.width / 2f, document.height / 2f)
+        }
+        pushSymmetry()
+        markUnsaved()
+        if (panelKey == "view") {
+            closePanel()
+            showPanel("view", viewPanel())
+        }
+    }
+
+    private fun pushSymmetry() {
+        val mode = document.symmetry
+        val center = document.symmetryCenter.takeIf { it.size == 2 } ?: listOf(0f, 0f)
+        canvas.act { NativeEngine.setSymmetry(it, mode, center[0], center[1]) }
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showSymmetryHandle() {
+        if (document.symmetry == 0) return
+        val handle = View(this).apply {
+            background = rounded(ACCENT, 18).apply { setStroke(dp(3), Color.WHITE) }
+            contentDescription = tr("Symmetry center")
+        }
+        val window = PopupWindow(handle, dp(36), dp(36)).apply { isClippingEnabled = false }
+        handle.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE -> {
+                    val point = canvas.screenToCanvas(event.rawX, event.rawY)
+                    document.symmetryCenter = listOf(point[0], point[1])
+                    pushSymmetry()
+                    positionHandles()
+                }
+                MotionEvent.ACTION_UP -> markUnsaved()
+            }
+            true
+        }
+        val spot = symmetrySpot()
+        window.showAtLocation(canvas, Gravity.NO_GRAVITY, spot[0], spot[1])
+        symmetryHandle = window
+    }
+
+    private fun symmetrySpot(): IntArray {
+        val center = canvas.canvasToScreen(document.symmetryCenter[0], document.symmetryCenter[1])
+        return intArrayOf(center[0].toInt() - dp(18), center[1].toInt() - dp(18))
     }
 
     private fun setPerspectiveCount(count: Int) {
@@ -1538,6 +1925,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun pushPerspective() {
         val points = document.perspective.toFloatArray()
+        canvas.snapGuides = document.perspective
         canvas.act { NativeEngine.setPerspective(it, points) }
     }
 
@@ -1585,6 +1973,10 @@ class MainActivity : Activity(), ReferenceHost {
             val spot = handleSpot(index)
             window.update(spot[0], spot[1], -1, -1)
         }
+        symmetryHandle?.let { window ->
+            val spot = symmetrySpot()
+            window.update(spot[0], spot[1], -1, -1)
+        }
     }
 
     private fun hideHandles() {
@@ -1592,6 +1984,8 @@ class MainActivity : Activity(), ReferenceHost {
         perspectiveHandles.clear()
         figureHandles.forEach { it.dismiss() }
         figureHandles.clear()
+        symmetryHandle?.dismiss()
+        symmetryHandle = null
     }
 
     private fun checkPerspective(path: FloatArray) {
@@ -1606,7 +2000,11 @@ class MainActivity : Activity(), ReferenceHost {
     private fun applyViewOptions() {
         val mode = viewMode
         val lines = guide
-        canvas.act { NativeEngine.setViewOptions(it, mode, lines) }
+        val frames = thumbnailFrames(document.width, document.height).flatMap { it.toList() }.toFloatArray()
+        canvas.act {
+            NativeEngine.setFrames(it, frames)
+            NativeEngine.setViewOptions(it, mode, lines)
+        }
         rerender("view", ::viewPanel)
     }
 
@@ -1621,13 +2019,71 @@ class MainActivity : Activity(), ReferenceHost {
     private fun captureLayers() = LayerState(document.layers, document.activeLayer, document.groups)
 
     private fun syncAlphaLock() {
-        canvas.alphaLock = activeLayer()?.alphaLock == true
+        canvas.alphaLock = activeLayer()?.alphaLock == true && !editingMask
+    }
+
+    private val layerSlots get() = document.layers.size + document.layers.count { it.maskId != 0 }
+
+    /** The engine layer that strokes land on: the layer itself, or its mask. */
+    private fun paintTarget() = activeLayer()?.maskId?.takeIf { it != 0 && editingMask } ?: document.activeLayer
+
+    private fun markMaskEditing() {
+        layersButton?.background = if (editingMask) rounded(ACCENT, 18) else null
+    }
+
+    internal fun setEditingMask(editing: Boolean) {
+        if (editingMask == editing) return
+        editingMask = editing
+        val target = paintTarget()
+        canvas.act { NativeEngine.setActiveLayer(it, target) }
+        syncAlphaLock()
+        markMaskEditing()
+    }
+
+    /** Adds a mask to the active layer. Any selection stays visible and the rest is hidden. */
+    internal fun addMask() {
+        val layer = activeLayer() ?: return
+        if (layerSlots >= maxLayers) {
+            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            return
+        }
+        val id = document.nextLayerId++
+        val owner = layer.id
+        engineLayers.add(id)
+        canvas.act {
+            NativeEngine.createMask(it, owner, id)
+            NativeEngine.clearSelection(it)
+        }
+        markSelection(false)
+        editLayers(structural = false) {
+            layer.maskId = id
+            layer.maskEnabled = true
+        }
+        setEditingMask(true)
+        Toast.makeText(this, tr("Paint to hide. Erase to bring it back."), Toast.LENGTH_SHORT).show()
+    }
+
+    internal fun applyMask(layer: LayerInfo) {
+        setEditingMask(false)
+        val id = layer.id
+        canvas.act { NativeEngine.applyMask(it, id) }
+        editLayers(structural = false, pixels = true) { layer.maskId = 0 }
+    }
+
+    private fun deleteMask(layer: LayerInfo) {
+        setEditingMask(false)
+        editLayers(structural = false) { layer.maskId = 0 }
+    }
+
+    internal fun setMaskEnabled(layer: LayerInfo, enabled: Boolean) {
+        if (!enabled) setEditingMask(false)
+        editLayers(structural = false) { layer.maskEnabled = enabled }
     }
 
     /** Sends the document's layers to the engine. Light edits skip the costly active layer copy. */
     private fun syncLayers(structural: Boolean) {
         val layers = document.layers.map { it.copy() }
-        val active = document.activeLayer
+        val active = paintTarget()
         canvas.act { engine ->
             if (structural) NativeEngine.setLayerOrder(engine, layers.map { it.id }.toIntArray())
             layers.forEach { applyLayerProperties(engine, it) }
@@ -1653,7 +2109,7 @@ class MainActivity : Activity(), ReferenceHost {
     /** Layers removed from the document stay in the engine for undo, within a memory limit. */
     private fun releaseRetiredLayers() {
         if (engineLayers.size <= maxLayers + RETIRED_LAYERS) return
-        val current = document.layers.map { it.id }.toSet()
+        val current = document.layers.flatMap { listOf(it.id, it.maskId) }.toSet()
         val retired = engineLayers - current
         history.clear()
         engineLayers.removeAll(retired)
@@ -1662,23 +2118,28 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun restoreLayers(state: LayerState) {
-        val previous = document.layers.map { it.id }.toSet()
+        val previous = document.layers.flatMap { listOf(it.id, it.maskId) }.toSet()
         document.layers.clear()
         document.layers.addAll(state.layers.map { it.copy() })
         document.activeLayer = state.activeLayer
         document.groups.clear()
         document.groups.addAll(state.groups.map { it.copy() })
         // Only layers coming back need saving again. Their old files may already be gone.
-        val returning = document.layers.map { it.id }.filter { it !in previous }
+        val returning = document.layers.flatMap { listOf(it.id, it.maskId) }.filter { it != 0 && it !in previous }
+        if (activeLayer()?.maskId == 0) setEditingMask(false)
         canvas.act { engine -> returning.forEach { NativeEngine.markLayerDirty(engine, it) } }
         syncLayers(structural = true)
         refreshLayers()
     }
 
     private fun undoEdit() {
+        if (canvas.liquifyTool >= 0) return
         when (val edit = history.undo()) {
             null -> return
-            Edit.Stroke -> canvas.undo()
+            Edit.Stroke -> {
+                canvas.undo()
+                writeJournal(JournalEntry.Undo)
+            }
             is Edit.Layers -> {
                 if (edit.pixels) canvas.undo()
                 restoreLayers(edit.before)
@@ -1688,9 +2149,13 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun redoEdit() {
+        if (canvas.liquifyTool >= 0) return
         when (val edit = history.redo()) {
             null -> return
-            Edit.Stroke -> canvas.redo()
+            Edit.Stroke -> {
+                canvas.redo()
+                writeJournal(JournalEntry.Redo)
+            }
             is Edit.Layers -> {
                 if (edit.pixels) canvas.redo()
                 restoreLayers(edit.after)
@@ -1700,11 +2165,29 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     internal val layerCount get() = document.layers.size
+    internal val artworkId get() = document.id
+
+    internal fun openActionsAndVariants() {
+        showPanel("actions", actionsPanel())
+        closePanel()
+        showPanel("variants", variantsPanel())
+    }
+
+    internal fun exportDesignSheet() = exportSheet()
+
+    internal fun exportThumbnailFrames() = exportFrames()
+
+    internal fun setBrushSize(diameter: Float) {
+        canvas.brushDiameter = diameter
+    }
+    internal fun symmetryScreenX() = symmetrySpot()[0] + dp(18).toFloat()
     internal val currentColor get() = canvas.brushColor
 
     internal fun activeLayer() = document.layers.firstOrNull { it.id == document.activeLayer }
 
     private fun selectLayer(layer: LayerInfo) {
+        editingMask = false
+        markMaskEditing()
         document.activeLayer = layer.id
         syncAlphaLock()
         canvas.act { NativeEngine.setActiveLayer(it, layer.id) }
@@ -1776,7 +2259,14 @@ class MainActivity : Activity(), ReferenceHost {
             tileGrid(
                 listOf(
                     iconTile(R.drawable.ic_transform, tr("Transform")) { startTransform() },
+                    iconTile(R.drawable.ic_liquify, tr("Liquify")) { startLiquify() },
+                    iconTile(R.drawable.ic_filter, tr("Filters")) { openFilters() },
+                    iconTile(R.drawable.ic_mask, tr("Mask"), editingMask) {
+                        if (active.maskId == 0) addMask() else setEditingMask(!editingMask)
+                        refreshLayers()
+                    },
                     iconTile(R.drawable.ic_adjust, tr("Adjust")) {
+                        setEditingMask(false)
                         closePanel()
                         showPanel("adjust", adjustPanel())
                     },
@@ -1791,6 +2281,27 @@ class MainActivity : Activity(), ReferenceHost {
                 ),
             ),
         )
+        if (active.maskId != 0) {
+            gapped(
+                wrapRow(
+                    listOf(
+                        smallChip(if (active.maskEnabled) tr("Turn mask off") else tr("Turn mask on")) {
+                            setMaskEnabled(active, !active.maskEnabled)
+                            refreshLayers()
+                        },
+                        smallChip(tr("Apply mask")) {
+                            applyMask(active)
+                            refreshLayers()
+                        },
+                        smallChip(tr("Delete mask")) {
+                            deleteMask(active)
+                            refreshLayers()
+                        },
+                    ),
+                ),
+            )
+        }
+        if (editingMask) gapped(label(tr("Painting on the mask. Tap Mask to return to the layer."), 12f, ACCENT))
         gapped(label(tr("Hold a layer to rename it. Drag its lines to reorder."), 12f, MUTED_TEXT))
     }
 
@@ -1884,7 +2395,7 @@ class MainActivity : Activity(), ReferenceHost {
             addView(handle, LinearLayout.LayoutParams(dp(32), -1))
             addView(thumbnail, LinearLayout.LayoutParams(dp(THUMBNAIL_WIDTH), dp(THUMBNAIL_HEIGHT)))
             addView(
-                label(layer.name).apply {
+                label(if (layer.maskId != 0) "◐ ${layer.name}" else layer.name).apply {
                     maxLines = 1
                     ellipsize = android.text.TextUtils.TruncateAt.END
                 },
@@ -1946,7 +2457,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     internal fun addLayer() {
-        if (document.layers.size >= maxLayers) {
+        if (layerSlots >= maxLayers) {
             Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
             return
         }
@@ -1962,15 +2473,22 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun duplicateLayer(layer: LayerInfo) {
-        if (document.layers.size >= maxLayers) {
+        if (layerSlots >= maxLayers) {
             Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
             return
         }
+        setEditingMask(false)
         val id = document.nextLayerId++
         engineLayers.add(id)
-        canvas.act { NativeEngine.duplicateLayer(it, layer.id, id) }
+        val mask = if (layer.maskId != 0) document.nextLayerId++ else 0
+        if (mask != 0) engineLayers.add(mask)
+        val sourceMask = layer.maskId
+        canvas.act {
+            NativeEngine.duplicateLayer(it, layer.id, id)
+            if (mask != 0) NativeEngine.duplicateLayer(it, sourceMask, mask)
+        }
         editLayers {
-            val copy = layer.copy(id = id, name = tr("%1 copy", layer.name), file = null)
+            val copy = layer.copy(id = id, name = tr("%1 copy", layer.name), file = null, maskId = mask, maskFile = null)
             document.layers.add(document.layers.indexOf(layer) + 1, copy)
             document.activeLayer = id
         }
@@ -1984,9 +2502,11 @@ class MainActivity : Activity(), ReferenceHost {
             return
         }
         val below = document.layers[index - 1]
+        setEditingMask(false)
         canvas.act { NativeEngine.mergeLayerDown(it, layer.id, below.id) }
         editLayers(pixels = true) {
             document.layers.remove(layer)
+            if (below.maskEnabled) below.maskId = 0
             document.activeLayer = below.id
         }
         refreshLayers()
@@ -2008,6 +2528,8 @@ class MainActivity : Activity(), ReferenceHost {
             Toast.makeText(this, tr("An artwork needs at least one layer"), Toast.LENGTH_SHORT).show()
             return
         }
+        editingMask = false
+        markMaskEditing()
         editLayers {
             val index = document.layers.indexOf(layer)
             document.layers.remove(layer)
@@ -2039,7 +2561,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun actionsPanel() = column().apply {
         addView(label(document.name, 16f))
-        addView(label(tr("%1 x %2 pixels · %3 of %4 layers", document.width, document.height, document.layers.size, maxLayers), 12f, MUTED_TEXT))
+        addView(label(tr("%1 x %2 pixels · %3 of %4 layers", document.width, document.height, layerSlots, maxLayers), 12f, MUTED_TEXT))
         gapped(
             actionRow(R.drawable.ic_rename, tr("Rename artwork")) {
                 closePanel()
@@ -2049,7 +2571,64 @@ class MainActivity : Activity(), ReferenceHost {
                 }
             },
         )
+        gapped(
+            actionRow(R.drawable.ic_text, tr("Add text"), tr("Label a design sheet")) {
+                closePanel()
+                askForText()
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_palette, tr("Color variants"), tr("Try this design in new colors")) {
+                closePanel()
+                showPanel("variants", variantsPanel())
+            },
+        )
+        gapped(label(tr("Variations"), 13f, MUTED_TEXT))
+        gapped(actionRow(R.drawable.ic_duplicate, tr("Make a variation"), tr("Try another version, keeping this one")) { makeVariation() })
+        val family = store.variations(document.id)
+        if (family.size > 1) {
+            val cell = (dp(PANEL_WIDTH) - dp(36)) / 2
+            gapped(
+                GridLayout(context).apply {
+                    columnCount = 2
+                    family.forEach { art ->
+                        addView(
+                            column().apply {
+                                setOnClickListener { if (art.id != document.id) openVariation(art.id) }
+                                addView(
+                                    ImageView(context).apply {
+                                        scaleType = ImageView.ScaleType.CENTER_CROP
+                                        background = rounded(if (art.id == document.id) ACCENT else SURFACE_RAISED, 8)
+                                        setPadding(dp(2), dp(2), dp(2), dp(2))
+                                        contentDescription = tr("%1 preview", art.name)
+                                        thumbnails.show(store.thumbnail(art.id), cell, this)
+                                    },
+                                    LinearLayout.LayoutParams(cell, cell * 2 / 3),
+                                )
+                                addView(label(art.name, 12f, MUTED_TEXT).apply { maxLines = 1 })
+                            },
+                            GridLayout.LayoutParams().apply {
+                                width = cell
+                                setMargins(0, 0, dp(4), dp(4))
+                            },
+                        )
+                    }
+                },
+            )
+        }
         gapped(label(tr("Export"), 13f, MUTED_TEXT))
+        gapped(
+            actionRow(R.drawable.ic_layers, tr("Design sheet"), tr("All variations on one page")) {
+                closePanel()
+                exportSheet()
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_export, tr("Frames as PNGs"), tr("One image per thumbnail frame")) {
+                closePanel()
+                exportFrames()
+            },
+        )
         gapped(
             actionRow(R.drawable.ic_export, tr("PNG image"), tr("Flattened, saved to Pictures")) {
                 closePanel()
@@ -2083,6 +2662,211 @@ class MainActivity : Activity(), ReferenceHost {
         )
     }
 
+    private fun askForText() {
+        val input = EditText(this).apply { hint = tr("Your label") }
+        var size = 1
+        val sizes = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun showSizes() {
+            sizes.removeAllViews()
+            sizes.addView(
+                segmented(listOf(tr("Small"), tr("Medium"), tr("Large")), size) {
+                    size = it
+                    showSizes()
+                },
+            )
+        }
+        showSizes()
+        val form = column().apply {
+            setPadding(dp(20), dp(8), dp(20), 0)
+            addView(input)
+            gapped(sizes)
+        }
+        AlertDialog.Builder(this)
+            .setTitle(tr("Add text"))
+            .setView(form)
+            .setNegativeButton(tr("Cancel"), null)
+            .setPositiveButton(tr("Add")) { _, _ ->
+                input.text.toString().takeIf { it.isNotBlank() }?.let { addText(it, TEXT_SIZES[size]) }
+            }
+            .show()
+    }
+
+    /** Draws text on a new layer and starts a transform so it can be placed. */
+    internal fun addText(text: String, heightShare: Float) {
+        if (layerSlots >= maxLayers) {
+            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            return
+        }
+        setEditingMask(false)
+        val page = Bitmap.createBitmap(document.width, document.height, Bitmap.Config.ARGB_8888)
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            color = canvas.brushColor
+            textSize = document.height * heightShare
+            textAlign = android.graphics.Paint.Align.CENTER
+        }
+        val lines = text.split("\n")
+        val top = (document.height - lines.size * paint.textSize) / 2f
+        lines.forEachIndexed { index, line ->
+            android.graphics.Canvas(page).drawText(line, document.width / 2f, top + (index + 1) * paint.textSize, paint)
+        }
+        val pixels = ArtworkStore.pixelBuffer(document.width, document.height)
+        page.copyPixelsToBuffer(pixels)
+        page.recycle()
+        pixels.rewind()
+        val id = document.nextLayerId++
+        engineLayers.add(id)
+        canvas.act { engine ->
+            NativeEngine.createLayer(engine, id)
+            NativeEngine.writeLayer(engine, id, pixels)
+            NativeEngine.markLayerDirty(engine, id)
+        }
+        editLayers {
+            val index = document.layers.indexOfFirst { it.id == document.activeLayer } + 1
+            document.layers.add(index, LayerInfo(id, text.lineSequence().first().take(24)))
+            document.activeLayer = id
+        }
+        startTransform()
+    }
+
+    private fun variantsPanel(): View = column().apply {
+        addView(label(tr("Color variants"), 16f))
+        val cell = (dp(PANEL_WIDTH) - dp(36)) / 2
+        val width = ArtworkStore.THUMBNAIL_WIDTH / 2
+        val height = max(1, width * document.height / document.width)
+        val tiles = COLOR_VARIANTS.map { turn ->
+            ImageView(context).apply {
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = rounded(SURFACE_RAISED, 8)
+                clipToOutline = true
+                contentDescription = tr("Color variants")
+                setOnClickListener { applyColorVariant(turn) }
+            }
+        }
+        gapped(
+            GridLayout(context).apply {
+                columnCount = 2
+                tiles.forEach { tile ->
+                    addView(
+                        tile,
+                        GridLayout.LayoutParams().apply {
+                            this.width = cell
+                            this.height = cell * 2 / 3
+                            setMargins(0, 0, dp(4), dp(4))
+                        },
+                    )
+                }
+            },
+        )
+        gapped(label(tr("Tap one to recolor every layer. Make a variation first to keep this version."), 12f, MUTED_TEXT))
+        canvas.snapshot { engine ->
+            val buffer = ArtworkStore.pixelBuffer(width, height)
+            NativeEngine.readComposite(engine, width, height, buffer)
+            saver.execute {
+                val raw = buffer.order(ByteOrder.LITTLE_ENDIAN).asIntBuffer()
+                val pixels = IntArray(raw.remaining()).also(raw::get)
+                for (index in pixels.indices) {
+                    val value = pixels[index]
+                    pixels[index] = (0xFF shl 24) or ((value and 0xFF) shl 16) or (value and 0xFF00) or ((value shr 16) and 0xFF)
+                }
+                COLOR_VARIANTS.forEachIndexed { index, turn ->
+                    val bitmap = Bitmap.createBitmap(shiftHue(pixels, turn), width, height, Bitmap.Config.ARGB_8888)
+                    runOnUiThread { tiles[index].setImageBitmap(bitmap) }
+                }
+            }
+        }
+    }
+
+    /** Turns the hue of every layer. One undo restores them all. */
+    internal fun applyColorVariant(turn: Float) {
+        closePanel()
+        val ids = document.layers.map { it.id }
+        val target = paintTarget()
+        val values = floatArrayOf(turn, 1f, 0f, 0f, 0f, 0f)
+        canvas.act { engine ->
+            ids.forEachIndexed { index, id ->
+                NativeEngine.setActiveLayer(engine, id)
+                NativeEngine.setAdjustment(engine, true, values)
+                NativeEngine.commitAdjustment(engine, index > 0)
+            }
+            NativeEngine.setActiveLayer(engine, target)
+        }
+        history.record(Edit.Stroke)
+        markUnsaved()
+    }
+
+    internal fun makeVariation() {
+        closePanel()
+        val id = document.id
+        save(withPreview = true) {
+            val copy = store.makeVariation(id)
+            runOnUiThread { openVariation(copy) }
+        }
+    }
+
+    private fun openVariation(id: String) {
+        closePanel()
+        save {
+            runOnUiThread {
+                startActivity(Intent(this, MainActivity::class.java).putExtra(EXTRA_ARTWORK, id))
+                finish()
+            }
+        }
+    }
+
+    private fun exportSheet() {
+        val name = document.name
+        val id = document.id
+        Toast.makeText(this, tr("Making your design sheet"), Toast.LENGTH_SHORT).show()
+        save(withPreview = true) {
+            val saved = runCatching {
+                val family = store.variations(id)
+                val images = family.mapNotNull { art ->
+                    BitmapFactory.decodeFile(store.previewFile(art.id).path)?.let { art.name to it }
+                }
+                val sheet = contactSheet(name, images)
+                images.forEach { it.second.recycle() }
+                val pixels = ArtworkStore.pixelBuffer(sheet.width, sheet.height)
+                sheet.copyPixelsToBuffer(pixels)
+                store.exportPng(tr("%1 design sheet", name), sheet.width, sheet.height, pixels).also { sheet.recycle() }
+            }.getOrDefault(false)
+            runOnUiThread {
+                val message = if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG")
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun exportFrames() {
+        val name = document.name
+        val width = document.width
+        val height = document.height
+        canvas.snapshot { engine ->
+            val pixels = ArtworkStore.pixelBuffer(width, height)
+            NativeEngine.readComposite(engine, width, height, pixels)
+            saver.execute {
+                val saved = runCatching {
+                    val whole = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    pixels.rewind()
+                    whole.copyPixelsFromBuffer(pixels)
+                    val results = thumbnailFrames(width, height).mapIndexed { index, frame ->
+                        val left = frame[0].toInt()
+                        val top = frame[1].toInt()
+                        val crop = Bitmap.createBitmap(whole, left, top, frame[2].toInt() - left, frame[3].toInt() - top)
+                        val part = ArtworkStore.pixelBuffer(crop.width, crop.height)
+                        crop.copyPixelsToBuffer(part)
+                        store.exportPng("$name ${index + 1}", crop.width, crop.height, part).also { crop.recycle() }
+                    }
+                    whole.recycle()
+                    results.all { it }
+                }.getOrDefault(false)
+                runOnUiThread {
+                    val message = if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG")
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     private fun setLanguage(language: Language) {
         if (language == I18n.language) return
         (application as CappuccinoApp).saveLanguage(language)
@@ -2097,6 +2881,7 @@ class MainActivity : Activity(), ReferenceHost {
     /** Sends one layer at a time through the GL thread, so a tablet isn't short of memory. */
     private fun exportPsd() {
         val layers = document.layers.map { it.copy() }
+        val groups = document.groups.map { it.copy() }
         val name = document.name
         val width = document.width
         val height = document.height
@@ -2105,18 +2890,28 @@ class MainActivity : Activity(), ReferenceHost {
             val parts = layers.map { layer ->
                 val pixels = ArtworkStore.pixelBuffer(width, height)
                 NativeEngine.readLayer(engine, layer.id, pixels)
+                if (layer.maskId != 0 && layer.maskEnabled) {
+                    val mask = ArtworkStore.pixelBuffer(width, height)
+                    NativeEngine.readLayer(engine, layer.maskId, mask)
+                    applyMaskPixels(pixels, mask)
+                }
                 layer to pixels
             }
             val flat = ArtworkStore.pixelBuffer(width, height)
             NativeEngine.readComposite(engine, width, height, flat)
             saver.execute {
                 val saved = runCatching {
-                    val psdLayers = parts.map { (layer, pixels) ->
+                    val flatLayers = parts.map { (layer, pixels) ->
                         val bytes = ByteArray(pixels.capacity())
                         pixels.rewind()
                         pixels.get(bytes)
                         PsdLayer(layer.name, layer.opacity, layer.visible, layer.blend, layer.clip, bytes)
                     }
+                    val psdLayers = withPsdGroups(
+                        flatLayers,
+                        { index -> groups.firstOrNull { it.id == parts[index].first.groupId } },
+                        { group -> psdFolder(group.name, group.opacity, group.visible) },
+                    )
                     val merged = ByteArray(flat.capacity())
                     flat.rewind()
                     flat.get(merged)
@@ -2126,6 +2921,18 @@ class MainActivity : Activity(), ReferenceHost {
                     val message = if (saved) tr("Saved to Download/Cappuccino") else tr("Couldn't export this PSD")
                     Toast.makeText(this, message, Toast.LENGTH_LONG).show()
                 }
+            }
+        }
+    }
+
+    /** PSD layers carry their masks baked in, so they look the same in other apps. */
+    private fun applyMaskPixels(pixels: java.nio.ByteBuffer, mask: java.nio.ByteBuffer) {
+        for (index in 0 until pixels.capacity() step 4) {
+            val hidden = mask.get(index + 3).toInt() and 0xFF
+            if (hidden == 0) continue
+            for (channel in 0 until 4) {
+                val value = pixels.get(index + channel).toInt() and 0xFF
+                pixels.put(index + channel, (value * (255 - hidden) / 255).toByte())
             }
         }
     }
@@ -2149,7 +2956,25 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun referencesPanel(): View = column().apply {
         addView(label(tr("References"), 16f))
-        val files = store.references(document.projectId)
+        val notes = store.referenceNotes(document.projectId)
+        val boards = referenceBoards(notes)
+        if (referenceFilter.isNotEmpty() && referenceFilter != STARRED_FILTER && referenceFilter !in boards) referenceFilter = ""
+        val all = store.references(document.projectId)
+        val shown = filterReferences(all.map { it.name }, notes, referenceFilter).toSet()
+        val files = all.filter { it.name in shown }
+        if (all.isNotEmpty()) {
+            val filters = listOf(tr("All") to "", "★" to STARRED_FILTER) + boards.map { it to it }
+            gapped(
+                wrapRow(
+                    filters.map { (name, value) ->
+                        smallChip(name, referenceFilter == value) {
+                            referenceFilter = value
+                            rerender("references", ::referencesPanel)
+                        }
+                    },
+                ),
+            )
+        }
         val cell = (dp(PANEL_WIDTH) - dp(28) - dp(8)) / 3
         gapped(
             GridLayout(context).apply {
@@ -2189,18 +3014,26 @@ class MainActivity : Activity(), ReferenceHost {
                                     scaleType = ImageView.ScaleType.CENTER_CROP
                                     background = rounded(SURFACE_RAISED, 8)
                                     clipToOutline = true
-                                    setImageBitmap(decodeReference(file, cell))
+                                    thumbnails.show(file, cell, this)
                                     contentDescription = if (open) tr("Close reference") else tr("Open reference")
                                     setOnClickListener {
                                         toggleReference(file)
                                         rerender("references", ::referencesPanel)
                                     }
                                     setOnLongClickListener {
-                                        confirmDeleteReference(file)
+                                        manageReference(file)
                                         true
                                     }
                                 },
                             )
+                            if (notes[file.name]?.starred == true) {
+                                addView(
+                                    label("★", 13f).apply { setShadowLayer(4f, 0f, 1f, Color.BLACK) },
+                                    FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+                                        setMargins(0, dp(2), dp(5), 0)
+                                    },
+                                )
+                            }
                         },
                         GridLayout.LayoutParams().apply {
                             width = cell
@@ -2211,12 +3044,29 @@ class MainActivity : Activity(), ReferenceHost {
                 }
             },
         )
-        val hint = if (files.isEmpty()) {
+        val hint = if (all.isEmpty()) {
             tr("Add images, or share them here from another app.")
         } else {
-            tr("Tap to open. Hold to delete. On a reference, tap for tools.")
+            tr("Tap to open. Hold to star, sort, move, or delete. On a reference, tap for tools.")
         }
         gapped(label(hint, 12f, MUTED_TEXT))
+        if (all.isNotEmpty()) {
+            gapped(label(tr("Your companion compares with open references first, then starred ones."), 12f, MUTED_TEXT))
+        }
+    }
+
+    private fun manageReference(file: File) {
+        val refresh = { rerender("references", ::referencesPanel) }
+        referenceOptions(
+            store, document.projectId, file,
+            changed = refresh,
+            moved = {
+                references.remove(file.name)?.dismiss()
+                rememberReferences()
+                refresh()
+            },
+            delete = { confirmDeleteReference(file) },
+        )
     }
 
     private fun confirmDeleteReference(file: File) {
@@ -2226,7 +3076,7 @@ class MainActivity : Activity(), ReferenceHost {
             .setNegativeButton(tr("Keep"), null)
             .setPositiveButton(tr("Delete")) { _, _ ->
                 references.remove(file.name)?.dismiss()
-                file.delete()
+                store.deleteReference(document.projectId, file)
                 rememberReferences()
                 rerender("references", ::referencesPanel)
             }
@@ -2340,7 +3190,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     override fun onReferenceToLayer(reference: ReferenceWindow) {
-        if (document.layers.size >= maxLayers) {
+        if (layerSlots >= maxLayers) {
             Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
             return
         }
@@ -2395,7 +3245,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     override fun onPause() {
-        save()
+        save(withPreview = previewStale)
         super.onPause()
     }
 
@@ -2404,10 +3254,14 @@ class MainActivity : Activity(), ReferenceHost {
         closePanel()
         hideHandles()
         transformControls?.dismiss()
+        liquifyControls?.dismiss()
+        liquifyRingWindow?.dismiss()
         references.values.forEach { it.dismiss() }
         chrome.forEach { it.dismiss() }
         companionWindow?.dismiss()
         canvas.release()
+        thumbnails.close()
+        journalWriter.shutdown()
         saver.shutdown()
         super.onDestroy()
     }

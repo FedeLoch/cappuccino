@@ -15,6 +15,33 @@ object NativeEngine {
     external fun destroy(handle: Long)
     external fun createLayer(handle: Long, id: Int)
     external fun deleteLayer(handle: Long, id: Int)
+    external fun createMask(handle: Long, id: Int, maskId: Int)
+    external fun setLayerMask(handle: Long, id: Int, maskId: Int, enabled: Boolean)
+    external fun applyMask(handle: Long, id: Int)
+    external fun setSymmetry(handle: Long, mode: Int, x: Float, y: Float)
+    external fun beginLiquify(handle: Long, id: Int)
+    external fun liquifyDab(
+        handle: Long,
+        fromX: Float,
+        fromY: Float,
+        toX: Float,
+        toY: Float,
+        radius: Float,
+        strength: Float,
+        mode: Int,
+    )
+    external fun commitLiquify(handle: Long)
+    external fun cancelLiquify(handle: Long)
+    external fun fillPolygon(
+        handle: Long,
+        points: FloatArray,
+        red: Float,
+        green: Float,
+        blue: Float,
+        opacity: Float,
+        erase: Boolean,
+        alphaLock: Boolean,
+    ): Boolean
     external fun setActiveLayer(handle: Long, id: Int)
     external fun setLayerProperties(
         handle: Long,
@@ -49,8 +76,13 @@ object NativeEngine {
     external fun setGradientPreview(handle: Long, active: Boolean, points: FloatArray, color: FloatArray)
     external fun commitGradient(handle: Long)
     external fun setAdjustment(handle: Long, active: Boolean, values: FloatArray)
-    external fun commitAdjustment(handle: Long)
-    external fun takeLayerDirty(handle: Long, id: Int): Boolean
+    external fun commitAdjustment(handle: Long, chained: Boolean = false)
+    external fun setFrames(handle: Long, values: FloatArray)
+    external fun setFilter(handle: Long, active: Boolean, kind: Int, values: FloatArray, color: FloatArray)
+    external fun commitFilter(handle: Long)
+    /** Returns left, top, right, and bottom of what changed, or null when nothing did. */
+    external fun takeLayerDirty(handle: Long, id: Int): IntArray?
+    external fun readLayerRegion(handle: Long, id: Int, left: Int, top: Int, right: Int, bottom: Int, pixels: ByteBuffer)
     external fun readLayer(handle: Long, id: Int, pixels: ByteBuffer)
     external fun writeLayer(handle: Long, id: Int, pixels: ByteBuffer)
     external fun readComposite(handle: Long, width: Int, height: Int, pixels: ByteBuffer)
@@ -71,6 +103,10 @@ object NativeEngine {
         alphaLock: Boolean,
         smudge: Boolean,
         pressureGamma: Float,
+        scatter: Float,
+        sizeJitter: Float,
+        angleJitter: Float,
+        shadeJitter: Float,
         tip: ByteArray?,
     )
     external fun drawFront(

@@ -55,6 +55,58 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_createLayer(JNIEnv
     renderer(handle)->createLayer(id);
 }
 
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_createMask(JNIEnv*, jobject,
+                                                                         jlong handle, jint id,
+                                                                         jint maskId) {
+    renderer(handle)->createMask(id, maskId);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setLayerMask(
+    JNIEnv*, jobject, jlong handle, jint id, jint maskId, jboolean enabled) {
+    renderer(handle)->setLayerMask(id, maskId, enabled);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_applyMask(JNIEnv*, jobject,
+                                                                        jlong handle, jint id) {
+    renderer(handle)->applyMask(id);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setSymmetry(
+    JNIEnv*, jobject, jlong handle, jint mode, jfloat x, jfloat y) {
+    renderer(handle)->setSymmetry(mode, x, y);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_beginLiquify(JNIEnv*, jobject,
+                                                                           jlong handle, jint id) {
+    renderer(handle)->beginLiquify(id);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_liquifyDab(
+    JNIEnv*, jobject, jlong handle, jfloat fromX, jfloat fromY, jfloat toX, jfloat toY,
+    jfloat radius, jfloat strength, jint mode) {
+    renderer(handle)->liquifyDab(fromX, fromY, toX, toY, radius, strength,
+                                 static_cast<cappuccino::LiquifyMode>(mode));
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_commitLiquify(JNIEnv*, jobject,
+                                                                            jlong handle) {
+    renderer(handle)->commitLiquify();
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_cancelLiquify(JNIEnv*, jobject,
+                                                                            jlong handle) {
+    renderer(handle)->cancelLiquify();
+}
+
+JNIEXPORT jboolean JNICALL Java_art_cappuccino_paint_NativeEngine_fillPolygon(
+    JNIEnv* env, jobject, jlong handle, jfloatArray points, jfloat red, jfloat green, jfloat blue,
+    jfloat opacity, jboolean erase, jboolean alphaLock) {
+    const FloatArray values(env, points);
+    const float color[3] = {red, green, blue};
+    return renderer(handle)->fillPolygon(values.get(), values.size() / 2, color, opacity, erase,
+                                         alphaLock);
+}
+
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_deleteLayer(JNIEnv*, jobject,
                                                                           jlong handle, jint id) {
     renderer(handle)->deleteLayer(id);
@@ -180,8 +232,29 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setAdjustment(
 }
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_commitAdjustment(JNIEnv*, jobject,
-                                                                               jlong handle) {
-    renderer(handle)->commitAdjustment();
+                                                                               jlong handle,
+                                                                               jboolean chained) {
+    renderer(handle)->commitAdjustment(chained);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setFrames(JNIEnv* env, jobject,
+                                                                        jlong handle,
+                                                                        jfloatArray values) {
+    const FloatArray frames(env, values);
+    renderer(handle)->setFrames(frames.get(), frames.size());
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setFilter(
+    JNIEnv* env, jobject, jlong handle, jboolean active, jint kind, jfloatArray values,
+    jfloatArray color) {
+    const FloatArray filterValues(env, values);
+    const FloatArray filterColor(env, color);
+    renderer(handle)->setFilter(active, kind, filterValues.get(), filterColor.get());
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_commitFilter(JNIEnv*, jobject,
+                                                                           jlong handle) {
+    renderer(handle)->commitFilter();
 }
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setFigureGuide(
@@ -189,10 +262,23 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setFigureGuide(
     renderer(handle)->setFigureGuide(top, bottom, divisions);
 }
 
-JNIEXPORT jboolean JNICALL Java_art_cappuccino_paint_NativeEngine_takeLayerDirty(JNIEnv*, jobject,
-                                                                                 jlong handle,
-                                                                                 jint id) {
-    return renderer(handle)->takeLayerDirty(id);
+JNIEXPORT jintArray JNICALL Java_art_cappuccino_paint_NativeEngine_takeLayerDirty(JNIEnv* env,
+                                                                                  jobject,
+                                                                                  jlong handle,
+                                                                                  jint id) {
+    const cappuccino::Rect area = renderer(handle)->takeLayerDirty(id);
+    if (area.empty()) return nullptr;
+    const jint values[4] = {area.left, area.top, area.right, area.bottom};
+    jintArray result = env->NewIntArray(4);
+    env->SetIntArrayRegion(result, 0, 4, values);
+    return result;
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_readLayerRegion(
+    JNIEnv* env, jobject, jlong handle, jint id, jint left, jint top, jint right, jint bottom,
+    jobject buffer) {
+    renderer(handle)->readLayerRegion(id, {left, top, right, bottom},
+                                      env->GetDirectBufferAddress(buffer));
 }
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_readLayer(JNIEnv* env, jobject,
@@ -222,7 +308,7 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_beginStroke(
     JNIEnv* env, jobject, jlong handle, jfloat diameter, jfloat red, jfloat green, jfloat blue,
     jfloat flow, jfloat minScale, jfloat spacingRatio, jfloat pressureFlow, jfloat hardness,
     jfloat grain, jboolean eraser, jboolean alphaLock, jboolean smudge, jfloat pressureGamma,
-    jbyteArray tip) {
+    jfloat scatter, jfloat sizeJitter, jfloat angleJitter, jfloat shadeJitter, jbyteArray tip) {
     cappuccino::BrushParams brush;
     brush.diameter = diameter;
     brush.color[0] = red;
@@ -238,6 +324,10 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_beginStroke(
     brush.alphaLock = alphaLock;
     brush.smudge = smudge;
     brush.shape.pressureGamma = pressureGamma;
+    brush.shape.scatter = scatter;
+    brush.shape.sizeJitter = sizeJitter;
+    brush.shape.angleJitter = angleJitter;
+    brush.shape.shadeJitter = shadeJitter;
     if (tip != nullptr) {
         brush.tip.resize(env->GetArrayLength(tip));
         env->GetByteArrayRegion(tip, 0, static_cast<jsize>(brush.tip.size()),

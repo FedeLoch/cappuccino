@@ -82,7 +82,57 @@ static void lightPressureFadesFlow() {
     assert(std::fabs(stamps[0].alpha - 0.25f) < 0.001f);
 }
 
+static void testSymmetry() {
+    std::vector<Stamp> stamps{{10.0f, 20.0f, 4.0f, 4.0f, 0.0f, 1.0f}};
+    mirrorStamps(stamps, symmetryMirrors(1, 50.0f, 50.0f));
+    assert(stamps.size() == 2 && std::fabs(stamps[1].x - 90.0f) < 0.01f && stamps[1].y == 20.0f);
+
+    std::vector<Stamp> four{{10.0f, 20.0f, 4.0f, 4.0f, 0.0f, 1.0f}};
+    mirrorStamps(four, symmetryMirrors(3, 50.0f, 50.0f));
+    assert(four.size() == 4 && std::fabs(four[3].x - 90.0f) < 0.01f &&
+           std::fabs(four[3].y - 80.0f) < 0.01f);
+
+    std::vector<Stamp> radial{{60.0f, 50.0f, 4.0f, 4.0f, 0.0f, 1.0f}};
+    mirrorStamps(radial, symmetryMirrors(4, 50.0f, 50.0f));
+    assert(radial.size() == 8);
+    for (const Stamp& stamp : radial) {
+        assert(std::fabs(std::hypot(stamp.x - 50.0f, stamp.y - 50.0f) - 10.0f) < 0.01f);
+    }
+    assert(symmetryMirrors(0, 0.0f, 0.0f).empty());
+}
+
+static void testScatter() {
+    BrushShape shape;
+    shape.spacingRatio = 0.5f;
+    shape.scatter = 0.5f;
+    shape.sizeJitter = 0.5f;
+    shape.angleJitter = 1.0f;
+    shape.shadeJitter = 0.3f;
+    StrokeBuilder builder(40.0f, shape);
+    std::vector<Stamp> stamps;
+    for (int i = 0; i < 50; ++i) builder.add({i * 10.0f, 100.0f, 1.0f, 0.0f, 0.0f}, stamps);
+    builder.finish(stamps);
+    bool offPath = false;
+    bool differentSizes = false;
+    bool differentShades = false;
+    for (const Stamp& stamp : stamps) {
+        assert(std::fabs(stamp.y - 100.0f) <= 20.5f);
+        assert(stamp.shade >= 0.69f && stamp.shade <= 1.31f);
+        offPath = offPath || std::fabs(stamp.y - 100.0f) > 4.0f;
+        differentSizes = differentSizes || std::fabs(stamp.radiusY - stamps[0].radiusY) > 1.0f;
+        differentShades = differentShades || std::fabs(stamp.shade - stamps[0].shade) > 0.05f;
+    }
+    assert(offPath && differentSizes && differentShades);
+
+    StrokeBuilder plain(40.0f);
+    std::vector<Stamp> calm;
+    for (int i = 0; i < 5; ++i) plain.add({i * 10.0f, 100.0f, 1.0f, 0.0f, 0.0f}, calm);
+    for (const Stamp& stamp : calm) assert(stamp.y == 100.0f && stamp.shade == 1.0f);
+}
+
 int main() {
+    testSymmetry();
+    testScatter();
     singleTapLeavesOneDot();
     stampsAreEvenlySpaced();
     strokeReachesTheLastPoint();

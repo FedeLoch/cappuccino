@@ -34,4 +34,21 @@ class PsdReaderTest {
         assertEquals(true, image.layers[1].clipped)
         assertEquals(red.toList(), image.layers[0].rgba.toList())
     }
+
+    @Test
+    fun groupsSurviveARoundTrip() {
+        val pixels = ByteArray(8 * 8 * 4)
+        val plain = PsdLayer("Paper", 1f, true, 0, false, pixels)
+        val hair = PsdLayer("Hair", 1f, true, 0, false, pixels)
+        val face = PsdLayer("Face", 1f, true, 0, false, pixels)
+        val groupOf = listOf(null, "Head", "Head")
+        val layers = withPsdGroups(listOf(plain, hair, face), { groupOf[it] }, { psdFolder(it, 1f, true) })
+        val output = ByteArrayOutputStream()
+        PsdWriter(8, 8).write(output, layers, pixels)
+
+        val image = PsdReader.read(output.toByteArray())
+        assertEquals(listOf("Paper", "Hair", "Face"), image.layers.map { it.name })
+        assertEquals(listOf("Head"), image.groups)
+        assertEquals(listOf(0, 1, 1), image.layers.map { it.group })
+    }
 }

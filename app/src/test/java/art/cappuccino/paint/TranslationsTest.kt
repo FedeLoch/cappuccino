@@ -48,7 +48,8 @@ class TranslationsTest {
     fun catalogNamesHaveSpanish() {
         val names = BrushKind.entries.map { it.label } + BLEND_MODES +
             Light.entries.map { it.label } + CompanionLook.entries.map { it.label } +
-            GUIDES.filter { it != "None" } + STARTER_PALETTES_NAMES + HARMONY_NAMES +
+            GUIDES.filter { it != "None" } + LIQUIFY_TOOLS + FILTERS.map { it.label } +
+            FILTERS.flatMap { kind -> kind.sliders.map { it.label } } + STARTER_PALETTES_NAMES + HARMONY_NAMES +
             listOf("Palette", "Values", "Composition", "Silhouette", "Mood", "Light", "Perspective", "Next step")
         val missing = names.filter { it !in SPANISH }
         assertTrue("Missing Spanish: $missing", missing.isEmpty())

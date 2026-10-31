@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 
+#include "liquify.h"
 #include "stroke.h"
 
 namespace cappuccino {
@@ -45,6 +46,11 @@ public:
     ~Renderer();
 
     void createLayer(int id);
+    // Adds a mask that hides where it's painted. An active selection stays visible.
+    void createMask(int layerId, int maskId);
+    void setLayerMask(int id, int maskId, bool enabled);
+    // Bakes the mask into the layer's pixels and detaches it.
+    void applyMask(int id);
     void deleteLayer(int id);
     void setActiveLayer(int id);
     void setLayerProperties(int id, float opacity, bool visible, BlendMode blend, bool clip);
@@ -60,6 +66,14 @@ public:
     // Previews a layer under a 3x3 row-major transform, or ends the preview when id is 0.
     void setLayerTransform(int id, const float* transform);
     void commitLayerTransform();
+    void beginLiquify(int id);
+    void liquifyDab(float fromX, float fromY, float toX, float toY, float radius, float strength,
+                    LiquifyMode mode);
+    void commitLiquify();
+    void cancelLiquify();
+    // Fills a closed shape on the active layer, and its symmetry copies.
+    bool fillPolygon(const float* points, int count, const float* color, float opacity, bool erase,
+                     bool alphaLock);
 
     void setSelectionPolygon(const float* points, int count);
     void selectColorAt(int x, int y, int tolerance);
@@ -72,10 +86,19 @@ public:
     void commitGradient();
     // Previews hue, saturation, brightness, shadows, midtones, and highlights on the active layer.
     void setAdjustment(bool active, const float* values);
-    void commitAdjustment();
+    // A chained commit undoes together with the one before it.
+    void commitAdjustment(bool chained = false);
+    // Previews a filter on the active layer. kind runs from 1, as listed in the shader.
+    void setFilter(bool active, int kind, const float* values, const float* color);
+    void commitFilter();
+    void setSymmetry(int mode, float x, float y);
+    // Sets the outlines of the frames guide: left, top, right, bottom for each frame.
+    void setFrames(const float* values, int count);
     void setPerspective(const float* points, int count);
     void setFigureGuide(float top, float bottom, float divisions);
-    bool takeLayerDirty(int id);
+    // Returns what changed on a layer since the last call, and forgets it.
+    Rect takeLayerDirty(int id);
+    void readLayerRegion(int id, const Rect& rect, void* pixels);
     void readLayer(int id, void* pixels);
     void writeLayer(int id, const void* pixels);
 
@@ -100,14 +123,18 @@ private:
         float opacity = 1.0f;
         bool visible = true;
         BlendMode blend = BlendMode::kNormal;
-        bool dirty = false;
+        Rect dirtyArea;  // What changed since the last save. Empty means nothing did.
         bool clip = false;
+        int maskId = 0;
+        bool maskEnabled = true;
+        bool isMask = false;
     };
 
     struct HistoryEntry {
         int layer = 0;
         Rect rect;
         std::vector<uint8_t> pixels;
+        bool chained = false;  // Undoes together with the entry below it.
     };
 
     void commitStroke();
@@ -120,7 +147,12 @@ private:
     void drawSelectionTint(const float* matrix);
     void drawGradient(const float* matrix);
     void uploadSelection();
-    void pushFullHistory(const Layer& layer);
+    void pushFullHistory(const Layer& layer, bool chained = false);
+    void bakeMask(Layer& layer);
+    void useHide(const Layer* layer, int unit, GLint useLocation);
+    void useFilter(const float* matrix, bool preview, const Layer& layer);
+    void drawLiquify(const float* matrix, float opacity, bool clipped, const Layer& layer);
+    void warpLayer(Layer& layer, bool chained);
     void replaceLayerFromShadow(Layer& layer);
     void drawSmudge(const std::vector<Stamp>& stamps, const float* matrix, GLuint layerFbo);
     void drawPerspective(const float* matrix);
@@ -193,12 +225,44 @@ private:
     GLint adjustUseMask_ = -1;
     bool adjustActive_ = false;
     float adjustment_[6] = {};
+    GLuint effectProgram_ = 0;
+    GLint effectMatrix_ = -1;
+    GLint effectSize_ = -1;
+    GLint effectKind_ = -1;
+    GLint effectValues_ = -1;
+    GLint effectColor_ = -1;
+    GLint effectUseMask_ = -1;
+    GLint effectUseHide_ = -1;
+    bool filterActive_ = false;
+    int filterKind_ = 0;
+    float filterValues_[4] = {};
+    float filterColor_[3] = {};
     bool maskStamps_ = false;
     bool selectionActive_ = false;
     bool showSelectionTint_ = true;
     std::vector<uint8_t> selection_;
     GLint canvasUseClip_ = -1;
     std::vector<float> perspective_;  // x and y of each vanishing point.
+    std::vector<float> frames_;
+    int symmetry_ = 0;
+    float symmetryX_ = 0.0f;
+    float symmetryY_ = 0.0f;
+    std::vector<Mirror> mirrors_;
+    GLint canvasUseHide_ = -1;
+    GLint canvasUseClipHide_ = -1;
+    GLint adjustUseHide_ = -1;
+    GLuint liquifyProgram_ = 0;
+    GLint liquifyMatrix_ = -1;
+    GLint liquifyOpacity_ = -1;
+    GLint liquifyUseClip_ = -1;
+    GLint liquifyUseHide_ = -1;
+    GLint liquifyUseClipHide_ = -1;
+    GLuint liquifyVao_ = 0;
+    GLuint liquifyVertices_ = 0;
+    GLuint liquifyIndices_ = 0;
+    std::unique_ptr<LiquifyMesh> liquify_;
+    int liquifyLayer_ = 0;
+    bool liquifyDirty_ = false;
 
     std::unique_ptr<StrokeBuilder> stroke_;
     BrushParams brush_;

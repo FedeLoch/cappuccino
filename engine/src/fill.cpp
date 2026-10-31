@@ -84,6 +84,61 @@ void rasterizePolygon(const float* points, int count, int width, int height,
     }
 }
 
+void polygonCoverage(const float* points, int count, int width, int height,
+                     std::vector<uint8_t>& coverage, FillBounds& bounds) {
+    constexpr int kSteps = 4;
+    float top = static_cast<float>(height);
+    float bottom = 0.0f;
+    for (int i = 0; i < count; ++i) {
+        top = std::min(top, points[i * 2 + 1]);
+        bottom = std::max(bottom, points[i * 2 + 1]);
+    }
+    const int firstRow = std::clamp(static_cast<int>(top), 0, height);
+    const int lastRow = std::clamp(static_cast<int>(bottom) + 1, 0, height);
+    std::vector<float> row(width + 1);
+    std::vector<float> crossings;
+    for (int y = firstRow; y < lastRow; ++y) {
+        std::fill(row.begin(), row.end(), 0.0f);
+        for (int step = 0; step < kSteps; ++step) {
+            const float line = y + (step + 0.5f) / kSteps;
+            crossings.clear();
+            for (int i = 0; i < count; ++i) {
+                const int next = (i + 1) % count;
+                const float y1 = points[i * 2 + 1];
+                const float y2 = points[next * 2 + 1];
+                if ((y1 <= line) == (y2 <= line)) continue;
+                const float x1 = points[i * 2];
+                crossings.push_back(x1 + (line - y1) / (y2 - y1) * (points[next * 2] - x1));
+            }
+            std::sort(crossings.begin(), crossings.end());
+            for (size_t i = 0; i + 1 < crossings.size(); i += 2) {
+                const float left = std::clamp(crossings[i], 0.0f, static_cast<float>(width));
+                const float right = std::clamp(crossings[i + 1], 0.0f, static_cast<float>(width));
+                if (right <= left) continue;
+                const int start = static_cast<int>(left);
+                const int end = static_cast<int>(right);
+                if (start == end) {
+                    row[start] += right - left;
+                    continue;
+                }
+                row[start] += start + 1 - left;
+                for (int x = start + 1; x < end; ++x) row[x] += 1.0f;
+                row[end] += right - end;
+            }
+        }
+        for (int x = 0; x < width; ++x) {
+            if (row[x] <= 0.0f) continue;
+            const int value = std::min(255, static_cast<int>(row[x] / kSteps * 255.0f + 0.5f));
+            uint8_t& pixel = coverage[static_cast<size_t>(y) * width + x];
+            pixel = std::max(pixel, static_cast<uint8_t>(value));
+            bounds.left = std::min(bounds.left, x);
+            bounds.top = std::min(bounds.top, y);
+            bounds.right = std::max(bounds.right, x + 1);
+            bounds.bottom = std::max(bounds.bottom, y + 1);
+        }
+    }
+}
+
 bool floodFill(uint8_t* pixels, int width, int height, int x, int y, const uint8_t color[4],
                int tolerance, FillBounds* bounds) {
     if (x < 0 || y < 0 || x >= width || y >= height) return false;

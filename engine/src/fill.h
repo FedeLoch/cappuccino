@@ -20,6 +20,11 @@ bool floodMask(const uint8_t* pixels, int width, int height, int x, int y, int t
 void rasterizePolygon(const float* points, int count, int width, int height,
                       std::vector<uint8_t>& mask);
 
+// Adds a polygon's anti-aliased coverage to one byte per pixel, keeping the larger value where
+// shapes overlap. The bounds grow to hold it, so start them at left = width, top = height.
+void polygonCoverage(const float* points, int count, int width, int height,
+                     std::vector<uint8_t>& coverage, FillBounds& bounds);
+
 // Fills the connected area around (x, y) in an RGBA image, growing one pixel past its edge so
 // anti-aliased lines don't leave a pale halo. Returns false when nothing changed.
 bool floodFill(uint8_t* pixels, int width, int height, int x, int y, const uint8_t color[4],

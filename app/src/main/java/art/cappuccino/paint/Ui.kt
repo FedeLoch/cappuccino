@@ -202,8 +202,9 @@ class BrushPreview(
             val t = step / steps.toFloat()
             val pressure = sin(t * PI.toFloat())
             val scale = kind.minScale + (1f - kind.minScale) * pressure
-            val x = width * (0.1f + 0.8f * t)
-            val y = height * (0.5f + 0.26f * sin(t * 2f * PI.toFloat()))
+            val x = width * (0.1f + 0.8f * t) + kind.scatter * height * (random.nextFloat() - 0.5f)
+            val y = height * (0.5f + 0.26f * sin(t * 2f * PI.toFloat())) +
+                kind.scatter * height * (random.nextFloat() - 0.5f)
             val grainHole = kind.grain * 0.55f > random.nextFloat()
             if (grainHole) continue
             val flow = kind.flow * (1f - kind.pressureFlow * (1f - pressure))

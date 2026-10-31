@@ -29,7 +29,7 @@ class ModelTest {
 
     @Test
     fun everyBrushShapeHasAnEraser() {
-        val erasers = BrushKind.entries.filter { it.isEraser }
+        val erasers = BrushKind.entries.filter { it.isEraser && it.mode == BrushMode.PAINT }
         val brushes = BrushKind.PAINT_BRUSHES
         assertEquals(brushes.map { it.label }, erasers.map { it.label })
     }

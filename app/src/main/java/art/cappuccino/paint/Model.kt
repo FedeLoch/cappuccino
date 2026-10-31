@@ -15,7 +15,7 @@ fun layerLimit(width: Int, height: Int, deviceMemoryBytes: Long): Int {
     return (deviceMemoryBytes / 5 / perLayer).toInt().coerceIn(MIN_LAYERS, MAX_LAYER_LIMIT)
 }
 
-enum class BrushMode { PAINT, FILL, SMUDGE, GRADIENT }
+enum class BrushMode { PAINT, FILL, SMUDGE, GRADIENT, LASSO }
 
 class BrushKind(
     val id: String,
@@ -31,6 +31,10 @@ class BrushKind(
     val mode: BrushMode = BrushMode.PAINT,
     val tip: ByteArray? = null,
     val custom: Boolean = false,
+    val scatter: Float = 0f,
+    val sizeJitter: Float = 0f,
+    val angleJitter: Float = 0f,
+    val shadeJitter: Float = 0f,
 ) {
     /** Stamp alpha that builds up to about [opacity] across one stamp width. */
     fun stampFlow(opacity: Float): Float =
@@ -95,12 +99,42 @@ class BrushKind(
         )
         val TEXTURE_BRUSHES = listOf(SPONGE, DRY_BRUSH)
 
+        private fun blobTip(paint: (Float, Float) -> Boolean) = ByteArray(TIP_SIZE * TIP_SIZE) { index ->
+            val x = (index % TIP_SIZE) / (TIP_SIZE - 1f) * 2f - 1f
+            val y = (index / TIP_SIZE) / (TIP_SIZE - 1f) * 2f - 1f
+            if (paint(x, y)) -1 else 0
+        }
+
+        private val LEAVES = BrushKind(
+            "leaves", "Leaves", 0.5f, 0.55f, 0.9f, 0.2f, 0.8f, 0f, 90f,
+            tip = blobTip { x, y -> x * x * 7f + y * y < 0.95f },
+            scatter = 0.7f, sizeJitter = 0.5f, angleJitter = 1f, shadeJitter = 0.25f,
+        )
+        private val GRASS = BrushKind(
+            "grass", "Grass", 0.6f, 0.2f, 0.9f, 0.2f, 0.8f, 0f, 120f,
+            tip = blobTip { x, y -> kotlin.math.abs(x) < 0.09f * (1f - y) && y > -0.95f },
+            scatter = 0.45f, sizeJitter = 0.5f, angleJitter = 0.09f, shadeJitter = 0.2f,
+        )
+        private val ROCKS = BrushKind(
+            "rocks", "Rocks", 0.6f, 0.6f, 1f, 0.1f, 0.9f, 0.25f, 110f,
+            tip = blobTip { x, y -> kotlin.math.abs(x) + kotlin.math.abs(y) * 1.3f + kotlin.math.abs(x + y) * 0.35f < 1f },
+            scatter = 0.6f, sizeJitter = 0.7f, angleJitter = 1f, shadeJitter = 0.3f,
+        )
+        private val PARTICLES = BrushKind(
+            "particles", "Particles", 0.4f, 0.5f, 1f, 0.4f, 0.5f, 0f, 90f,
+            scatter = 1.1f, sizeJitter = 0.9f, shadeJitter = 0.15f,
+        )
+        val SCATTER_BRUSHES = listOf(LEAVES, GRASS, ROCKS, PARTICLES)
+
         val SMUDGE = BrushKind(
             "smudge", "Smudge", 0.6f, 0.2f, 0.65f, 0.4f, 0.5f, 0f, 90f, mode = BrushMode.SMUDGE,
         )
         val FILL = BrushKind("fill", "Fill", 1f, 1f, 1f, 0f, 1f, 0f, 40f, mode = BrushMode.FILL)
         val GRADIENT = BrushKind(
             "gradient", "Gradient", 1f, 1f, 1f, 0f, 1f, 0f, 40f, mode = BrushMode.GRADIENT,
+        )
+        val LASSO_FILL = BrushKind(
+            "lasso-fill", "Lasso fill", 1f, 1f, 1f, 0f, 1f, 0f, 40f, mode = BrushMode.LASSO,
         )
         val ERASE_INK = BrushKind("erase-ink", "Ink", 0.12f, 0.08f, 1f, 0f, 1f, 0f, 40f, true)
         private val ERASERS = listOf(
@@ -112,9 +146,10 @@ class BrushKind(
             BrushKind("erase-marker", "Marker", 0.9f, 0.05f, 0.18f, 0.2f, 0.9f, 0f, 90f, true),
             BrushKind("erase-soft", "Soft", 0.6f, 0.06f, 0.15f, 0.5f, 0f, 0f, 160f, true),
             BrushKind("erase-wash", "Wash", 0.7f, 0.08f, 0.08f, 0.5f, 0.2f, 0.35f, 220f, true),
+            BrushKind("erase-lasso", "Lasso", 1f, 1f, 1f, 0f, 1f, 0f, 40f, true, BrushMode.LASSO),
         )
         val PAINT_BRUSHES = listOf(INK, LINER, PENCIL, CHARCOAL, CHALK, MARKER, SOFT, WASH)
-        val entries = PAINT_BRUSHES + TEXTURE_BRUSHES + listOf(SMUDGE, FILL, GRADIENT) + ERASERS
+        val entries = PAINT_BRUSHES + TEXTURE_BRUSHES + SCATTER_BRUSHES + listOf(SMUDGE, FILL, GRADIENT, LASSO_FILL) + ERASERS
     }
 }
 
@@ -130,6 +165,9 @@ data class LayerInfo(
     var file: String? = null,
     var clip: Boolean = false,
     var groupId: Int = 0,
+    var maskId: Int = 0,
+    var maskEnabled: Boolean = true,
+    var maskFile: String? = null,
 )
 
 data class LayerGroup(
@@ -142,7 +180,34 @@ data class LayerGroup(
 
 val VIEW_MODES = listOf("Color", "Grayscale", "Two values", "Three values")
 
-val GUIDES = listOf("None", "Thirds", "Golden", "Grid")
+val GUIDES = listOf("None", "Thirds", "Golden", "Grid", "Isometric", "Views", "Frames")
+
+/** A filter's label, its engine number, and its sliders in order. */
+class FilterSlider(val label: String, val low: Float, val high: Float, val start: Float)
+
+class FilterKind(val label: String, val id: Int, val sliders: List<FilterSlider>, val usesColor: Boolean = false)
+
+val FILTERS = listOf(
+    FilterKind("Blur", 1, listOf(FilterSlider("Radius", 0f, 120f, 12f))),
+    FilterKind(
+        "Motion blur", 2,
+        listOf(FilterSlider("Distance", 0f, 240f, 40f), FilterSlider("Angle", 0f, 3.1416f, 0f)),
+    ),
+    FilterKind("Sharpen", 3, listOf(FilterSlider("Amount", 0f, 3f, 1f))),
+    FilterKind("Noise", 4, listOf(FilterSlider("Amount", 0f, 0.5f, 0.1f))),
+    FilterKind("Gradient map", 5, listOf(FilterSlider("Amount", 0f, 1f, 1f)), usesColor = true),
+    FilterKind(
+        "Levels", 6,
+        listOf(
+            FilterSlider("Black point", 0f, 0.5f, 0f),
+            FilterSlider("Midtones", 0.3f, 3f, 1f),
+            FilterSlider("White point", 0.5f, 1f, 1f),
+        ),
+    ),
+    FilterKind("Depth fade", 7, listOf(FilterSlider("Amount", 0f, 1f, 0.3f)), usesColor = true),
+)
+
+val LIQUIFY_TOOLS = listOf("Push", "Grow", "Shrink", "Restore")
 
 class ToolSettings(var diameter: Float, var opacity: Float = 1f, var stabilizer: Float = 0f)
 
@@ -161,4 +226,5 @@ data class ArtworkInfo(
     val name: String,
     val projectId: String,
     val updated: Long,
+    val variationOf: String = "",
 )
