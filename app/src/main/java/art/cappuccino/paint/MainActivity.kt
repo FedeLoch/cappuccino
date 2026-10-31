@@ -1,5 +1,8 @@
 package art.cappuccino.paint
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
+import android.animation.ValueAnimator
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.ActivityManager
@@ -20,6 +23,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.animation.AccelerateDecelerateInterpolator
 import android.view.WindowInsetsController
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -37,9 +41,11 @@ import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.Executors
 import kotlin.math.abs
+import kotlin.math.PI
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 private const val MIN_BRUSH = 4
 private const val MAX_BRUSH = 300
@@ -59,10 +65,14 @@ private const val LAYER_GAP = 4
 private const val RETIRED_LAYERS = 6
 private val LEFT_PANELS = setOf("actions", "references", "view", "selection")
 private const val PICK_TIP = 45
-private const val PEEK_SIZE = 44
-private const val PEEK_OVERLAP = 16
-private const val PEEK_TOP = 1
-private const val PEEK_TILT = 24f
+private const val PEEK_SIZE = 60
+private const val PEEK_OVERLAP = 24
+private const val PEEK_TILT = 10f
+private const val HANDS_WIDTH = 24
+private const val HANDS_OVERLAP = 19
+private const val HANDS_OVERHANG = 1
+private const val HIDE_MS = 480L
+private const val HIDE_HOP_DP = 26
 private const val REFERENCE_PROFILE_SIZE = 240
 private val TEXT_SIZES = listOf(0.03f, 0.05f, 0.09f)
 private const val BRUSH_TIP_SIZE = 128
@@ -121,6 +131,10 @@ class MainActivity : Activity(), ReferenceHost {
     private var peek: CompanionView? = null
     private var peekFrame: View? = null
     private var peekWindow: PopupWindow? = null
+    private var peekHands: CompanionHands? = null
+    private var peekX = 0
+    private var peekY = 0
+    private var hideMotion: ValueAnimator? = null
     private var companionX = 0
     private var companionY = 0
     private var referenceMatch: ReferenceMatch? = null
@@ -498,6 +512,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.brushColor = color
         companion.bodyColor = color
         peek?.bodyColor = color
+        peekHands?.bodyColor = color
         swatch?.background = swatchBackground(color)
         if (canvas.brushKind.isEraser) selectTool(lastBrush)
     }
@@ -542,6 +557,8 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun showChrome() {
         if (isDestroyed) return
+        hideMotion?.removeAllListeners()
+        hideMotion?.cancel()
         val left = pill().apply {
             addView(
                 iconButton(R.drawable.ic_gallery, tr("Projects")) {
@@ -560,8 +577,12 @@ class MainActivity : Activity(), ReferenceHost {
             addView(selectButton)
         }
         left.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
-        showPeek(dp(12) + left.measuredWidth - dp(PEEK_OVERLAP), dp(PEEK_TOP))
+        showPeek(
+            dp(12) + left.measuredWidth - dp(PEEK_OVERLAP),
+            dp(12) + left.measuredHeight / 2 - dp(PEEK_SIZE) / 2,
+        )
         place(left, Gravity.TOP or Gravity.START, dp(12), dp(12))
+        showPeekHands(dp(12) + left.measuredWidth - dp(HANDS_OVERLAP), dp(12) - dp(HANDS_OVERHANG), left.measuredHeight + dp(HANDS_OVERHANG) * 2)
 
         val colorButton = View(this).apply {
             background = swatchBackground(canvas.brushColor)
@@ -700,7 +721,8 @@ class MainActivity : Activity(), ReferenceHost {
         val resting = CompanionView(this).apply {
             look = companion.look
             bodyColor = canvas.brushColor
-            mood = if (unreadTips) Mood.TIP else Mood.NAP
+            mood = if (unreadTips) Mood.TIP else Mood.IDLE
+            peekShare = 1f
             rotation = PEEK_TILT
         }
         peek = resting
@@ -712,6 +734,8 @@ class MainActivity : Activity(), ReferenceHost {
             setOnClickListener { setCompanionVisible(true) }
         }
         peekFrame = frame
+        peekX = x
+        peekY = y
         peekWindow = PopupWindow(frame, dp(PEEK_SIZE), dp(PEEK_SIZE)).apply {
             isClippingEnabled = false
             isTouchable = hidden
@@ -720,20 +744,83 @@ class MainActivity : Activity(), ReferenceHost {
         peekWindow?.let(chrome::add)
     }
 
+    /** Holds the toolbar from above it, so this window opens after the toolbar's. */
+    private fun showPeekHands(x: Int, y: Int, height: Int) {
+        val hands = CompanionHands(this).apply {
+            look = companion.look
+            bodyColor = canvas.brushColor
+            visibility = if (preferences.getBoolean("companion", true)) View.INVISIBLE else View.VISIBLE
+        }
+        peekHands = hands
+        PopupWindow(hands, dp(HANDS_WIDTH), height).apply {
+            isTouchable = false
+            isClippingEnabled = false
+            showAtLocation(canvas, Gravity.NO_GRAVITY, x, y)
+            chrome.add(this)
+        }
+    }
+
     private fun setCompanionVisible(visible: Boolean) {
         preferences.edit().putBoolean("companion", visible).apply()
         peek?.look = companion.look
         peek?.bodyColor = canvas.brushColor
-        peek?.mood = if (unreadTips) Mood.TIP else Mood.NAP
-        peekFrame?.visibility = if (visible) View.INVISIBLE else View.VISIBLE
+        peek?.mood = if (unreadTips) Mood.TIP else Mood.IDLE
+        peekHands?.look = companion.look
+        peekHands?.bodyColor = canvas.brushColor
+        peekHands?.visibility = View.INVISIBLE
+        peekFrame?.visibility = View.VISIBLE
         peekWindow?.let {
-            it.isTouchable = !visible
+            it.isTouchable = false
             it.update()
         }
         companionWindow?.dismiss()
         companionWindow = null
         closePanel()
-        if (visible) showCompanion()
+        moveCompanion(hiding = !visible) {
+            if (visible) {
+                peekFrame?.visibility = View.INVISIBLE
+                peekWindow?.update(peekX, peekY, -1, -1)
+                showCompanion()
+            } else {
+                peekHands?.visibility = View.VISIBLE
+                peekWindow?.let {
+                    it.isTouchable = true
+                    it.update()
+                }
+            }
+        }
+    }
+
+    /**
+     * Hops between the companion's spot and the toolbar in the window below the toolbar, so it
+     * really goes behind it. Its hands appear only once it has arrived.
+     */
+    private fun moveCompanion(hiding: Boolean, arrived: () -> Unit) {
+        val size = dp(56)
+        val restX = preferences.getInt("companionX", dp(12)).coerceIn(0, max(0, canvas.width - size)) - (dp(PEEK_SIZE) - size) / 2
+        val restY = preferences.getInt("companionY", canvas.height - size - dp(12))
+            .coerceIn(0, max(0, canvas.height - size)) - (dp(PEEK_SIZE) - size) / 2
+        hideMotion?.removeAllListeners()
+        hideMotion?.cancel()
+        hideMotion = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = HIDE_MS
+            interpolator = AccelerateDecelerateInterpolator()
+            addUpdateListener {
+                val share = if (hiding) it.animatedFraction else 1f - it.animatedFraction
+                val hop = sin(it.animatedFraction * PI.toFloat()) * dp(HIDE_HOP_DP)
+                peekWindow?.update(
+                    (restX + (peekX - restX) * share).toInt(),
+                    (restY + (peekY - restY) * share - hop).toInt(),
+                    -1, -1,
+                )
+                peek?.peekShare = share
+                peek?.rotation = PEEK_TILT * share
+            }
+            addListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) = arrived()
+            })
+            start()
+        }
     }
 
     private fun fadeChrome(alpha: Float) {
@@ -973,6 +1060,7 @@ class MainActivity : Activity(), ReferenceHost {
         companion.look = look
         preferences.edit().putString("mascot", look.name).apply()
         peek?.look = look
+        peekHands?.look = look
         rerender("companion", ::companionPanel)
     }
 
@@ -3252,6 +3340,8 @@ class MainActivity : Activity(), ReferenceHost {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        hideMotion?.removeAllListeners()
+        hideMotion?.cancel()
         closePanel()
         hideHandles()
         transformControls?.dismiss()

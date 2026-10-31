@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.view.View
 
 enum class Mood { IDLE, TIP, THINKING, NAP }
@@ -22,6 +23,8 @@ private const val CREAM = 0xFFF1EFE8.toInt()
 private const val INK = 0xFF2C2C2A.toInt()
 private const val COFFEE = 0xFF6B4226.toInt()
 private const val COFFEE_LINE = 0xFF4A2C1A.toInt()
+private const val PEEK_FACE_SHIFT = 12f
+private const val HAND_TILT = 20f
 
 /** Draws the companion in a 120 by 120 box, with its center at the origin. */
 class CompanionView(context: Context) : View(context) {
@@ -33,6 +36,10 @@ class CompanionView(context: Context) : View(context) {
         set(value) { field = value; invalidate() }
 
     var outline = CREAM
+        set(value) { field = value; invalidate() }
+
+    /** From 0 to 1, moves the face toward the open side as the body hides behind the toolbar. */
+    var peekShare = 0f
         set(value) { field = value; invalidate() }
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
@@ -161,6 +168,13 @@ class CompanionView(context: Context) : View(context) {
     }
 
     private fun drawFace(canvas: Canvas, y: Float, color: Int) {
+        canvas.save()
+        canvas.translate(PEEK_FACE_SHIFT * peekShare, 0f)
+        drawExpression(canvas, y, color)
+        canvas.restore()
+    }
+
+    private fun drawExpression(canvas: Canvas, y: Float, color: Int) {
         fill.color = color
         line.color = color
         when (mood) {
@@ -173,7 +187,7 @@ class CompanionView(context: Context) : View(context) {
                 canvas.drawCircle(13f, y, 6.5f, fill)
                 canvas.drawOval(-5f, y + 12f, 5f, y + 20f, fill)
                 fill.color = 0xFFFAC775.toInt()
-                canvas.drawCircle(42f, -42f, 8f, fill)
+                canvas.drawCircle(42f - PEEK_FACE_SHIFT * peekShare, -42f, 8f, fill)
                 return
             }
             Mood.THINKING -> {
@@ -193,5 +207,42 @@ class CompanionView(context: Context) : View(context) {
             }
         }
         canvas.drawArc(-8f, y + 4f, 8f, y + 18f, 30f, 120f, false, line)
+    }
+}
+
+/** Two tiny hands holding the toolbar's corner, drawn above it. */
+class CompanionHands(context: Context) : View(context) {
+    var look = CompanionLook.PAINT_DROP
+        set(value) { field = value; invalidate() }
+    var bodyColor = ACCENT
+        set(value) { field = value; invalidate() }
+
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val box = RectF()
+
+    override fun onDraw(canvas: Canvas) {
+        val halfWidth = context.dp(6).toFloat()
+        val halfHeight = context.dp(4).toFloat()
+        drawHand(canvas, context.dp(9).toFloat(), halfHeight + context.dp(1), -HAND_TILT, halfWidth, halfHeight)
+        drawHand(canvas, context.dp(14).toFloat(), height - halfHeight - context.dp(1), HAND_TILT, halfWidth, halfHeight)
+    }
+
+    private fun drawHand(canvas: Canvas, x: Float, y: Float, tilt: Float, halfWidth: Float, halfHeight: Float) {
+        canvas.save()
+        canvas.rotate(tilt, x, y)
+        box.set(x - halfWidth, y - halfHeight, x + halfWidth, y + halfHeight)
+        paint.style = Paint.Style.FILL
+        paint.color = when (look) {
+            CompanionLook.PAINT_DROP -> bodyColor
+            CompanionLook.INK_BLOT -> INK
+            CompanionLook.FOAM_CUP -> CREAM
+            CompanionLook.COFFEE_DROP -> COFFEE
+        }
+        canvas.drawOval(box, paint)
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = context.dp(1).toFloat()
+        paint.color = if (look == CompanionLook.FOAM_CUP) COFFEE_LINE else CREAM
+        canvas.drawOval(box, paint)
+        canvas.restore()
     }
 }
