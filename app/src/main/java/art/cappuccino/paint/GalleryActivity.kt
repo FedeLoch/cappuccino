@@ -14,12 +14,15 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Toast
 import java.io.File
 import java.util.concurrent.Executors
 import kotlin.math.max
 
 private const val ALL = "all"
 private const val PICK_REFERENCES = 42
+private const val CREATE_BACKUP = 43
+private const val OPEN_BACKUP = 44
 
 /** Shows projects, the artworks inside them, and each project's reference library. */
 class GalleryActivity : Activity() {
@@ -58,7 +61,11 @@ class GalleryActivity : Activity() {
             LinearLayout(this).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 addView(label("Cappuccino", 26f), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(chip("New artwork", true) { openStudio(null) })
+                addView(chip("Backup") { backupOptions() })
+                addView(
+                    chip("New artwork", true) { openStudio(null) },
+                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
+                )
             },
         )
         val tabs = ArrayList<View>()
@@ -270,7 +277,12 @@ class GalleryActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != PICK_REFERENCES || resultCode != RESULT_OK || data == null) return
+        if (resultCode != RESULT_OK || data == null) return
+        if (requestCode == CREATE_BACKUP || requestCode == OPEN_BACKUP) {
+            data.data?.let { runBackup(it, requestCode == OPEN_BACKUP) }
+            return
+        }
+        if (requestCode != PICK_REFERENCES) return
         val single = listOfNotNull(data.data)
         val multiple = data.clipData?.let { clip ->
             (0 until clip.itemCount).map { clip.getItemAt(it).uri }
@@ -279,6 +291,53 @@ class GalleryActivity : Activity() {
         background.execute {
             (multiple.ifEmpty { single }).forEach { uri -> runCatching { store.addReference(project, uri) } }
             runOnUiThread { render() }
+        }
+    }
+
+    private fun backupOptions() {
+        AlertDialog.Builder(this)
+            .setTitle("Backup")
+            .setItems(arrayOf("Save a backup file", "Restore from a backup file")) { _, choice ->
+                if (choice == 0) {
+                    startActivityForResult(
+                        Intent(Intent.ACTION_CREATE_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("application/zip")
+                            .putExtra(Intent.EXTRA_TITLE, "Cappuccino backup.zip"),
+                        CREATE_BACKUP,
+                    )
+                } else {
+                    startActivityForResult(
+                        Intent(Intent.ACTION_OPEN_DOCUMENT)
+                            .addCategory(Intent.CATEGORY_OPENABLE)
+                            .setType("application/zip"),
+                        OPEN_BACKUP,
+                    )
+                }
+            }
+            .show()
+    }
+
+    private fun runBackup(uri: android.net.Uri, restoring: Boolean) {
+        Toast.makeText(this, if (restoring) "Restoring your work" else "Saving your backup", Toast.LENGTH_SHORT).show()
+        background.execute {
+            val done = runCatching {
+                if (restoring) {
+                    contentResolver.openInputStream(uri)!!.use(store::restore)
+                } else {
+                    contentResolver.openOutputStream(uri)!!.use(store::backup)
+                }
+            }.isSuccess
+            runOnUiThread {
+                val message = when {
+                    done && restoring -> "Backup restored"
+                    done -> "Backup saved"
+                    restoring -> "Couldn't restore this backup"
+                    else -> "Couldn't save your backup"
+                }
+                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                render()
+            }
         }
     }
 

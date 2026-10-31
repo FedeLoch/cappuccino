@@ -76,6 +76,18 @@ class CompanionView(context: Context) : View(context) {
         close()
     }
 
+    private val foamCap = Path().apply {
+        moveTo(-40f, -60f)
+        lineTo(40f, -60f)
+        lineTo(40f, -15f)
+        lineTo(24f, -15f)
+        quadTo(17f, -2f, 9f, -12f)
+        quadTo(2f, 3f, -7f, -11f)
+        quadTo(-15f, -3f, -24f, -15f)
+        lineTo(-40f, -15f)
+        close()
+    }
+
     private val blinkLoop = object : Runnable {
         override fun run() {
             blinking = !blinking
@@ -113,10 +125,11 @@ class CompanionView(context: Context) : View(context) {
             Mascot.COFFEE_DROP -> {
                 drawBody(canvas, drop, COFFEE)
                 fill.color = CREAM
-                canvas.drawOval(-15f, -24f, 15f, -8f, fill)
-                canvas.drawCircle(-9f, -18f, 7f, fill)
-                canvas.drawCircle(8f, -19f, 6f, fill)
-                drawFace(canvas, 10f, CREAM)
+                canvas.save()
+                canvas.clipPath(drop)
+                canvas.drawPath(foamCap, fill)
+                canvas.restore()
+                drawFace(canvas, 14f, CREAM)
             }
         }
     }

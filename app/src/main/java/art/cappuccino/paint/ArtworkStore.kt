@@ -9,12 +9,17 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.UUID
 import java.util.zip.Deflater
 import java.util.zip.DeflaterOutputStream
 import java.util.zip.InflaterInputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 class ArtworkDocument(
     val id: String,
@@ -23,6 +28,8 @@ class ArtworkDocument(
     var activeLayer: Int,
     var nextLayerId: Int,
     val layers: MutableList<LayerInfo>,
+    var perspective: List<Float> = emptyList(),
+    var references: List<ReferenceState> = emptyList(),
 )
 
 class ArtworkSnapshot(
@@ -49,9 +56,11 @@ class ArtworkStore(context: Context) {
 
     fun thumbnail(id: String) = File(artworkDir(id), THUMBNAIL)
 
-    fun palettes(): List<Palette> {
-        if (!palettesFile.exists()) return emptyList()
-        val array = JSONArray(palettesFile.readText())
+    fun palettes(): List<Palette> = readPalettes(palettesFile)
+
+    private fun readPalettes(file: File): List<Palette> {
+        if (!file.exists()) return emptyList()
+        val array = JSONArray(file.readText())
         return (0 until array.length()).map { index ->
             val item = array.getJSONObject(index)
             val colors = item.getJSONArray("colors")
@@ -82,9 +91,11 @@ class ArtworkStore(context: Context) {
 
     fun deletePalette(id: String) = writePalettes(palettes().filter { it.id != id })
 
-    fun projects(): List<Project> {
-        if (!projectsFile.exists()) return emptyList()
-        val array = JSONArray(projectsFile.readText())
+    fun projects(): List<Project> = readProjects(projectsFile)
+
+    private fun readProjects(file: File): List<Project> {
+        if (!file.exists()) return emptyList()
+        val array = JSONArray(file.readText())
         return (0 until array.length()).map {
             val item = array.getJSONObject(it)
             Project(item.getString("id"), item.getString("name"))
@@ -172,6 +183,7 @@ class ArtworkStore(context: Context) {
                 item.getInt("blend"),
                 item.optBoolean("alphaLock"),
                 item.optString("file").ifEmpty { null },
+                item.optBoolean("clip"),
             )
         }.toMutableList()
         return ArtworkDocument(
@@ -181,8 +193,41 @@ class ArtworkStore(context: Context) {
             manifest.getInt("activeLayer"),
             manifest.getInt("nextLayerId"),
             layers,
+            manifest.optJSONArray("perspective")?.let { points ->
+                (0 until points.length()).map { points.getDouble(it).toFloat() }
+            }.orEmpty(),
+            manifest.optJSONArray("references")?.let { items ->
+                (0 until items.length()).map { parseReference(items.getJSONObject(it)) }
+            }.orEmpty(),
         )
     }
+
+    private fun parseReference(item: JSONObject) = ReferenceState(
+        item.getString("file"),
+        item.getInt("x"),
+        item.getInt("y"),
+        item.getInt("width"),
+        item.getDouble("zoom").toFloat(),
+        item.getDouble("panX").toFloat(),
+        item.getDouble("panY").toFloat(),
+        item.getBoolean("grayscale"),
+        item.getBoolean("flipped"),
+        item.getDouble("opacity").toFloat(),
+        item.getBoolean("pinned"),
+    )
+
+    private fun referenceJson(state: ReferenceState) = JSONObject()
+        .put("file", state.file)
+        .put("x", state.x)
+        .put("y", state.y)
+        .put("width", state.width)
+        .put("zoom", state.zoom.toDouble())
+        .put("panX", state.panX.toDouble())
+        .put("panY", state.panY.toDouble())
+        .put("grayscale", state.grayscale)
+        .put("flipped", state.flipped)
+        .put("opacity", state.opacity.toDouble())
+        .put("pinned", state.pinned)
 
     fun readLayer(artworkId: String, file: String): ByteBuffer {
         val buffer = layerBuffer()
@@ -215,6 +260,7 @@ class ArtworkStore(context: Context) {
                     .put("visible", layer.visible)
                     .put("blend", layer.blend)
                     .put("alphaLock", layer.alphaLock)
+                    .put("clip", layer.clip)
                     .put("file", layer.file ?: ""),
             )
         }
@@ -230,6 +276,8 @@ class ArtworkStore(context: Context) {
             .put("nextLayerId", snapshot.nextLayerId)
             .put("updated", generation)
             .put("layers", layers)
+            .put("perspective", JSONArray(document.perspective.map { it.toDouble() }))
+            .put("references", JSONArray(document.references.map(::referenceJson)))
         val current = File(dir, MANIFEST)
         if (current.exists()) current.renameTo(File(dir, PREVIOUS_MANIFEST))
         writeAtomically(current, manifest.toString().toByteArray())
@@ -297,6 +345,65 @@ class ArtworkStore(context: Context) {
         val input = resolver.openInputStream(uri) ?: return null
         input.use { source -> target.outputStream().use(source::copyTo) }
         return target
+    }
+
+    fun exportPsd(name: String, layers: List<PsdLayer>, merged: ByteArray): Boolean {
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, "$name.psd")
+            put(MediaStore.Downloads.MIME_TYPE, "image/vnd.adobe.photoshop")
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/Cappuccino")
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
+        val output = resolver.openOutputStream(uri) ?: return false
+        output.use { PsdWriter(CANVAS_WIDTH, CANVAS_HEIGHT).write(it, layers, merged) }
+        return true
+    }
+
+    /** Packs all artworks, references, projects, and palettes into one zip file. */
+    fun backup(output: OutputStream) {
+        ZipOutputStream(output.buffered()).use { zip ->
+            listOf(artworks, references, projectsFile, palettesFile).forEach { item ->
+                item.walkTopDown().filter { it.isFile && !it.name.endsWith(".tmp") }.forEach { file ->
+                    zip.putNextEntry(ZipEntry(file.relativeTo(root).path))
+                    file.inputStream().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                }
+            }
+        }
+    }
+
+    /** Adds a backup's contents. Existing files are kept, and projects are combined. */
+    fun restore(input: InputStream) {
+        val incoming = File(root, "restore.tmp").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        ZipInputStream(input.buffered()).use { zip ->
+            while (true) {
+                val entry = zip.nextEntry ?: break
+                val target = File(incoming, entry.name)
+                check(target.canonicalPath.startsWith(incoming.canonicalPath + File.separator)) {
+                    "Invalid backup"
+                }
+                target.parentFile?.mkdirs()
+                if (!entry.isDirectory) target.outputStream().use(zip::copyTo)
+                zip.closeEntry()
+            }
+        }
+        val existing = projects()
+        val added = readProjects(File(incoming, projectsFile.name))
+            .filter { project -> existing.none { it.id == project.id } }
+        val savedPalettes = palettes()
+        val addedPalettes = readPalettes(File(incoming, palettesFile.name))
+            .filter { palette -> savedPalettes.none { it.id == palette.id } }
+        listOf("artworks", "references").forEach { name ->
+            File(incoming, name).takeIf { it.exists() }?.copyRecursively(File(root, name), overwrite = false) { _, error ->
+                if (error is FileAlreadyExistsException) OnErrorAction.SKIP else throw error
+            }
+        }
+        writeProjects(existing + added)
+        writePalettes(savedPalettes + addedPalettes)
+        incoming.deleteRecursively()
     }
 
     fun exportPng(name: String, pixels: ByteBuffer): Boolean {

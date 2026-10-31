@@ -1,0 +1,293 @@
+package art.cappuccino.paint
+
+import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.res.ColorStateList
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.view.GestureDetector
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import android.view.View
+import android.widget.FrameLayout
+import android.widget.HorizontalScrollView
+import android.widget.LinearLayout
+import android.widget.PopupWindow
+import android.widget.SeekBar
+import android.widget.TextView
+import android.widget.Toast
+import kotlin.math.roundToInt
+
+private const val MIN_WIDTH_DP = 180
+private const val MAX_ZOOM = 12f
+private const val VISIBLE_EDGE_DP = 56
+private const val DRAWING_ALPHA = 0.35f
+
+interface ReferenceHost {
+    fun onReferenceChanged()
+    fun onReferenceClosed(reference: ReferenceWindow)
+    fun onReferenceColor(color: Int)
+    fun onReferencePalette(reference: ReferenceWindow)
+    fun onReferenceToLayer(reference: ReferenceWindow)
+}
+
+/** A floating image that can be moved, resized, zoomed, and checked while drawing. */
+@SuppressLint("ClickableViewAccessibility")
+class ReferenceWindow(
+    private val activity: Activity,
+    private val anchor: View,
+    val state: ReferenceState,
+    val bitmap: Bitmap,
+    private val host: ReferenceHost,
+) {
+    private val ratio = bitmap.height / bitmap.width.toFloat()
+    private val image = ReferenceImage()
+    private val bar: View = createBar()
+    private val root = FrameLayout(activity).apply {
+        background = activity.rounded(SURFACE, 10)
+        clipToOutline = true
+        addView(image)
+        addView(createResizeHandle(), FrameLayout.LayoutParams(activity.dp(32), activity.dp(32), Gravity.BOTTOM or Gravity.END))
+        addView(bar, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+    }
+    private val window: PopupWindow = PopupWindow(root, state.width, windowHeight()).apply {
+        isClippingEnabled = false
+        isTouchable = !state.pinned
+    }
+
+    init {
+        bar.visibility = View.GONE
+        root.alpha = state.opacity
+    }
+
+    private fun windowHeight(): Int = (state.width * ratio).toInt()
+
+    fun show() {
+        clampToScreen()
+        window.showAtLocation(anchor, Gravity.NO_GRAVITY, state.x, state.y)
+    }
+
+    fun dismiss() = window.dismiss()
+
+    fun setDrawing(drawing: Boolean) {
+        val alpha = if (drawing && !state.pinned) minOf(DRAWING_ALPHA, state.opacity) else state.opacity
+        root.animate().alpha(alpha).setDuration(120).start()
+    }
+
+    fun refit() {
+        clampToScreen()
+        applyBounds()
+    }
+
+    private fun clampToScreen() {
+        val edge = activity.dp(VISIBLE_EDGE_DP)
+        state.x = clampReferencePosition(state.x, state.width, anchor.width, edge)
+        state.y = clampReferencePosition(state.y, windowHeight(), anchor.height, edge)
+    }
+
+    private fun applyBounds() {
+        window.update(state.x, state.y, state.width, windowHeight(), true)
+    }
+
+    private fun createResizeHandle(): View = TextView(activity).apply {
+        text = "↘"
+        textSize = 14f
+        gravity = Gravity.CENTER
+        setTextColor(TEXT_COLOR)
+        background = activity.rounded(SURFACE, 8)
+        contentDescription = "Resize reference"
+        var startX = 0f
+        var startWidth = 0
+        setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = event.rawX
+                    startWidth = state.width
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    state.width = (startWidth + event.rawX - startX).toInt()
+                        .coerceIn(activity.dp(MIN_WIDTH_DP), anchor.width)
+                    applyBounds()
+                    image.limitPan()
+                }
+                MotionEvent.ACTION_UP -> host.onReferenceChanged()
+            }
+            true
+        }
+    }
+
+    private fun createBar(): View {
+        val actions = listOf<Pair<String, () -> Unit>>(
+            "Grayscale" to {
+                state.grayscale = !state.grayscale
+                image.invalidate()
+                host.onReferenceChanged()
+            },
+            "Flip" to {
+                state.flipped = !state.flipped
+                image.invalidate()
+                host.onReferenceChanged()
+            },
+            "Fit" to {
+                state.zoom = 1f
+                state.panX = 0f
+                state.panY = 0f
+                image.invalidate()
+                host.onReferenceChanged()
+            },
+            "Pin" to { pin() },
+            "Palette" to { host.onReferencePalette(this) },
+            "Add as layer" to { host.onReferenceToLayer(this) },
+            "Close" to { host.onReferenceClosed(this) },
+        )
+        val row = LinearLayout(activity).apply {
+            actions.forEach { (name, action) ->
+                addView(
+                    activity.label(name, 12f).apply {
+                        gravity = Gravity.CENTER
+                        minHeight = activity.dp(36)
+                        setPadding(activity.dp(10), 0, activity.dp(10), 0)
+                        setOnClickListener { action() }
+                    },
+                )
+            }
+        }
+        val opacity = SeekBar(activity).apply {
+            max = 100
+            min = 15
+            progress = (state.opacity * 100).roundToInt()
+            contentDescription = "Reference opacity"
+            progressTintList = ColorStateList.valueOf(ACCENT)
+            thumbTintList = ColorStateList.valueOf(ACCENT)
+            onChange {
+                state.opacity = it / 100f
+                root.alpha = state.opacity
+                host.onReferenceChanged()
+            }
+        }
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(SURFACE)
+            isClickable = true
+            addView(
+                HorizontalScrollView(activity).apply {
+                    isHorizontalScrollBarEnabled = false
+                    addView(row)
+                },
+            )
+            addView(opacity)
+        }
+    }
+
+    private fun pin() {
+        state.pinned = true
+        bar.visibility = View.GONE
+        window.isTouchable = false
+        applyBounds()
+        host.onReferenceChanged()
+        Toast.makeText(activity, "Pinned. You can draw over it. Tap it in References to close it.", Toast.LENGTH_LONG).show()
+    }
+
+    private inner class ReferenceImage : View(activity) {
+        private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+        private val gray = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
+        private val drawMatrix = Matrix()
+        private val inverse = Matrix()
+        private var lastX = 0f
+        private var lastY = 0f
+
+        private val scale = ScaleGestureDetector(
+            activity,
+            object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                override fun onScale(detector: ScaleGestureDetector): Boolean {
+                    state.zoom = (state.zoom * detector.scaleFactor).coerceIn(1f, MAX_ZOOM)
+                    limitPan()
+                    return true
+                }
+            },
+        )
+        private val press = GestureDetector(
+            activity,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onSingleTapConfirmed(event: MotionEvent): Boolean {
+                    bar.visibility = if (bar.visibility == VISIBLE) GONE else VISIBLE
+                    return true
+                }
+
+                override fun onLongPress(event: MotionEvent) {
+                    if (!scale.isInProgress) host.onReferenceColor(pickColor(event.x, event.y))
+                }
+            },
+        )
+
+        init {
+            contentDescription = "Floating reference"
+        }
+
+        fun limitPan() {
+            state.panX = clampReferencePan(state.panX, state.zoom, width)
+            state.panY = clampReferencePan(state.panY, state.zoom, height)
+            invalidate()
+        }
+
+        private fun updateMatrix() {
+            val base = width / bitmap.width.toFloat() * state.zoom
+            drawMatrix.setScale(base, base)
+            drawMatrix.postTranslate(
+                width / 2f - bitmap.width * base / 2f + state.panX,
+                height / 2f - bitmap.height * base / 2f + state.panY,
+            )
+            if (state.flipped) drawMatrix.postScale(-1f, 1f, width / 2f, height / 2f)
+        }
+
+        private fun pickColor(x: Float, y: Float): Int {
+            updateMatrix()
+            drawMatrix.invert(inverse)
+            val point = floatArrayOf(x, y).also(inverse::mapPoints)
+            val pixelX = point[0].toInt().coerceIn(0, bitmap.width - 1)
+            val pixelY = point[1].toInt().coerceIn(0, bitmap.height - 1)
+            return bitmap.getPixel(pixelX, pixelY) or Color.BLACK
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            updateMatrix()
+            paint.colorFilter = if (state.grayscale) gray else null
+            canvas.drawBitmap(bitmap, drawMatrix, paint)
+        }
+
+        override fun onTouchEvent(event: MotionEvent): Boolean {
+            scale.onTouchEvent(event)
+            press.onTouchEvent(event)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                    lastX = event.rawX
+                    lastY = event.rawY
+                }
+                MotionEvent.ACTION_MOVE -> if (event.pointerCount == 1 && !scale.isInProgress) {
+                    val dx = event.rawX - lastX
+                    val dy = event.rawY - lastY
+                    lastX = event.rawX
+                    lastY = event.rawY
+                    if (state.zoom > 1.01f) {
+                        state.panX += if (state.flipped) -dx else dx
+                        state.panY += dy
+                        limitPan()
+                    } else {
+                        state.x += dx.toInt()
+                        state.y += dy.toInt()
+                        clampToScreen()
+                        window.update(state.x, state.y, -1, -1)
+                    }
+                }
+                MotionEvent.ACTION_UP -> host.onReferenceChanged()
+            }
+            return true
+        }
+    }
+}

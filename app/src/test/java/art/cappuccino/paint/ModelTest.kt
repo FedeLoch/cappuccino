@@ -16,8 +16,8 @@ class ModelTest {
     }
 
     @Test
-    fun onlyEraserToolsErase() {
-        assertEquals(3, BrushKind.entries.count { it.isEraser })
-        assertTrue(BrushKind.entries.filterNot { it.isEraser }.size >= 8)
+    fun everyBrushShapeHasAnEraser() {
+        val (erasers, brushes) = BrushKind.entries.filterNot { it.isFill }.partition { it.isEraser }
+        assertEquals(brushes.map { it.label }, erasers.map { it.label })
     }
 }

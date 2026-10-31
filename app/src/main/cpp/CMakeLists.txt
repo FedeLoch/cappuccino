@@ -5,6 +5,7 @@ set(ENGINE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../engine/src)
 
 add_library(cappuccino SHARED
     jni.cpp
+    ${ENGINE_DIR}/fill.cpp
     ${ENGINE_DIR}/renderer.cpp
     ${ENGINE_DIR}/stroke.cpp)
 

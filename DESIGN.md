@@ -143,8 +143,8 @@ then spills to disk, and is limited by a storage budget rather than a step count
 
 ## Art direction tools
 
-- Brushes and erasers are chosen from cards with stroke previews, and each tool remembers
-  its own size and opacity.
+- Brushes and erasers are chosen from cards with stroke previews. Every brush shape can
+  erase, and each tool remembers its own size and opacity.
 - The color panel has a picker with value steps, harmony suggestions, and palettes. Palettes
   can be collected from the artwork or an open reference.
 - Layers show thumbnails and support transparency lock, drag reordering, duplicate, and
@@ -152,14 +152,45 @@ then spills to disk, and is limited by a storage budget rather than a step count
 - Grayscale, two-value, and three-value views, composition guides, and canvas flip change
   only the view, never the artwork or exports.
 
+## Perspective guide
+
+- The art direction panel offers 1, 2, or 3 vanishing points, saved with each artwork. The
+  points are dragged on the canvas while the panel is open.
+- Guide lines are part of the view only, and never reach the artwork or exports.
+- After each long, straight stroke, the companion compares it with the nearest allowed
+  direction. It tolerates 4 degrees, and ignores short and curved strokes.
+- It reports drift as an observation, since breaking perspective can be deliberate.
+
+## Undo
+
+Strokes and layer changes share one timeline. Adding, deleting, reordering, duplicating,
+merging, renaming, and changing layer visibility, opacity, blend mode, or transparency lock
+can all be undone and redone. Removed layers stay in memory for undo, up to a limit, and
+history ends when the artwork closes. Selecting a layer is not an undo step.
+
+## Professional tools
+
+- A stabilizer per brush smooths slow lines.
+- Fill floods the connected area on the active layer, and undo covers it.
+- A layer can clip to the layer below, and exports keep that setting in PSD files.
+- Transform moves, scales, and rotates the active layer until Done is tapped.
+- PSD export keeps layers, names, opacity, visibility, clipping, and the four blend modes.
+- Backup packs artworks, references, projects, and palettes into one zip file. Restore adds
+  to the current library and keeps existing files.
+
+Next: selection, smudge, gradients, layer groups, PSD import, custom canvas sizes, custom
+brushes, and a stroke recovery journal.
+
 ## Projects and references
 
 - The home screen is the projects view. Artworks can be grouped into projects, renamed,
   moved, duplicated, and deleted.
 - Each project has its own reference library, and unsorted artworks share one.
-- A reference floats over the canvas in its own window. It can be moved and resized, and a
-  long press picks a color from it.
-- Open reference windows are not remembered between sessions yet.
+- A reference floats over the canvas in its own window. It can be moved, resized, zoomed,
+  flipped, shown in grayscale, made transparent, and pinned for tracing.
+- Each artwork remembers its open references, their positions, and their settings.
+- A long press picks a color. A reference can also become a palette or a new layer.
+- Images can be shared into a project from other apps.
 
 ## Current storage limits
 

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstring>
 
+#include "fill.h"
+
 namespace cappuccino {
 namespace {
 
@@ -59,10 +61,13 @@ precision mediump float;
 in vec2 vUv;
 uniform sampler2D uTexture;
 uniform vec4 uSolid;
+uniform sampler2D uClip;
+uniform float uUseClip;
 uniform float uOpacity;
 out vec4 fragColor;
 void main() {
-    fragColor = uSolid.a > 0.0 ? uSolid : texture(uTexture, vUv) * uOpacity;
+    float clip = mix(1.0, texture(uClip, vUv).a, uUseClip);
+    fragColor = uSolid.a > 0.0 ? uSolid : texture(uTexture, vUv) * uOpacity * clip;
 })";
 
 constexpr char kFilterVertex[] = R"(#version 300 es
@@ -200,6 +205,11 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     canvasSize_ = glGetUniformLocation(canvasProgram_, "uSize");
     canvasSolid_ = glGetUniformLocation(canvasProgram_, "uSolid");
     canvasOpacity_ = glGetUniformLocation(canvasProgram_, "uOpacity");
+    canvasClip_ = glGetUniformLocation(canvasProgram_, "uClip");
+    canvasUseClip_ = glGetUniformLocation(canvasProgram_, "uUseClip");
+    glUseProgram(canvasProgram_);
+    glUniform1i(canvasClip_, 1);
+    glUniform1f(canvasUseClip_, 0.0f);
 
     filterProgram_ = link(kFilterVertex, kFilterFragment);
     filterMode_ = glGetUniformLocation(filterProgram_, "uMode");
@@ -289,6 +299,7 @@ void Renderer::duplicateLayer(int id, int newId) {
     copy->opacity = settings.opacity;
     copy->visible = settings.visible;
     copy->blend = settings.blend;
+    copy->clip = settings.clip;
     copy->dirty = true;
     copyRegion(settings.fbo, copy->fbo, {0, 0, width_, height_});
     moveLayer(newId, index + 1);
@@ -301,14 +312,26 @@ void Renderer::mergeLayerDown(int id, int belowId) {
     if (!upper || !lower) return;
     const GLint target = currentFramebuffer();
     resetState();
+
+    HistoryEntry entry;
+    entry.layer = belowId;
+    entry.rect = {0, 0, width_, height_};
+    entry.pixels.resize(static_cast<size_t>(width_) * height_ * 4);
+    readLayer(belowId, entry.pixels.data());
+    pushHistory(std::move(entry));
+
     const float toCanvas[16] = {2.0f / width_, 0, 0, 0, 0, 2.0f / height_, 0, 0,
                                 0,             0, 1, 0, -1, -1,            0, 1};
+    if (upper->clip) copyRegion(lower->fbo, shadowFbo_, {0, 0, width_, height_});
     glBindFramebuffer(GL_FRAMEBUFFER, lower->fbo);
     glViewport(0, 0, width_, height_);
     glUseProgram(canvasProgram_);
     glUniform2f(canvasSize_, static_cast<float>(width_), static_cast<float>(height_));
     glUniform4f(canvasSolid_, 0.0f, 0.0f, 0.0f, 0.0f);
     glUniform1f(canvasOpacity_, upper->opacity);
+    glUniform1f(canvasUseClip_, upper->clip ? 1.0f : 0.0f);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, shadowTexture_);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, upper->texture);
     glBindVertexArray(canvasVao_);
@@ -316,11 +339,10 @@ void Renderer::mergeLayerDown(int id, int belowId) {
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     drawQuad(toCanvas);
     glDisable(GL_BLEND);
+    glUniform1f(canvasUseClip_, 0.0f);
     glBindVertexArray(0);
     lower->dirty = true;
-    clearLayerHistory(belowId);
     glBindFramebuffer(GL_FRAMEBUFFER, target);
-    deleteLayer(id);
 }
 
 void Renderer::readLayerThumbnail(int id, int width, int height, void* pixels) {
@@ -350,9 +372,153 @@ void Renderer::readLayerThumbnail(int id, int width, int height, void* pixels) {
     glBindFramebuffer(GL_FRAMEBUFFER, target);
 }
 
+void Renderer::pushHistory(HistoryEntry entry) {
+    historyBytes_ += entry.pixels.size();
+    undo_.push_back(std::move(entry));
+    for (const HistoryEntry& stale : redo_) historyBytes_ -= stale.pixels.size();
+    redo_.clear();
+    while (historyBytes_ > kHistoryBudgetBytes && undo_.size() > 1) {
+        historyBytes_ -= undo_.front().pixels.size();
+        undo_.erase(undo_.begin());
+    }
+}
+
+bool Renderer::fillAt(int x, int y, const float* color) {
+    Layer* layer = findLayer(activeLayer_);
+    if (!layer) return false;
+    const GLint target = currentFramebuffer();
+    std::vector<uint8_t> pixels(static_cast<size_t>(width_) * height_ * 4);
+    readLayer(layer->id, pixels.data());
+    std::vector<uint8_t> before = pixels;
+    const uint8_t fill[4] = {static_cast<uint8_t>(color[0] * 255.0f + 0.5f),
+                             static_cast<uint8_t>(color[1] * 255.0f + 0.5f),
+                             static_cast<uint8_t>(color[2] * 255.0f + 0.5f), 255};
+    FillBounds box;
+    if (!floodFill(pixels.data(), width_, height_, x, y, fill, 40, &box)) return false;
+
+    HistoryEntry entry;
+    entry.layer = layer->id;
+    entry.rect = {box.left, box.top, box.right, box.bottom};
+    const int rowBytes = entry.rect.width() * 4;
+    entry.pixels.resize(static_cast<size_t>(rowBytes) * entry.rect.height());
+    for (int row = 0; row < entry.rect.height(); ++row) {
+        const size_t offset = (static_cast<size_t>(box.top + row) * width_ + box.left) * 4;
+        std::memcpy(entry.pixels.data() + static_cast<size_t>(row) * rowBytes,
+                    before.data() + offset, rowBytes);
+    }
+    pushHistory(std::move(entry));
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glBindTexture(GL_TEXTURE_2D, layer->texture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE,
+                    pixels.data());
+    copyRegion(layer->fbo, shadowFbo_, {box.left, box.top, box.right, box.bottom});
+    layer->dirty = true;
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+    return true;
+}
+
+void Renderer::setLayerTransform(int id, const float* transform) {
+    previewLayer_ = id;
+    if (id != 0) viewToMatrix(transform, previewTransform_);
+}
+
+void Renderer::commitLayerTransform() {
+    Layer* layer = findLayer(previewLayer_);
+    if (!layer) return;
+    const GLint target = currentFramebuffer();
+    resetState();
+    HistoryEntry entry;
+    entry.layer = layer->id;
+    entry.rect = {0, 0, width_, height_};
+    entry.pixels.resize(static_cast<size_t>(width_) * height_ * 4);
+    readLayer(layer->id, entry.pixels.data());
+    pushHistory(std::move(entry));
+
+    const float toCanvas[16] = {2.0f / width_, 0, 0, 0, 0, 2.0f / height_, 0, 0,
+                                0,             0, 1, 0, -1, -1,            0, 1};
+    float matrix[16];
+    multiply(toCanvas, previewTransform_, matrix);
+    glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
+    glViewport(0, 0, width_, height_);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glUseProgram(canvasProgram_);
+    glUniform2f(canvasSize_, static_cast<float>(width_), static_cast<float>(height_));
+    glUniform4f(canvasSolid_, 0.0f, 0.0f, 0.0f, 0.0f);
+    glUniform1f(canvasOpacity_, 1.0f);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, layer->texture);
+    glBindVertexArray(canvasVao_);
+    drawQuad(matrix);
+    glBindVertexArray(0);
+    copyRegion(shadowFbo_, layer->fbo, {0, 0, width_, height_});
+    if (layer->id != activeLayer_) {
+        if (Layer* active = findLayer(activeLayer_)) {
+            copyRegion(active->fbo, shadowFbo_, {0, 0, width_, height_});
+        }
+    }
+    layer->dirty = true;
+    previewLayer_ = 0;
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+}
+
 void Renderer::setViewOptions(int mode, int guide) {
     viewMode_ = mode;
     guide_ = guide;
+}
+
+void Renderer::setPerspective(const float* points, int count) {
+    perspective_.assign(points, points + count * 2);
+}
+
+void Renderer::appendLine(float x1, float y1, float x2, float y2) {
+    constexpr float kHalfWidth = 2.0f;
+    const float length = std::max(std::hypot(x2 - x1, y2 - y1), 1.0f);
+    const float nx = -(y2 - y1) / length * kHalfWidth;
+    const float ny = (x2 - x1) / length * kHalfWidth;
+    const float corners[6][2] = {{x1 - nx, y1 - ny}, {x2 - nx, y2 - ny}, {x2 + nx, y2 + ny},
+                                 {x1 - nx, y1 - ny}, {x2 + nx, y2 + ny}, {x1 + nx, y1 + ny}};
+    for (const auto& corner : corners) {
+        vertices_.insert(vertices_.end(), {corner[0], corner[1], 0.0f, 0.0f, 0.55f});
+    }
+}
+
+void Renderer::drawPerspective(const float* matrix) {
+    constexpr int kRays = 36;
+    constexpr float kPi = 3.14159265f;
+    static constexpr float kColors[3][3] = {{0.85f, 0.35f, 0.19f},
+                                            {0.11f, 0.62f, 0.46f},
+                                            {0.33f, 0.29f, 0.72f}};
+    const int count = static_cast<int>(perspective_.size() / 2);
+    if (count == 0) return;
+    const float reach = (width_ + height_) * 3.0f;
+
+    glUseProgram(stampProgram_);
+    glUniformMatrix4fv(stampMatrix_, 1, GL_FALSE, matrix);
+    glUniform1f(stampHardness_, 1.0f);
+    glUniform1f(stampGrain_, 0.0f);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glBindVertexArray(vao_);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo_);
+    for (int point = 0; point < count; ++point) {
+        const float x = perspective_[point * 2];
+        const float y = perspective_[point * 2 + 1];
+        vertices_.clear();
+        for (int ray = 0; ray < kRays; ++ray) {
+            const float angle = ray * 2.0f * kPi / kRays;
+            appendLine(x, y, x + std::cos(angle) * reach, y + std::sin(angle) * reach);
+        }
+        if (point < 2) appendLine(x - reach, y, x + reach, y);
+        glUniform3fv(stampColor_, 1, kColors[point % 3]);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(vertices_.size() * sizeof(float)),
+                     vertices_.data(), GL_STREAM_DRAW);
+        glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(vertices_.size() / 5));
+    }
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindVertexArray(0);
+    glDisable(GL_BLEND);
 }
 
 void Renderer::fillCanvasRect(const float* matrix, float x, float y, float width, float height) {
@@ -397,6 +563,7 @@ void Renderer::drawScene(const float* matrix, int bufferWidth, int bufferHeight,
         drawCanvas(matrix);
         if (stamps) drawStamps(*stamps, matrix);
         drawGuides(matrix);
+        drawPerspective(matrix);
         return;
     }
     const GLint target = currentFramebuffer();
@@ -427,6 +594,7 @@ void Renderer::drawScene(const float* matrix, int bufferWidth, int bufferHeight,
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     drawGuides(matrix);
+    drawPerspective(matrix);
 }
 
 void Renderer::setActiveLayer(int id) {
@@ -438,11 +606,13 @@ void Renderer::setActiveLayer(int id) {
     glBindFramebuffer(GL_FRAMEBUFFER, target);
 }
 
-void Renderer::setLayerProperties(int id, float opacity, bool visible, BlendMode blend) {
+void Renderer::setLayerProperties(int id, float opacity, bool visible, BlendMode blend,
+                                  bool clip) {
     if (Layer* layer = findLayer(id)) {
         layer->opacity = opacity;
         layer->visible = visible;
         layer->blend = blend;
+        layer->clip = clip;
     }
 }
 
@@ -452,6 +622,24 @@ void Renderer::moveLayer(int id, int index) {
     const Layer layer = *found;
     layers_.erase(layers_.begin() + (found - layers_.data()));
     layers_.insert(layers_.begin() + index, layer);
+}
+
+void Renderer::setLayerOrder(const int* ids, int count) {
+    std::vector<Layer> ordered;
+    ordered.reserve(layers_.size());
+    for (int i = 0; i < count; ++i) {
+        if (Layer* layer = findLayer(ids[i])) ordered.push_back(*layer);
+    }
+    for (const Layer& layer : layers_) {
+        if (std::find(ids, ids + count, layer.id) != ids + count) continue;
+        ordered.push_back(layer);
+        ordered.back().visible = false;
+    }
+    layers_ = std::move(ordered);
+}
+
+void Renderer::markLayerDirty(int id) {
+    if (Layer* layer = findLayer(id)) layer->dirty = true;
 }
 
 bool Renderer::takeLayerDirty(int id) {
@@ -557,8 +745,11 @@ void Renderer::drawCanvas(const float* matrix) {
 
     glUniform4f(canvasSolid_, 0.0f, 0.0f, 0.0f, 0.0f);
     glEnable(GL_BLEND);
+    const Layer* base = nullptr;
     for (const Layer& layer : layers_) {
-        if (!layer.visible) continue;
+        if (!layer.clip) base = &layer;
+        const bool clipped = layer.clip && base != nullptr;
+        if (!layer.visible || (clipped && !base->visible)) continue;
         switch (layer.blend) {
             case BlendMode::kNormal: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
             case BlendMode::kMultiply: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break;
@@ -566,9 +757,22 @@ void Renderer::drawCanvas(const float* matrix) {
             case BlendMode::kAdd: glBlendFunc(GL_ONE, GL_ONE); break;
         }
         glUniform1f(canvasOpacity_, layer.opacity);
+        glUniform1f(canvasUseClip_, clipped ? 1.0f : 0.0f);
+        if (clipped) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, base->texture);
+            glActiveTexture(GL_TEXTURE0);
+        }
         glBindTexture(GL_TEXTURE_2D, layer.texture);
-        drawQuad(matrix);
+        if (layer.id == previewLayer_) {
+            float moved[16];
+            multiply(matrix, previewTransform_, moved);
+            drawQuad(moved);
+        } else {
+            drawQuad(matrix);
+        }
     }
+    glUniform1f(canvasUseClip_, 0.0f);
     glDisable(GL_BLEND);
     glBindVertexArray(0);
 }
@@ -648,14 +852,7 @@ void Renderer::commitStroke() {
                      strokeDirty_.height(), GL_RGBA, GL_UNSIGNED_BYTE, entry.pixels.data());
         copyRegion(layer->fbo, shadowFbo_, strokeDirty_);
 
-        historyBytes_ += entry.pixels.size();
-        undo_.push_back(std::move(entry));
-        for (const HistoryEntry& stale : redo_) historyBytes_ -= stale.pixels.size();
-        redo_.clear();
-        while (historyBytes_ > kHistoryBudgetBytes && undo_.size() > 1) {
-            historyBytes_ -= undo_.front().pixels.size();
-            undo_.erase(undo_.begin());
-        }
+        pushHistory(std::move(entry));
     }
     stroke_.reset();
 }

@@ -43,12 +43,20 @@ public:
     void createLayer(int id);
     void deleteLayer(int id);
     void setActiveLayer(int id);
-    void setLayerProperties(int id, float opacity, bool visible, BlendMode blend);
+    void setLayerProperties(int id, float opacity, bool visible, BlendMode blend, bool clip);
     void moveLayer(int id, int index);
+    // Orders the listed layers and hides the rest, which stay available for undo.
+    void setLayerOrder(const int* ids, int count);
+    void markLayerDirty(int id);
     void duplicateLayer(int id, int newId);
     void mergeLayerDown(int id, int belowId);
     void readLayerThumbnail(int id, int width, int height, void* pixels);
     void setViewOptions(int mode, int guide);
+    bool fillAt(int x, int y, const float* color);
+    // Previews a layer under a 3x3 row-major transform, or ends the preview when id is 0.
+    void setLayerTransform(int id, const float* transform);
+    void commitLayerTransform();
+    void setPerspective(const float* points, int count);
     bool takeLayerDirty(int id);
     void readLayer(int id, void* pixels);
     void writeLayer(int id, const void* pixels);
@@ -75,6 +83,7 @@ private:
         bool visible = true;
         BlendMode blend = BlendMode::kNormal;
         bool dirty = false;
+        bool clip = false;
     };
 
     struct HistoryEntry {
@@ -90,8 +99,11 @@ private:
     void drawScene(const float* matrix, int bufferWidth, int bufferHeight,
                    const std::vector<Stamp>* stamps);
     void drawGuides(const float* matrix);
+    void drawPerspective(const float* matrix);
+    void appendLine(float x1, float y1, float x2, float y2);
     void fillCanvasRect(const float* matrix, float x, float y, float width, float height);
     void clearLayerHistory(int id);
+    void pushHistory(HistoryEntry entry);
     Layer* findLayer(int id);
     bool swapHistory(std::vector<HistoryEntry>& from, std::vector<HistoryEntry>& to);
     void copyRegion(GLuint fromFbo, GLuint toFbo, const Rect& rect);
@@ -124,6 +136,11 @@ private:
     int viewHeight_ = 0;
     int viewMode_ = 0;
     int guide_ = 0;
+    int previewLayer_ = 0;
+    float previewTransform_[16] = {};
+    GLint canvasClip_ = -1;
+    GLint canvasUseClip_ = -1;
+    std::vector<float> perspective_;  // x and y of each vanishing point.
 
     std::unique_ptr<StrokeBuilder> stroke_;
     BrushParams brush_;

@@ -67,15 +67,24 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setActiveLayer(JNI
 }
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setLayerProperties(
-    JNIEnv*, jobject, jlong handle, jint id, jfloat opacity, jboolean visible, jint blend) {
+    JNIEnv*, jobject, jlong handle, jint id, jfloat opacity, jboolean visible, jint blend,
+    jboolean clip) {
     renderer(handle)->setLayerProperties(id, opacity, visible,
-                                         static_cast<cappuccino::BlendMode>(blend));
+                                         static_cast<cappuccino::BlendMode>(blend), clip);
 }
 
-JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_moveLayer(JNIEnv*, jobject,
-                                                                        jlong handle, jint id,
-                                                                        jint index) {
-    renderer(handle)->moveLayer(id, index);
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setLayerOrder(JNIEnv* env, jobject,
+                                                                            jlong handle,
+                                                                            jintArray ids) {
+    jint* values = env->GetIntArrayElements(ids, nullptr);
+    renderer(handle)->setLayerOrder(values, env->GetArrayLength(ids));
+    env->ReleaseIntArrayElements(ids, values, JNI_ABORT);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_markLayerDirty(JNIEnv*, jobject,
+                                                                             jlong handle,
+                                                                             jint id) {
+    renderer(handle)->markLayerDirty(id);
 }
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_duplicateLayer(JNIEnv*, jobject,
@@ -100,6 +109,30 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setViewOptions(JNI
                                                                              jint mode,
                                                                              jint guide) {
     renderer(handle)->setViewOptions(mode, guide);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setPerspective(JNIEnv* env, jobject,
+                                                                             jlong handle,
+                                                                             jfloatArray points) {
+    const FloatArray values(env, points);
+    renderer(handle)->setPerspective(values.get(), values.size() / 2);
+}
+
+JNIEXPORT jboolean JNICALL Java_art_cappuccino_paint_NativeEngine_fillAt(
+    JNIEnv*, jobject, jlong handle, jint x, jint y, jfloat red, jfloat green, jfloat blue) {
+    const float color[3] = {red, green, blue};
+    return renderer(handle)->fillAt(x, y, color);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setLayerTransform(
+    JNIEnv* env, jobject, jlong handle, jint id, jfloatArray transform) {
+    const FloatArray values(env, transform);
+    renderer(handle)->setLayerTransform(id, values.get());
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_commitLayerTransform(JNIEnv*, jobject,
+                                                                                   jlong handle) {
+    renderer(handle)->commitLayerTransform();
 }
 
 JNIEXPORT jboolean JNICALL Java_art_cappuccino_paint_NativeEngine_takeLayerDirty(JNIEnv*, jobject,

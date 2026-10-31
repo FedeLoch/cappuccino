@@ -22,8 +22,10 @@ object NativeEngine {
         opacity: Float,
         visible: Boolean,
         blend: Int,
+        clip: Boolean,
     )
-    external fun moveLayer(handle: Long, id: Int, index: Int)
+    external fun setLayerOrder(handle: Long, ids: IntArray)
+    external fun markLayerDirty(handle: Long, id: Int)
     external fun duplicateLayer(handle: Long, id: Int, newId: Int)
     external fun mergeLayerDown(handle: Long, id: Int, belowId: Int)
     external fun readLayerThumbnail(
@@ -34,6 +36,10 @@ object NativeEngine {
         pixels: ByteBuffer,
     )
     external fun setViewOptions(handle: Long, mode: Int, guide: Int)
+    external fun setPerspective(handle: Long, points: FloatArray)
+    external fun fillAt(handle: Long, x: Int, y: Int, red: Float, green: Float, blue: Float): Boolean
+    external fun setLayerTransform(handle: Long, id: Int, transform: FloatArray)
+    external fun commitLayerTransform(handle: Long)
     external fun takeLayerDirty(handle: Long, id: Int): Boolean
     external fun readLayer(handle: Long, id: Int, pixels: ByteBuffer)
     external fun writeLayer(handle: Long, id: Int, pixels: ByteBuffer)

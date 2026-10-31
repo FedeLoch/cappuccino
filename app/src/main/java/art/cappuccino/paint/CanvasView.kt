@@ -52,8 +52,11 @@ class CanvasView(context: Context) : SurfaceView(context) {
     var brushDiameter = 24f
     var brushOpacity = 1f
     var brushColor = 0xFF2C2C2A.toInt()
-    var eraserKind = BrushKind.ERASER_HARD
+    var eraserKind = BrushKind.ERASE_INK
     var alphaLock = false
+    var stabilizerStrength = 0f
+    var transformMode = false
+        private set
     var acceptsInput = false
 
     var onStrokeStart: () -> Unit = {}
@@ -61,6 +64,12 @@ class CanvasView(context: Context) : SurfaceView(context) {
     var onGestureStart: () -> Unit = {}
     var onColorPicked: (Int) -> Unit = {}
     var onToggleInterface: () -> Unit = {}
+    var onViewChanged: () -> Unit = {}
+    var onFillTap: (Int, Int) -> Unit = { _, _ -> }
+    var onStrokeCommitted: () -> Unit = {}
+    var onUndoGesture: () -> Unit = {}
+    var onRedoGesture: () -> Unit = {}
+    var onStrokePath: (FloatArray) -> Unit = {}
 
     private val viewMatrix = Matrix()
     private val inverseMatrix = Matrix()
@@ -85,6 +94,11 @@ class CanvasView(context: Context) : SurfaceView(context) {
 
     private var penPointerId = MotionEvent.INVALID_POINTER_ID
     private var strokeKind = BrushKind.INK
+    private var strokePath = FloatArray(1024)
+    private var strokePathSize = 0
+    private val stabilizer = LineStabilizer()
+    private val layerMatrix = Matrix()
+    private var transformLayer = 0
 
     private var maxFingers = 0
     private var gestureStart = 0L
@@ -206,6 +220,14 @@ class CanvasView(context: Context) : SurfaceView(context) {
         renderer.execute { glCallback.drainActions() }
     }
 
+    fun canvasToScreen(x: Float, y: Float): FloatArray =
+        floatArrayOf(x, y).also(viewMatrix::mapPoints)
+
+    fun screenToCanvas(x: Float, y: Float): FloatArray {
+        viewMatrix.invert(inverseMatrix)
+        return floatArrayOf(x, y).also(inverseMatrix::mapPoints)
+    }
+
     fun flip() {
         viewMatrix.postScale(-1f, 1f, width / 2f, height / 2f)
         publishView()
@@ -242,13 +264,89 @@ class CanvasView(context: Context) : SurfaceView(context) {
     private fun publishView() {
         latestView = viewValues()
         refresh()
+        onViewChanged()
     }
 
     private fun refresh() {
         renderer.renderMultiBufferedLayer(listOf<RenderOp>(RenderOp.Refresh))
     }
 
+    fun beginTransform(layer: Int) {
+        transformLayer = layer
+        layerMatrix.reset()
+        transformMode = true
+        publishTransform()
+    }
+
+    /** Ends the transform. A true [keep] applies it to the layer's pixels. */
+    fun endTransform(keep: Boolean) {
+        transformMode = false
+        act {
+            if (keep) {
+                NativeEngine.commitLayerTransform(it)
+            } else {
+                NativeEngine.setLayerTransform(it, 0, FloatArray(9))
+            }
+        }
+    }
+
+    private fun publishTransform() {
+        val values = FloatArray(9).also(layerMatrix::getValues)
+        val id = transformLayer
+        act { NativeEngine.setLayerTransform(it, id, values) }
+    }
+
+    private fun onTransformEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                previousX = event.x
+                previousY = event.y
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> captureGesture(event, skip = -1)
+            MotionEvent.ACTION_POINTER_UP -> {
+                if (event.pointerCount >= 3) {
+                    captureGesture(event, skip = event.actionIndex)
+                } else {
+                    val remaining = if (event.actionIndex == 0) 1 else 0
+                    previousX = event.getX(remaining)
+                    previousY = event.getY(remaining)
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val change = Matrix()
+                if (event.pointerCount >= 2) {
+                    val (first, second) = gesturePointers(event, skip = -1)
+                    val x = (event.getX(first) + event.getX(second)) / 2f
+                    val y = (event.getY(first) + event.getY(second)) / 2f
+                    val span = hypot(event.getX(second) - event.getX(first), event.getY(second) - event.getY(first))
+                    val angle = atan2(event.getY(second) - event.getY(first), event.getX(second) - event.getX(first))
+                    if (span < 1f || previousSpan < 1f) return true
+                    change.postTranslate(x - previousX, y - previousY)
+                    change.postScale(span / previousSpan, span / previousSpan, x, y)
+                    change.postRotate(Math.toDegrees((angle - previousAngle).toDouble()).toFloat(), x, y)
+                    previousX = x
+                    previousY = y
+                    previousSpan = span
+                    previousAngle = angle
+                } else {
+                    change.postTranslate(event.x - previousX, event.y - previousY)
+                    previousX = event.x
+                    previousY = event.y
+                }
+                val onScreen = Matrix(layerMatrix)
+                onScreen.postConcat(viewMatrix)
+                onScreen.postConcat(change)
+                viewMatrix.invert(inverseMatrix)
+                onScreen.postConcat(inverseMatrix)
+                layerMatrix.set(onScreen)
+                publishTransform()
+            }
+        }
+        return true
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (transformMode) return onTransformEvent(event)
         val index = event.actionIndex
         val startsStroke = acceptsInput &&
             event.actionMasked == MotionEvent.ACTION_DOWN && isPen(event, index)
@@ -267,12 +365,21 @@ class CanvasView(context: Context) : SurfaceView(context) {
     }
 
     private fun onPenEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_DOWN && brushKind.isFill &&
+            event.getToolType(0) != MotionEvent.TOOL_TYPE_ERASER
+        ) {
+            val spot = screenToCanvas(event.x, event.y)
+            onFillTap(spot[0].toInt(), spot[1].toInt())
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 penPointerId = event.getPointerId(0)
                 requestUnbufferedDispatch(event)
                 viewMatrix.invert(inverseMatrix)
                 val tool = event.getToolType(0)
+                strokePathSize = 0
+                stabilizer.reset(if (event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER) 0f else stabilizerStrength)
                 strokeKind = if (tool == MotionEvent.TOOL_TYPE_ERASER) eraserKind else brushKind
                 onStrokeStart()
                 predictor.record(event)
@@ -300,24 +407,37 @@ class CanvasView(context: Context) : SurfaceView(context) {
         sendStroke(event, begin = false, end = true)
         renderer.commit()
         penPointerId = MotionEvent.INVALID_POINTER_ID
+        onStrokeCommitted()
         onStrokeEnd()
+        if (!strokeKind.isEraser) onStrokePath(strokePath.copyOf(strokePathSize))
     }
 
     private fun sendStroke(event: MotionEvent, begin: Boolean, end: Boolean) {
-        val predicted = if (end) null else predictor.predict()
+        val predicted = if (end || stabilizer.isActive) null else predictor.predict()
+        val samples = readSamples(event, stabilize = true)
+        rememberPath(samples)
         val op = RenderOp.Stroke(
             begin = begin,
             end = end,
             brush = BrushState(strokeKind, brushDiameter, brushColor, brushOpacity, alphaLock),
             view = viewValues(),
-            samples = readSamples(event),
-            predicted = predicted?.let(::readSamples) ?: FloatArray(0),
+            samples = samples,
+            predicted = predicted?.let { readSamples(it, stabilize = false) } ?: FloatArray(0),
         )
         predicted?.recycle()
         renderer.renderFrontBufferedLayer(op)
     }
 
-    private fun readSamples(event: MotionEvent): FloatArray {
+    private fun rememberPath(samples: FloatArray) {
+        val needed = strokePathSize + samples.size / NativeEngine.SAMPLE_STRIDE * 2
+        if (needed > strokePath.size) strokePath = strokePath.copyOf(needed * 2)
+        for (offset in samples.indices step NativeEngine.SAMPLE_STRIDE) {
+            strokePath[strokePathSize++] = samples[offset]
+            strokePath[strokePathSize++] = samples[offset + 1]
+        }
+    }
+
+    private fun readSamples(event: MotionEvent, stabilize: Boolean): FloatArray {
         val index = event.findPointerIndex(penPointerId)
         if (index < 0) return FloatArray(0)
         val history = event.historySize
@@ -338,6 +458,7 @@ class CanvasView(context: Context) : SurfaceView(context) {
             point[0] = if (past) event.getHistoricalX(index, position) else event.getX(index)
             point[1] = if (past) event.getHistoricalY(index, position) else event.getY(index)
             inverseMatrix.mapPoints(point)
+            if (stabilize) stabilizer.next(point)
             var offset = position * NativeEngine.SAMPLE_STRIDE
             values[offset++] = point[0]
             values[offset++] = point[1]
@@ -386,8 +507,8 @@ class CanvasView(context: Context) : SurfaceView(context) {
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(pickAtPress)
                 val isTap = travel < tapTravel && event.eventTime - gestureStart < TAP_TIMEOUT_MS
-                if (isTap && maxFingers == 2) undo()
-                if (isTap && maxFingers == 3) redo()
+                if (isTap && maxFingers == 2) onUndoGesture()
+                if (isTap && maxFingers == 3) onRedoGesture()
                 if (isTap && maxFingers == 4) onToggleInterface()
             }
         }

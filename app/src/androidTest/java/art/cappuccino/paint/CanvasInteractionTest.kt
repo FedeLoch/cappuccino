@@ -12,11 +12,14 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 
 private data class Pointer(val id: Int, val x: Float, val y: Float)
 
@@ -70,6 +73,147 @@ class CanvasInteractionTest {
         assertTrue("redo did not restore ink", hasInk(width / 2f, y))
     }
 
+    private fun onStudio(action: (MainActivity) -> Unit) {
+        scenario.onActivity(action)
+        settle()
+    }
+
+    private fun layerCount(): Int {
+        var count = 0
+        scenario.onActivity { count = it.layerCount }
+        return count
+    }
+
+    @Test
+    fun undoStepsThroughStrokesAndLayerChanges() {
+        val firstY = height * 0.45f
+        val secondY = height * 0.55f
+        val x = width / 2f
+        stroke(width * 0.2f, firstY, width * 0.8f, firstY)
+        settle()
+        onStudio { it.addLayer() }
+        stroke(width * 0.2f, secondY, width * 0.8f, secondY)
+        settle()
+        assertTrue("second stroke was not drawn", hasInk(x, secondY))
+
+        onStudio { it.deleteLayer(it.activeLayer()!!) }
+        assertFalse("deleted layer is still visible", hasInk(x, secondY))
+        assertTrue("first layer should remain", hasInk(x, firstY))
+
+        tap(2)
+        settle()
+        assertEquals(2, layerCount())
+        assertTrue("undo did not restore the deleted layer", hasInk(x, secondY))
+
+        tap(2)
+        settle()
+        assertFalse("undo did not remove the stroke", hasInk(x, secondY))
+
+        tap(2)
+        settle()
+        assertEquals("undo did not remove the added layer", 1, layerCount())
+        assertTrue("first stroke should remain", hasInk(x, firstY))
+
+        tap(3)
+        settle()
+        assertEquals("redo did not add the layer back", 2, layerCount())
+        tap(3)
+        settle()
+        assertTrue("redo did not restore the stroke", hasInk(x, secondY))
+    }
+
+    @Test
+    fun undoRestoresLayersAfterMergeDown() {
+        val firstY = height * 0.45f
+        val secondY = height * 0.55f
+        val x = width / 2f
+        stroke(width * 0.2f, firstY, width * 0.8f, firstY)
+        settle()
+        onStudio { it.addLayer() }
+        stroke(width * 0.2f, secondY, width * 0.8f, secondY)
+        settle()
+
+        onStudio { it.mergeDown(it.activeLayer()!!) }
+        assertEquals(1, layerCount())
+        assertTrue("merge lost the upper stroke", hasInk(x, secondY))
+        assertTrue("merge lost the lower stroke", hasInk(x, firstY))
+
+        tap(2)
+        settle()
+        assertEquals("undo did not separate the layers", 2, layerCount())
+        assertTrue(hasInk(x, secondY))
+        tap(2)
+        settle()
+        assertFalse("the lower layer kept the merged stroke", hasInk(x, secondY))
+        assertTrue(hasInk(x, firstY))
+    }
+
+    @Test
+    fun fillPaintsAnAreaAndCanBeUndone() {
+        val x = width / 2f
+        val y = height / 2f
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.selectTool(BrushKind.FILL)
+        }
+        tapPen(x, y)
+        repeat(20) { if (!hasInk(x, y)) SystemClock.sleep(500) }
+        assertTrue("fill didn't paint the empty layer", hasInk(x, y))
+        tap(2)
+        settle()
+        assertFalse("undo didn't remove the fill", hasInk(x, y))
+    }
+
+    @Test
+    fun clippedLayerOnlyShowsOverTheLayerBelow() {
+        val lineY = height / 2f
+        val crossX = width * 0.6f
+        val offLineY = lineY + 60f
+        stroke(width * 0.2f, lineY, width * 0.8f, lineY)
+        settle()
+        onStudio {
+            it.addLayer()
+            it.setClip(it.activeLayer()!!, true)
+        }
+        stroke(crossX, lineY - 90f, crossX, lineY + 90f)
+        settle()
+        assertFalse("clipped stroke leaked past the layer below", hasInk(crossX, offLineY))
+        onStudio { it.setClip(it.activeLayer()!!, false) }
+        assertTrue("unclipped stroke should show", hasInk(crossX, offLineY))
+    }
+
+    @Test
+    fun transformMovesALayerAndCanBeUndone() {
+        val y = height * 0.45f
+        val movedY = y + 120f
+        val x = width / 2f
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        onStudio { it.startTransform() }
+        stroke(x, height * 0.3f, x, height * 0.3f + 120f)
+        settle()
+        onStudio { it.finishTransform(keep = true) }
+        assertTrue("layer didn't move", hasInk(x, movedY))
+        assertFalse("old position should be empty", hasInk(x, y))
+        tap(2)
+        settle()
+        assertTrue("undo didn't restore the position", hasInk(x, y))
+    }
+
+    @Test
+    fun backupRestoresProjects() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val store = ArtworkStore(context)
+        val project = store.createProject("Backup test")
+        val file = ByteArrayOutputStream()
+        store.backup(file)
+        store.deleteProject(project.id)
+        assertFalse(store.projects().any { it.id == project.id })
+        store.restore(ByteArrayInputStream(file.toByteArray()))
+        assertTrue("restore lost the project", store.projects().any { it.name == "Backup test" })
+        store.deleteProject(project.id)
+    }
+
     @Test
     fun pinchZoomsTheCanvas() {
         val edgeX = width * 0.5f
@@ -108,6 +252,12 @@ class CanvasInteractionTest {
             MotionEvent.ACTION_UP, down, (steps + 1) * 8L,
             listOf(Pointer(0, endX, endY)), stylus = true,
         )
+    }
+
+    private fun tapPen(x: Float, y: Float) {
+        val down = SystemClock.uptimeMillis()
+        inject(MotionEvent.ACTION_DOWN, down, 0, listOf(Pointer(0, x, y)), stylus = true)
+        inject(MotionEvent.ACTION_UP, down, 20, listOf(Pointer(0, x, y)), stylus = true)
     }
 
     private fun tap(fingers: Int) {
