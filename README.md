@@ -1,3 +1,5 @@
+<img src="docs/icon.png" alt="Cappuccino app icon" width="96">
+
 # Cappuccino
 
 A free, ad-free illustration app for Android tablets, made for artists. It stays out of your

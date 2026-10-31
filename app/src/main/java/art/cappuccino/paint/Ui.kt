@@ -30,6 +30,9 @@ const val ESPRESSO = 0xFF2A1D16.toInt()
 const val ROAST = 0xFF3A291F.toInt()
 const val FOAM = 0xFFF4E9D8.toInt()
 const val LATTE = 0xFFD8C4AC.toInt()
+const val PAGE_CREAM = 0xFFF6EFE3.toInt()
+const val OAT = 0xFFE9DDCB.toInt()
+const val COCOA = 0xFF6B4226.toInt()
 
 val SKETCHBOOK_COLORS = listOf(
     0xFFD85A30.toInt() to 0xFF993C1D.toInt(),

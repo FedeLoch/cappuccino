@@ -51,7 +51,7 @@ class GalleryActivity : Activity() {
         }
         setContentView(
             ScrollView(this).apply {
-                setBackgroundColor(ESPRESSO)
+                setBackgroundColor(PAGE_CREAM)
                 isFillViewport = true
                 addView(root)
             },
@@ -70,11 +70,13 @@ class GalleryActivity : Activity() {
 
     private fun quietChip(content: String, selected: Boolean = false, onClick: () -> Unit) =
         chip(content, selected, onClick).apply {
-            if (!selected) background = rounded(ROAST, 20)
-            setTextColor(FOAM)
+            if (!selected) {
+                background = rounded(OAT, 20)
+                setTextColor(ESPRESSO)
+            }
         }
 
-    private fun wordmark(content: String, size: Float) = label(content, size, FOAM).apply {
+    private fun wordmark(content: String, size: Float) = label(content, size, ESPRESSO).apply {
         typeface = Typeface.create(Typeface.SERIF, Typeface.NORMAL)
     }
 
@@ -119,7 +121,7 @@ class GalleryActivity : Activity() {
         val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
         val books = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            addView(label(tr("Your sketchbooks"), 14f, LATTE))
+            addView(label(tr("Your sketchbooks"), 14f, COCOA))
             addView(row(shelf), spaced())
         }
         if (portrait) {
@@ -145,7 +147,7 @@ class GalleryActivity : Activity() {
             )
         }
         if (artworks.size > 1) {
-            root.addView(label(tr("Recent"), 14f, LATTE), spaced())
+            root.addView(label(tr("Recent"), 14f, COCOA), spaced())
             val cell = dp(220)
             val layout = grid(cell)
             artworks.drop(1).forEach { layout.addView(card(it, cell)) }
@@ -155,7 +157,7 @@ class GalleryActivity : Activity() {
 
     private fun continueCard(art: ArtworkInfo) = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = rounded(FOAM, 14)
+        background = rounded(Color.WHITE, 14).apply { setStroke(dp(1), OAT) }
         setPadding(dp(10), dp(10), dp(10), dp(10))
         addView(
             ImageView(context).apply {
@@ -184,6 +186,7 @@ class GalleryActivity : Activity() {
         addView(
             CompanionView(context).apply {
                 look = CompanionLook.valueOf(preferences.getString("mascot", null) ?: CompanionLook.COFFEE_DROP.name)
+                outline = COCOA
                 contentDescription = tr("Your companion")
             },
             LinearLayout.LayoutParams(dp(36), dp(36)),
@@ -195,21 +198,22 @@ class GalleryActivity : Activity() {
             else -> tr("Good evening.")
         }
         addView(
-            label(tr("%1 Ready for another layer?", greeting), 14f, LATTE),
+            label(tr("%1 Ready for another layer?", greeting), 14f, COCOA),
             LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
         )
     }
 
     private fun sketchbook(name: String, count: Int, color: Int?, onClick: () -> Unit) = FrameLayout(this).apply {
-        val (cover, spine) = color?.let { SKETCHBOOK_COLORS[it % SKETCHBOOK_COLORS.size] } ?: (ROAST to SURFACE_RAISED)
+        val (cover, spine) = color?.let { SKETCHBOOK_COLORS[it % SKETCHBOOK_COLORS.size] } ?: (OAT to COCOA)
         background = rounded(cover, 12)
         addView(View(context).apply { background = rounded(spine, 6) }, FrameLayout.LayoutParams(dp(10), -1))
         addView(
             LinearLayout(context).apply {
                 orientation = LinearLayout.VERTICAL
                 setPadding(dp(22), dp(14), dp(14), dp(14))
-                addView(label(name, 16f, Color.WHITE))
-                addView(label(if (count == 1) tr("1 artwork") else tr("%1 artworks", count), 12f, Color.WHITE))
+                val text = if (color == null) ESPRESSO else Color.WHITE
+                addView(label(name, 16f, text))
+                addView(label(if (count == 1) tr("1 artwork") else tr("%1 artworks", count), 12f, text))
             },
         )
         layoutParams = LinearLayout.LayoutParams(dp(170), dp(104))
@@ -219,13 +223,13 @@ class GalleryActivity : Activity() {
         setOnClickListener { onClick() }
     }
 
-    private fun newSketchbook() = label(tr("New sketchbook"), 14f, LATTE).apply {
+    private fun newSketchbook() = label(tr("New sketchbook"), 14f, COCOA).apply {
         gravity = Gravity.CENTER
         minWidth = dp(170)
         minHeight = dp(104)
         background = GradientDrawable().apply {
             cornerRadius = dp(12).toFloat()
-            setStroke(dp(2), LATTE, dp(8).toFloat(), dp(6).toFloat())
+            setStroke(dp(2), COCOA, dp(8).toFloat(), dp(6).toFloat())
         }
         setOnClickListener {
             ask(tr("New sketchbook"), "") {
@@ -377,7 +381,7 @@ class GalleryActivity : Activity() {
     private fun renderArtworks() {
         val artworks = store.artworks().filter { selected == ALL || it.projectId == selected }
         if (artworks.isEmpty()) {
-            root.addView(label(tr("Start your first artwork here."), 16f, LATTE), spaced())
+            root.addView(label(tr("Start your first artwork here."), 16f, COCOA), spaced())
             return
         }
         val cell = dp(240)
@@ -402,8 +406,8 @@ class GalleryActivity : Activity() {
             },
             LinearLayout.LayoutParams(-1, width * 2 / 3),
         )
-        addView(label(art.name, 14f, FOAM), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
-        addView(label(DateUtils.getRelativeTimeSpanString(art.updated).toString(), 12f, LATTE))
+        addView(label(art.name, 14f, ESPRESSO), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        addView(label(DateUtils.getRelativeTimeSpanString(art.updated).toString(), 12f, COCOA))
         setOnClickListener { openStudio(art.id) }
         setOnLongClickListener {
             artworkOptions(art)
@@ -494,7 +498,7 @@ class GalleryActivity : Activity() {
         )
         val files = store.references(selected)
         if (files.isEmpty()) {
-            root.addView(label(tr("Collect the images that inspire this sketchbook."), 15f, LATTE), spaced())
+            root.addView(label(tr("Collect the images that inspire this sketchbook."), 15f, COCOA), spaced())
             return
         }
         val cell = dp(180)
@@ -505,7 +509,7 @@ class GalleryActivity : Activity() {
 
     private fun referenceCell(file: File, size: Int) = ImageView(this).apply {
         scaleType = ImageView.ScaleType.CENTER_CROP
-        background = rounded(ROAST, 10)
+        background = rounded(OAT, 10)
         clipToOutline = true
         contentDescription = tr("Reference")
         layoutParams = GridLayout.LayoutParams().apply {

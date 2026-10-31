@@ -32,6 +32,9 @@ class CompanionView(context: Context) : View(context) {
     var bodyColor = ACCENT
         set(value) { field = value; invalidate() }
 
+    var outline = CREAM
+        set(value) { field = value; invalidate() }
+
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -129,6 +132,8 @@ class CompanionView(context: Context) : View(context) {
                 canvas.clipPath(drop)
                 canvas.drawPath(foamCap, fill)
                 canvas.restore()
+                line.color = outline
+                canvas.drawPath(drop, line)
                 drawFace(canvas, 14f, CREAM)
             }
         }
@@ -137,7 +142,7 @@ class CompanionView(context: Context) : View(context) {
     private fun drawBody(canvas: Canvas, shape: Path, color: Int) {
         fill.color = color
         canvas.drawPath(shape, fill)
-        line.color = CREAM
+        line.color = outline
         canvas.drawPath(shape, line)
     }
 
