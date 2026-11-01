@@ -24,7 +24,6 @@ import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.SeekBar
 import android.widget.TextView
-import android.widget.Toast
 import kotlin.math.roundToInt
 
 private const val MIN_WIDTH_DP = 180
@@ -236,7 +235,7 @@ class ReferenceWindow(
         window.isTouchable = false
         applyBounds()
         host.onReferenceChanged()
-        Toast.makeText(activity, tr("Pinned. You can draw over it. Tap it in References to close it."), Toast.LENGTH_LONG).show()
+        activity.say(tr("Pinned. You can draw over it. Tap it in References to close it."), long = true)
     }
 
     private inner class ReferenceImage : View(activity) {

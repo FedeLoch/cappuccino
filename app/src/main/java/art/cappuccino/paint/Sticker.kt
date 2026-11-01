@@ -93,3 +93,18 @@ fun stickerShape(alpha: ByteArray, width: Int, height: Int, radius: Float): Byte
     for (index in shape.indices) if (shape[index].toInt() == 0 && !outside[index]) shape[index] = -1
     return shape
 }
+
+/** Shrinks a drawing's alpha, keeping thin marks, so the preview can follow a slider. */
+fun shrinkAlpha(alpha: ByteArray, width: Int, height: Int, step: Int): ByteArray {
+    val outWidth = width / step
+    val outHeight = height / step
+    val result = ByteArray(outWidth * outHeight)
+    for (y in 0 until outHeight * step) {
+        for (x in 0 until outWidth * step) {
+            val target = y / step * outWidth + x / step
+            val value = alpha[y * width + x]
+            if (value.toInt() and 0xFF > result[target].toInt() and 0xFF) result[target] = value
+        }
+    }
+    return result
+}

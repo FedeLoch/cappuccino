@@ -404,6 +404,8 @@ val SPANISH = mapOf(
     "This palette uses one hue family, which feels unified. Vary lightness to add depth." to "Esta paleta usa una familia de tonos y se siente unificada. Varía la luminosidad para dar profundidad.",
     "Time-lapse" to "Time-lapse",
     "Tools" to "Herramientas",
+    "Image" to "Imagen",
+    "Import" to "Importar",
     "Print" to "Impresión",
     "A close guide to CMYK print. Real results depend on the printer and paper." to "Una guía cercana a la impresión CMYK. El resultado real depende de la impresora y el papel.",
     "Cyan" to "Cian",

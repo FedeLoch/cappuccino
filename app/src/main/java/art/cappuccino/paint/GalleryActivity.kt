@@ -18,7 +18,6 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Toast
 import java.io.File
 import java.util.Calendar
 import java.util.concurrent.Executors
@@ -343,7 +342,7 @@ class GalleryActivity : Activity() {
 
     private fun importPsd(uri: android.net.Uri) {
         val project = if (selected == ALL) "" else selected
-        Toast.makeText(this, tr("Importing PSD"), Toast.LENGTH_SHORT).show()
+        say(tr("Importing PSD"))
         background.execute {
             val failure = runCatching {
                 val image = PsdReader.read(contentResolver.openInputStream(uri)!!.use { it.readBytes() })
@@ -352,7 +351,7 @@ class GalleryActivity : Activity() {
             }.exceptionOrNull()
             runOnUiThread {
                 if (failure != null) {
-                    Toast.makeText(this, tr("Couldn't import this PSD. Use an 8-bit RGB file."), Toast.LENGTH_LONG).show()
+                    say(tr("Couldn't import this PSD. Use an 8-bit RGB file."), long = true)
                 }
                 render()
             }
@@ -748,7 +747,7 @@ class GalleryActivity : Activity() {
     }
 
     private fun runBackup(uri: android.net.Uri, restoring: Boolean) {
-        Toast.makeText(this, if (restoring) tr("Restoring your work") else tr("Saving your backup"), Toast.LENGTH_SHORT).show()
+        say(if (restoring) tr("Restoring your work") else tr("Saving your backup"))
         background.execute {
             val done = runCatching {
                 if (restoring) {
@@ -764,7 +763,7 @@ class GalleryActivity : Activity() {
                     restoring -> tr("Couldn't restore this backup")
                     else -> tr("Couldn't save your backup")
                 }
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                say(message, long = true)
                 render()
             }
         }

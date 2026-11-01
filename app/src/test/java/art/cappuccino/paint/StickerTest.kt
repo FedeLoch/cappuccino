@@ -38,4 +38,11 @@ class StickerTest {
         assertEquals(-1, shape!![30 * size + 30].toInt())
         assertTrue(!filled(shape, 2, 2))
     }
+
+    @Test
+    fun shrinkingKeepsAThinMark() {
+        val small = shrinkAlpha(drawing { x, y -> x == 30 && y == 30 }, size, size, 4)
+        assertEquals(15 * 15, small.size)
+        assertEquals(-1, small[7 * 15 + 7].toInt())
+    }
 }

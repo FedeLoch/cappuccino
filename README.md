@@ -119,7 +119,8 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Layers with nine blend modes, multi-select, editable text, opacity, layer masks, clipping masks, transparency lock, and groups
 - Liquify: push, grow, shrink, and restore parts of a layer
 - Filters: blur, motion blur, sharpen, noise, gradient map, levels, and depth fade
-- Make a sticker from your drawing: a die-cut border layer with a soft shadow, or a transparent PNG
+- Import images as new layers, then move, scale, and rotate them into place
+- Make a sticker from your drawing: a new top layer with a die-cut border and soft shadow, or a transparent PNG
 - Lasso and magic wand selections, transform, and hue, saturation, and tone adjustments
 - One undo history for strokes and layer changes
 - Canvases up to 8192 pixels on a side

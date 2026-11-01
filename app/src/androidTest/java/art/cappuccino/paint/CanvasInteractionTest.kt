@@ -255,6 +255,67 @@ class CanvasInteractionTest {
     }
 
     @Test
+    fun anImportedImageBecomesANewLayerThatCanBeUndone() {
+        var before = 0
+        onStudio {
+            before = it.layerCount
+            val image = android.graphics.Bitmap.createBitmap(1200, 1200, android.graphics.Bitmap.Config.ARGB_8888)
+            image.eraseColor(Color.BLACK)
+            it.addImage(image, "Photo")
+        }
+        settle()
+        onStudio { it.finishTransform(true) }
+        settle()
+        var name: String? = null
+        var after = 0
+        onStudio {
+            name = it.activeLayer()?.name
+            after = it.layerCount
+        }
+        assertEquals("Photo", name)
+        assertEquals(before + 1, after)
+        repeat(20) { if (!hasInk(width / 2f, height / 2f)) SystemClock.sleep(300) }
+        assertTrue("the image should show on the canvas", hasInk(width / 2f, height / 2f))
+    }
+
+    @Test
+    fun aStickerIsANewTopLayerHoldingTheDrawing() {
+        val y = height / 2f
+        stroke(width * 0.3f, y, width * 0.7f, y)
+        settle()
+        var before = 0
+        onStudio {
+            before = it.layerCount
+            it.openStickerPanel()
+        }
+        var ready = false
+        repeat(40) {
+            onStudio { ready = it.stickerReady }
+            if (!ready) SystemClock.sleep(200)
+        }
+        assertTrue("the sticker panel should read the drawing", ready)
+        onStudio { it.makeSticker(export = false) }
+        var made = false
+        repeat(60) {
+            onStudio { made = it.activeLayer()?.sticker == true }
+            if (!made) SystemClock.sleep(250)
+        }
+        assertTrue("the sticker should be the active layer", made)
+        var count = 0
+        var topIsSticker = false
+        onStudio {
+            count = it.layerCount
+            topIsSticker = it.topLayer()?.sticker == true
+        }
+        assertEquals(before + 1, count)
+        assertTrue("the sticker should sit on top", topIsSticker)
+        onStudio { it.deleteLayerBelowForTest() }
+        settle()
+        repeat(20) { if (!hasInk(width / 2f, y)) SystemClock.sleep(300) }
+        assertTrue("the sticker layer should hold the drawing itself", hasInk(width / 2f, y))
+    }
+
+    @Test
     fun clippedLayerOnlyShowsOverTheLayerBelow() {
         val lineY = height / 2f
         val crossX = width * 0.6f

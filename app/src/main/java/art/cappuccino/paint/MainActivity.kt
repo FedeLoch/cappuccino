@@ -36,7 +36,6 @@ import android.widget.PopupMenu
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.widget.Toast
 import java.io.File
 import java.nio.ByteOrder
 import java.util.UUID
@@ -66,11 +65,13 @@ private const val LAYER_GAP = 4
 private const val RETIRED_LAYERS = 6
 private val LEFT_PANELS = setOf("actions", "references", "view", "tools", "sticker")
 private const val PICK_TIP = 45
+private const val PICK_LAYER_IMAGE = 46
 private const val PICK_FLASH_MS = 700L
 private const val QUICK_COLORS = 4
 private const val PRINT_VIEW = 4
 private const val STICKER_SIDE = 1024
 private const val STICKER_PREVIEW = 300
+private const val STICKER_PREVIEW_STEP = 4
 private const val MAX_BORDER = 0.05f
 private const val SHADOW_ALPHA = 90
 private const val NEW_SITTING_MS = 6L * 60 * 60 * 1000
@@ -119,6 +120,9 @@ class MainActivity : Activity(), ReferenceHost {
     private var inks: FloatArray? = null
     private var stickerArt: Bitmap? = null
     private var stickerAlpha: ByteArray? = null
+    @Volatile private var stickerSmallAlpha: ByteArray? = null
+    @Volatile private var stickerRequest = 0
+    private val stickerWorker = Executors.newSingleThreadExecutor()
     private var stickerWidth = 0
     private var stickerHeight = 0
     private var stickerBorder = 0.35f
@@ -212,7 +216,7 @@ class MainActivity : Activity(), ReferenceHost {
         PendingSaves.await()
         val loaded = artworkId?.let(store::load)
         if (artworkId != null && loaded == null) {
-            Toast.makeText(this, tr("Couldn't open this artwork"), Toast.LENGTH_LONG).show()
+            say(tr("Couldn't open this artwork"), long = true)
             finish()
             return
         }
@@ -402,7 +406,7 @@ class MainActivity : Activity(), ReferenceHost {
                 }
             }
             markUnsaved()
-            Toast.makeText(this, tr("Recovered %1 strokes from your last session", strokes.size), Toast.LENGTH_LONG).show()
+            say(tr("Recovered %1 strokes from your last session", strokes.size), long = true)
         }
     }
 
@@ -499,7 +503,7 @@ class MainActivity : Activity(), ReferenceHost {
                     canvas.snapshot { engine -> pixels.keys.forEach { NativeEngine.markLayerDirty(engine, it) } }
                     runOnUiThread {
                         unsaved = true
-                        Toast.makeText(this, tr("Couldn't save your artwork"), Toast.LENGTH_LONG).show()
+                        say(tr("Couldn't save your artwork"), long = true)
                     }
                 }
                 PendingSaves.finished()
@@ -1639,6 +1643,14 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     internal val pickRingShowing get() = pickRing != null
+    internal val stickerReady get() = stickerAlpha != null
+    internal fun topLayer() = document.layers.lastOrNull()
+    internal fun deleteLayerBelowForTest() {
+        document.layers.firstOrNull { !it.sticker }?.let {
+            editLayers(structural = false) { it.visible = false }
+        }
+    }
+    internal val companionLook get() = companion.look
 
     private fun hidePickRing() {
         handler.removeCallbacks(endPickFlash)
@@ -1703,7 +1715,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.selectionTool = tool
         markTools()
         closePanel()
-        Toast.makeText(this, hint, Toast.LENGTH_SHORT).show()
+        say(hint)
     }
 
     private fun markSelection(active: Boolean) {
@@ -1766,7 +1778,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     internal fun selectionToLayer(cut: Boolean, transform: Boolean) {
         if (layerSlots >= maxLayers) {
-            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            say(tr("This canvas can hold %1 layers", maxLayers), long = true)
             return
         }
         setEditingMask(false)
@@ -1967,13 +1979,13 @@ class MainActivity : Activity(), ReferenceHost {
     private fun exportTimelapse(seconds: Int?) {
         val frames = store.timelapseFrames(document.id)
         if (frames.size < 2) {
-            Toast.makeText(this, tr("Draw a little more to build a time-lapse"), Toast.LENGTH_SHORT).show()
+            say(tr("Draw a little more to build a time-lapse"))
             return
         }
         val name = document.name
         val width = ArtworkStore.THUMBNAIL_WIDTH * 2
         val height = document.thumbnailHeight * 2
-        Toast.makeText(this, tr("Exporting time-lapse"), Toast.LENGTH_SHORT).show()
+        say(tr("Exporting time-lapse"))
         saver.execute {
             val saved = runCatching {
                 val target = store.exportTimelapseTarget(name)!!
@@ -1983,7 +1995,7 @@ class MainActivity : Activity(), ReferenceHost {
             }.isSuccess
             runOnUiThread {
                 val message = if (saved) tr("Saved to Movies/Cappuccino") else tr("Couldn't export this time-lapse")
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                say(message, long = true)
             }
         }
     }
@@ -2062,7 +2074,7 @@ class MainActivity : Activity(), ReferenceHost {
         liquifyControls = PopupWindow(holder, -2, -2).apply {
             showAtLocation(canvas, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, dp(24))
         }
-        Toast.makeText(this, tr("Push the image with your pen. Your size slider sets the brush."), Toast.LENGTH_LONG).show()
+        say(tr("Push the image with your pen. Your size slider sets the brush."), long = true)
     }
 
     private fun showLiquifyRing(x: Float, y: Float, radius: Float) {
@@ -2098,7 +2110,7 @@ class MainActivity : Activity(), ReferenceHost {
         transformControls = PopupWindow(controls, -2, -2).apply {
             showAtLocation(canvas, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, dp(24))
         }
-        Toast.makeText(this, tr("Drag to move. Pinch to scale and rotate."), Toast.LENGTH_SHORT).show()
+        say(tr("Drag to move. Pinch to scale and rotate."))
     }
 
     private fun eraserPanel() = column().apply {
@@ -2256,14 +2268,14 @@ class MainActivity : Activity(), ReferenceHost {
                             chip(tr("From reference")) {
                         val reference = references.values.lastOrNull()
                         if (reference == null) {
-                            Toast.makeText(context, tr("Open a reference first"), Toast.LENGTH_SHORT).show()
+                            say(tr("Open a reference first"))
                         } else {
                             onReferencePalette(reference)
                         }
                     },
                             smallChip(tr("Save recent")) {
                                 if (recentColors.size < 2) {
-                                    Toast.makeText(context, tr("Use at least two colors first"), Toast.LENGTH_SHORT).show()
+                                    say(tr("Use at least two colors first"))
                                 } else {
                                     store.addPalette(tr("Recent colors"), recentColors.toList())
                                     rerender("color", ::colorPanel)
@@ -2295,7 +2307,7 @@ class MainActivity : Activity(), ReferenceHost {
         runOnUiThread {
             if (isDestroyed) return@runOnUiThread
             if (colors.isEmpty()) {
-                Toast.makeText(this, tr("There aren't any colors to collect yet"), Toast.LENGTH_SHORT).show()
+                say(tr("There aren't any colors to collect yet"))
                 return@runOnUiThread
             }
             store.addPalette(name, colors)
@@ -2546,7 +2558,7 @@ class MainActivity : Activity(), ReferenceHost {
     internal fun addMask() {
         val layer = activeLayer() ?: return
         if (layerSlots >= maxLayers) {
-            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            say(tr("This canvas can hold %1 layers", maxLayers), long = true)
             return
         }
         val id = document.nextLayerId++
@@ -2562,7 +2574,7 @@ class MainActivity : Activity(), ReferenceHost {
             layer.maskEnabled = true
         }
         setEditingMask(true)
-        Toast.makeText(this, tr("Paint to hide. Erase to bring it back."), Toast.LENGTH_SHORT).show()
+        say(tr("Paint to hide. Erase to bring it back."))
     }
 
     internal fun applyMask(layer: LayerInfo) {
@@ -2616,7 +2628,7 @@ class MainActivity : Activity(), ReferenceHost {
         history.clear()
         engineLayers.removeAll(retired)
         canvas.act { engine -> retired.forEach { NativeEngine.deleteLayer(engine, it) } }
-        Toast.makeText(this, tr("Older undo steps were cleared to free memory"), Toast.LENGTH_LONG).show()
+        say(tr("Older undo steps were cleared to free memory"), long = true)
     }
 
     private fun restoreLayers(state: LayerState) {
@@ -2787,6 +2799,12 @@ class MainActivity : Activity(), ReferenceHost {
                         setClip(active, !active.clip)
                         refreshLayers()
                     },
+                    iconTile(R.drawable.ic_references, tr("Import")) {
+                        startActivityForResult(
+                            Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("image/*"),
+                            PICK_LAYER_IMAGE,
+                        )
+                    },
                     iconTile(R.drawable.ic_group, if (active.groupId != 0) tr("Ungroup") else tr("Group")) { toggleGroup(active) },
                     iconTile(R.drawable.ic_duplicate, tr("Duplicate")) { duplicateLayer(active) },
                     iconTile(R.drawable.ic_merge, tr("Merge")) { mergeDown(active) },
@@ -2845,7 +2863,7 @@ class MainActivity : Activity(), ReferenceHost {
         actions += smallChip(tr("Merge")) {
             val places = picked.map(document.layers::indexOf).sorted()
             if (places.last() - places.first() != places.size - 1) {
-                Toast.makeText(this, tr("Pick layers next to each other"), Toast.LENGTH_SHORT).show()
+                say(tr("Pick layers next to each other"))
             } else {
                 picked.drop(1).reversed().forEach(::mergeDown)
                 finish()
@@ -2853,7 +2871,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
         actions += smallChip(tr("Delete")) {
             if (picked.size >= document.layers.size) {
-                Toast.makeText(this, tr("An artwork needs at least one layer"), Toast.LENGTH_SHORT).show()
+                say(tr("An artwork needs at least one layer"))
             } else {
                 setEditingMask(false)
                 editLayers {
@@ -3033,7 +3051,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     internal fun addLayer() {
         if (layerSlots >= maxLayers) {
-            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            say(tr("This canvas can hold %1 layers", maxLayers), long = true)
             return
         }
         val id = document.nextLayerId++
@@ -3049,7 +3067,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun duplicateLayer(layer: LayerInfo) {
         if (layerSlots >= maxLayers) {
-            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            say(tr("This canvas can hold %1 layers", maxLayers), long = true)
             return
         }
         setEditingMask(false)
@@ -3073,7 +3091,7 @@ class MainActivity : Activity(), ReferenceHost {
     internal fun mergeDown(layer: LayerInfo) {
         val index = document.layers.indexOf(layer)
         if (index == 0) {
-            Toast.makeText(this, tr("There isn't a layer below this one"), Toast.LENGTH_SHORT).show()
+            say(tr("There isn't a layer below this one"))
             return
         }
         val below = document.layers[index - 1]
@@ -3100,7 +3118,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     internal fun deleteLayer(layer: LayerInfo) {
         if (document.layers.size == 1) {
-            Toast.makeText(this, tr("An artwork needs at least one layer"), Toast.LENGTH_SHORT).show()
+            say(tr("An artwork needs at least one layer"))
             return
         }
         editingMask = false
@@ -3324,10 +3342,67 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
+    private fun importLayerImage(uri: android.net.Uri) {
+        val name = contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+            if (it.moveToFirst()) it.getString(0)?.substringBeforeLast('.') else null
+        }?.take(24) ?: tr("Image")
+        val width = document.width
+        val height = document.height
+        saver.execute {
+            val image = runCatching {
+                android.graphics.ImageDecoder.decodeBitmap(android.graphics.ImageDecoder.createSource(contentResolver, uri)) { decoder, info, _ ->
+                    decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+                    val shrink = min(1f, min(width / info.size.width.toFloat(), height / info.size.height.toFloat()))
+                    decoder.setTargetSize(max(1, (info.size.width * shrink).toInt()), max(1, (info.size.height * shrink).toInt()))
+                }
+            }.getOrNull()
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (image == null) {
+                    say(tr("Couldn't read this image"))
+                } else {
+                    addImage(image, name)
+                }
+            }
+        }
+    }
+
+    /** Places an image in the middle of a new layer and starts a transform so it can be moved. */
+    internal fun addImage(image: Bitmap, name: String) {
+        if (layerSlots >= maxLayers) {
+            say(tr("This canvas can hold %1 layers", maxLayers), long = true)
+            return
+        }
+        setEditingMask(false)
+        val page = Bitmap.createBitmap(document.width, document.height, Bitmap.Config.ARGB_8888)
+        android.graphics.Canvas(page).drawBitmap(
+            image, (document.width - image.width) / 2f, (document.height - image.height) / 2f,
+            android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG),
+        )
+        val pixels = ArtworkStore.pixelBuffer(document.width, document.height)
+        page.copyPixelsToBuffer(pixels)
+        page.recycle()
+        image.recycle()
+        pixels.rewind()
+        val id = document.nextLayerId++
+        engineLayers.add(id)
+        canvas.act { engine ->
+            NativeEngine.createLayer(engine, id)
+            NativeEngine.writeLayer(engine, id, pixels)
+            NativeEngine.markLayerDirty(engine, id)
+        }
+        editLayers {
+            val index = document.layers.indexOfFirst { it.id == document.activeLayer } + 1
+            document.layers.add(index, LayerInfo(id, name))
+            document.activeLayer = id
+        }
+        startTransform()
+    }
+
     /** Draws text on a new layer and starts a transform so it can be placed. */
     internal fun addText(text: String, heightShare: Float) {
         if (layerSlots >= maxLayers) {
-            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            say(tr("This canvas can hold %1 layers", maxLayers), long = true)
             return
         }
         setEditingMask(false)
@@ -3354,7 +3429,7 @@ class MainActivity : Activity(), ReferenceHost {
     private fun stickerLayers() = document.layers.filter { it.visible && !it.sticker && document.groups.none { group -> group.id == it.groupId && !group.visible } }
 
     /** Reads a small copy of the drawing once, so the border slider can answer right away. */
-    private fun openStickerPanel() {
+    internal fun openStickerPanel() {
         val longest = max(document.width, document.height)
         val width = max(1, document.width * STICKER_SIDE / longest)
         val height = max(1, document.height * STICKER_SIDE / longest)
@@ -3381,6 +3456,7 @@ class MainActivity : Activity(), ReferenceHost {
                 if (isDestroyed) return@runOnUiThread
                 stickerArt = art
                 stickerAlpha = alpha
+                stickerSmallAlpha = null
                 stickerWidth = width
                 stickerHeight = height
                 closePanel()
@@ -3392,10 +3468,17 @@ class MainActivity : Activity(), ReferenceHost {
     private fun stickerRadius() = (stickerBorder * MAX_BORDER * STICKER_SIDE).coerceAtLeast(1f)
 
     /** The border, with its shadow behind it, ready to draw at any size. */
-    private fun paintSticker(target: android.graphics.Canvas, shape: ByteArray, outputWidth: Int, outputHeight: Int) {
+    private fun paintSticker(
+        target: android.graphics.Canvas,
+        shape: ByteArray,
+        shapeWidth: Int,
+        shapeHeight: Int,
+        outputWidth: Int,
+        outputHeight: Int,
+    ) {
         val pixels = IntArray(shape.size) { ((shape[it].toInt() and 0xFF) shl 24) or 0xFFFFFF }
-        val small = Bitmap.createBitmap(pixels, stickerWidth, stickerHeight, Bitmap.Config.ARGB_8888)
-        val scale = outputWidth / stickerWidth.toFloat()
+        val small = Bitmap.createBitmap(pixels, shapeWidth, shapeHeight, Bitmap.Config.ARGB_8888)
+        val scale = outputWidth / shapeWidth.toFloat()
         val box = android.graphics.RectF(0f, 0f, outputWidth.toFloat(), outputHeight.toFloat())
         if (stickerShadow) {
             val blur = 6f * scale
@@ -3435,16 +3518,22 @@ class MainActivity : Activity(), ReferenceHost {
         val alpha = stickerAlpha ?: return
         val art = stickerArt ?: return
         val image = stickerImage ?: return
-        val radius = stickerRadius()
-        saver.execute {
-            val shape = stickerShape(alpha, stickerWidth, stickerHeight, radius) ?: return@execute
+        val radius = stickerRadius() / STICKER_PREVIEW_STEP
+        val shapeWidth = stickerWidth / STICKER_PREVIEW_STEP
+        val shapeHeight = stickerHeight / STICKER_PREVIEW_STEP
+        val request = ++stickerRequest
+        stickerWorker.execute {
+            // A slider sends many values, and only the newest one is worth drawing.
+            if (request != stickerRequest) return@execute
+            val small = stickerSmallAlpha ?: shrinkAlpha(alpha, stickerWidth, stickerHeight, STICKER_PREVIEW_STEP).also { stickerSmallAlpha = it }
+            val shape = stickerShape(small, shapeWidth, shapeHeight, radius) ?: return@execute
             val height = STICKER_PREVIEW * stickerHeight / stickerWidth
             val preview = Bitmap.createBitmap(STICKER_PREVIEW, height, Bitmap.Config.ARGB_8888)
             val painter = android.graphics.Canvas(preview)
             painter.drawColor(ROAST)
-            paintSticker(painter, shape, STICKER_PREVIEW, height)
+            paintSticker(painter, shape, shapeWidth, shapeHeight, STICKER_PREVIEW, height)
             painter.drawBitmap(art, null, android.graphics.RectF(0f, 0f, STICKER_PREVIEW.toFloat(), height.toFloat()), android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
-            runOnUiThread { image.setImageBitmap(preview) }
+            runOnUiThread { if (request == stickerRequest) image.setImageBitmap(preview) }
         }
     }
 
@@ -3500,78 +3589,61 @@ class MainActivity : Activity(), ReferenceHost {
         refreshStickerPreview()
     }
 
-    /** Adds the border as a layer under the drawing, replacing an older one. */
+    /** Puts the drawing and its border together on one new top layer, replacing an older sticker. */
     internal fun makeSticker(export: Boolean) {
         val alpha = stickerAlpha ?: return
         val old = document.layers.filter { it.sticker }
         if (old.isEmpty() && layerSlots >= maxLayers) {
-            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            say(tr("This canvas can hold %1 layers", maxLayers), long = true)
             return
         }
         val width = document.width
         val height = document.height
         val name = tr("%1 sticker", document.name)
         val radius = stickerRadius()
+        val layers = stickerLayers().map { it.id to it.opacity }
         closePanel()
-        Toast.makeText(this, tr("Making your sticker"), Toast.LENGTH_SHORT).show()
+        say(tr("Making your sticker"))
         saver.execute {
             val shape = stickerShape(alpha, stickerWidth, stickerHeight, radius) ?: return@execute
             val page = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            paintSticker(android.graphics.Canvas(page), shape, width, height)
-            val pixels = ArtworkStore.pixelBuffer(width, height)
-            page.copyPixelsToBuffer(pixels)
-            page.recycle()
-            pixels.rewind()
-            runOnUiThread {
-                if (isDestroyed) return@runOnUiThread
-                setEditingMask(false)
-                val id = document.nextLayerId++
-                engineLayers.add(id)
-                canvas.act { engine ->
-                    NativeEngine.createLayer(engine, id)
-                    NativeEngine.writeLayer(engine, id, pixels)
-                    NativeEngine.markLayerDirty(engine, id)
-                }
-                editLayers {
-                    document.layers.removeAll(old.toSet())
-                    document.layers.add(0, LayerInfo(id, tr("Sticker"), sticker = true))
-                    if (document.activeLayer in old.map { it.id }) document.activeLayer = document.layers.last().id
-                }
-                if (export) exportSticker(shape, name)
-            }
-        }
-    }
-
-    private fun exportSticker(shape: ByteArray, name: String) {
-        val width = document.width
-        val height = document.height
-        val small = IntArray(shape.size) { (min(255, max(0, (shape[it].toInt() and 0xFF) * 5 - 510)) shl 24) or 0xFFFFFF }
-        val cutWidth = stickerWidth
-        val cutHeight = stickerHeight
-        canvas.snapshot { engine ->
-            val pixels = ArtworkStore.pixelBuffer(width, height)
-            NativeEngine.readComposite(engine, width, height, pixels)
-            saver.execute {
-                val saved = runCatching {
+            val painter = android.graphics.Canvas(page)
+            paintSticker(painter, shape, stickerWidth, stickerHeight, width, height)
+            canvas.snapshot { engine ->
+                layers.forEach { (id, opacity) ->
+                    val pixels = ArtworkStore.pixelBuffer(width, height)
+                    NativeEngine.readLayerThumbnail(engine, id, width, height, pixels)
                     pixels.rewind()
-                    val page = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                    page.copyPixelsFromBuffer(pixels)
-                    val cut = Bitmap.createBitmap(small, cutWidth, cutHeight, Bitmap.Config.ARGB_8888)
-                    android.graphics.Canvas(page).drawBitmap(
-                        cut, null, android.graphics.RectF(0f, 0f, width.toFloat(), height.toFloat()),
-                        android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
-                            xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN)
-                        },
-                    )
-                    cut.recycle()
-                    pixels.rewind()
-                    page.copyPixelsToBuffer(pixels)
-                    page.recycle()
-                    store.exportPng(name, width, height, pixels)
-                }.getOrDefault(false)
+                    val layer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    layer.copyPixelsFromBuffer(pixels)
+                    painter.drawBitmap(layer, 0f, 0f, android.graphics.Paint().apply { this.alpha = (opacity * 255).toInt() })
+                    layer.recycle()
+                }
+                val pixels = ArtworkStore.pixelBuffer(width, height)
+                page.copyPixelsToBuffer(pixels)
+                page.recycle()
+                pixels.rewind()
                 runOnUiThread {
-                    val message = if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG")
-                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                    if (isDestroyed) return@runOnUiThread
+                    setEditingMask(false)
+                    val id = document.nextLayerId++
+                    engineLayers.add(id)
+                    canvas.act { engine ->
+                        NativeEngine.createLayer(engine, id)
+                        NativeEngine.writeLayer(engine, id, pixels)
+                        NativeEngine.markLayerDirty(engine, id)
+                    }
+                    editLayers {
+                        document.layers.removeAll(old.toSet())
+                        document.layers.add(LayerInfo(id, tr("Sticker"), sticker = true))
+                        document.activeLayer = id
+                    }
+                    if (export) {
+                        saver.execute {
+                            val saved = runCatching { store.exportPng(name, width, height, pixels) }.getOrDefault(false)
+                            runOnUiThread { say(if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG"), long = true) }
+                        }
+                    }
                 }
             }
         }
@@ -3665,7 +3737,7 @@ class MainActivity : Activity(), ReferenceHost {
     private fun exportSheet() {
         val name = document.name
         val id = document.id
-        Toast.makeText(this, tr("Making your design sheet"), Toast.LENGTH_SHORT).show()
+        say(tr("Making your design sheet"))
         save(withPreview = true) {
             val saved = runCatching {
                 val family = store.variations(id)
@@ -3680,7 +3752,7 @@ class MainActivity : Activity(), ReferenceHost {
             }.getOrDefault(false)
             runOnUiThread {
                 val message = if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG")
-                Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                say(message, long = true)
             }
         }
     }
@@ -3710,7 +3782,7 @@ class MainActivity : Activity(), ReferenceHost {
                 }.getOrDefault(false)
                 runOnUiThread {
                     val message = if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG")
-                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                    say(message, long = true)
                 }
             }
         }
@@ -3734,7 +3806,7 @@ class MainActivity : Activity(), ReferenceHost {
         val name = document.name
         val width = document.width
         val height = document.height
-        Toast.makeText(this, tr("Exporting PSD"), Toast.LENGTH_SHORT).show()
+        say(tr("Exporting PSD"))
         canvas.snapshot { engine ->
             val parts = layers.map { layer ->
                 val pixels = ArtworkStore.pixelBuffer(width, height)
@@ -3768,7 +3840,7 @@ class MainActivity : Activity(), ReferenceHost {
                 }.getOrDefault(false)
                 runOnUiThread {
                     val message = if (saved) tr("Saved to Download/Cappuccino") else tr("Couldn't export this PSD")
-                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                    say(message, long = true)
                 }
             }
         }
@@ -3797,7 +3869,7 @@ class MainActivity : Activity(), ReferenceHost {
                 val saved = runCatching { store.exportPng(name, width, height, pixels) }.getOrDefault(false)
                 runOnUiThread {
                     val message = if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG")
-                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                    say(message, long = true)
                 }
             }
         }
@@ -3975,10 +4047,14 @@ class MainActivity : Activity(), ReferenceHost {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == PICK_LAYER_IMAGE) {
+            if (resultCode == RESULT_OK) data?.data?.let(::importLayerImage)
+            return
+        }
         if (requestCode == PICK_TIP && resultCode == RESULT_OK && data?.data != null) {
             val bitmap = contentResolver.openInputStream(data.data!!)?.use(BitmapFactory::decodeStream)
             if (bitmap == null) {
-                Toast.makeText(this, tr("Couldn't read this image"), Toast.LENGTH_SHORT).show()
+                say(tr("Couldn't read this image"))
                 return
             }
             draftTip = tipFrom(bitmap)
@@ -4021,7 +4097,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
         val bitmap = decodeReference(file, REFERENCE_SIZE)
         if (bitmap == null) {
-            Toast.makeText(this, tr("Couldn't open this image"), Toast.LENGTH_SHORT).show()
+            say(tr("Couldn't open this image"))
             return
         }
         val width = fitReferenceWidth(bitmap.width, bitmap.height, canvas.width, canvas.height)
@@ -4072,14 +4148,14 @@ class MainActivity : Activity(), ReferenceHost {
             val colors = extractPalette(pixels)
             savePalette(tr("Reference colors"), colors)
             runOnUiThread {
-                if (colors.isNotEmpty()) Toast.makeText(this, tr("Palette saved"), Toast.LENGTH_SHORT).show()
+                if (colors.isNotEmpty()) say(tr("Palette saved"))
             }
         }
     }
 
     override fun onReferenceToLayer(reference: ReferenceWindow) {
         if (layerSlots >= maxLayers) {
-            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            say(tr("This canvas can hold %1 layers", maxLayers), long = true)
             return
         }
         val bitmap = reference.bitmap
@@ -4156,6 +4232,7 @@ class MainActivity : Activity(), ReferenceHost {
         journalWriter.shutdown()
         // A save still running hands its picture to the analyzer, so that stops after the saves.
         saver.execute { analyzer.shutdown() }
+        stickerWorker.shutdown()
         saver.shutdown()
         super.onDestroy()
     }

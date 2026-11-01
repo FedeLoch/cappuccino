@@ -24,6 +24,7 @@ import android.widget.GridLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.TextView
 import kotlin.math.max
@@ -306,6 +307,51 @@ class NewArtworkSheet(
                 )
             }
         }
+    }
+}
+
+private const val NOTE_SHORT_MS = 2200L
+private const val NOTE_LONG_MS = 3800L
+private const val NOTE_FADE_MS = 160L
+private var openNote: PopupWindow? = null
+
+/** A small message from your companion, in place of a plain system one. */
+fun Activity.say(message: String, long: Boolean = false) {
+    val root = window.decorView
+    root.post {
+        if (isDestroyed || isFinishing || root.windowToken == null) return@post
+        runCatching { openNote?.dismiss() }
+        val note = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            background = rounded(ROAST, 22)
+            setPadding(dp(8), dp(6), dp(18), dp(6))
+            alpha = 0f
+            addView(
+                CompanionView(context).apply {
+                    val studio = this@say as? MainActivity
+                    look = studio?.companionLook ?: CompanionLook.valueOf(
+                        getSharedPreferences("studio", Context.MODE_PRIVATE).getString("mascot", null) ?: CompanionLook.COFFEE_DROP.name,
+                    )
+                    studio?.let { bodyColor = it.currentColor }
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                },
+                LinearLayout.LayoutParams(dp(34), dp(34)),
+            )
+            addView(label(message, 14f, Color.WHITE), LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        val popup = PopupWindow(note, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            isTouchable = false
+            showAtLocation(root, Gravity.TOP or Gravity.CENTER_HORIZONTAL, 0, dp(14))
+        }
+        openNote = popup
+        note.animate().alpha(1f).setDuration(NOTE_FADE_MS).start()
+        root.postDelayed({
+            note.animate().alpha(0f).setDuration(NOTE_FADE_MS).withEndAction {
+                runCatching { popup.dismiss() }
+                if (openNote === popup) openNote = null
+            }.start()
+        }, if (long) NOTE_LONG_MS else NOTE_SHORT_MS)
     }
 }
 
