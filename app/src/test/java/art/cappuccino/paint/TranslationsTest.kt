@@ -46,7 +46,7 @@ class TranslationsTest {
 
     @Test
     fun catalogNamesHaveSpanish() {
-        val names = BrushKind.entries.map { it.label } + BrushKind.BRUSH_FAMILIES.map { it.first } + BLEND_MODES +
+        val names = BrushKind.entries.map { it.label } + BrushKind.BRUSH_FAMILIES.map { it.first } + BoardPurpose.entries.map { it.label } + BLEND_MODES +
             Light.entries.map { it.label } + CompanionLook.entries.map { it.label } +
             GUIDES.filter { it != "None" } + CANVAS_PRESETS.map { it.label } + LIQUIFY_TOOLS + FILTERS.map { it.label } +
             FILTERS.flatMap { kind -> kind.sliders.map { it.label } } + STARTER_PALETTES_NAMES + HARMONY_NAMES +

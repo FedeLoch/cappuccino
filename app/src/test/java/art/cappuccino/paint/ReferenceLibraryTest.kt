@@ -40,4 +40,55 @@ class ReferenceLibraryTest {
         assertEquals(listOf("ref1"), filterReferences(names, notes, "Armor"))
         assertEquals(listOf("Armor", "Forest"), referenceBoards(notes))
     }
+
+    private val boards = mapOf(
+        "sky" to ReferenceNote(board = "Colors"),
+        "dune" to ReferenceNote(board = "Layouts"),
+        "hero" to ReferenceNote(board = "Ideas"),
+    )
+    private val files = listOf("sky", "dune", "hero", "loose")
+    private val purposes = mapOf(
+        "Colors" to setOf(BoardPurpose.PALETTE),
+        "Layouts" to setOf(BoardPurpose.COMPOSITION),
+        "Ideas" to setOf(BoardPurpose.INSPIRATION),
+    )
+
+    private fun AspectChoice.names(purpose: BoardPurpose) = aspects.getValue(purpose).map { names[it] }
+
+    @Test
+    fun eachKindOfNoteReadsItsOwnBoard() {
+        val choice = aspectReferences(files, emptySet(), boards, purposes, emptySet())
+        assertEquals(ReferenceScope.BOARDS, choice.scope)
+        assertEquals(listOf("sky"), choice.names(BoardPurpose.PALETTE))
+        assertEquals(listOf("dune"), choice.names(BoardPurpose.COMPOSITION))
+        assertEquals(listOf("Colors"), choice.boards[BoardPurpose.PALETTE])
+    }
+
+    @Test
+    fun otherNotesSkipPurposedBoardsAndInspirationIsNeverCompared() {
+        val choice = aspectReferences(files, emptySet(), boards, purposes, emptySet())
+        assertEquals(listOf("loose"), choice.names(BoardPurpose.VALUES))
+        assertEquals(false, "hero" in choice.names)
+    }
+
+    @Test
+    fun openReferencesStillAnswerEverything() {
+        val choice = aspectReferences(files, setOf("hero"), boards, purposes, emptySet())
+        assertEquals(ReferenceScope.OPEN, choice.scope)
+        assertEquals(listOf("hero"), choice.names(BoardPurpose.PALETTE))
+    }
+
+    @Test
+    fun anArtworkCanFollowOnlySomeBoards() {
+        val choice = aspectReferences(files, emptySet(), boards, purposes, setOf("Layouts"))
+        assertEquals(listOf("dune"), choice.names(BoardPurpose.COMPOSITION))
+        assertEquals(emptyList<String>(), choice.names(BoardPurpose.PALETTE))
+    }
+
+    @Test
+    fun withoutPurposesNothingChanges() {
+        val choice = aspectReferences(files, emptySet(), emptyMap(), emptyMap(), emptySet())
+        assertEquals(ReferenceScope.NEWEST, choice.scope)
+        assertEquals(files, choice.names(BoardPurpose.MOOD))
+    }
 }

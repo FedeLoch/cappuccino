@@ -18,7 +18,26 @@ private const val THUMBNAIL_CACHE_BYTES = 48 * 1024 * 1024
 
 data class ReferenceNote(val starred: Boolean = false, val board: String = "")
 
-enum class ReferenceScope { OPEN, STARRED, NEWEST }
+enum class ReferenceScope { OPEN, BOARDS, STARRED, NEWEST }
+
+/** What a board teaches the companion. Inspiration boards are only for you to look at. */
+enum class BoardPurpose(val label: String) {
+    PALETTE("Palette"),
+    VALUES("Values"),
+    COMPOSITION("Composition"),
+    MOOD("Mood"),
+    INSPIRATION("Inspiration"),
+}
+
+val COMPARED_PURPOSES = BoardPurpose.entries - BoardPurpose.INSPIRATION
+
+/** Which images the companion compares with for each kind of note, and the boards they came from. */
+class AspectChoice(
+    val names: List<String>,
+    val aspects: Map<BoardPurpose, List<Int>>,
+    val boards: Map<BoardPurpose, List<String>>,
+    val scope: ReferenceScope,
+)
 
 class ReferenceChoice(val names: List<String>, val scope: ReferenceScope)
 
@@ -35,6 +54,45 @@ fun companionReferences(
         return ReferenceChoice(starred.take(COMPANION_REFERENCE_LIMIT), ReferenceScope.STARRED)
     }
     return ReferenceChoice(newestFirst.take(COMPANION_REFERENCE_LIMIT), ReferenceScope.NEWEST)
+}
+
+/**
+ * Open references still answer everything, because you chose them just now. Otherwise each kind of
+ * note reads the boards made for it, and falls back on references that aren't in a purposed board.
+ * [followed] narrows the choice to the boards of one artwork. When it's empty, all boards count.
+ */
+fun aspectReferences(
+    newestFirst: List<String>,
+    open: Set<String>,
+    notes: Map<String, ReferenceNote>,
+    purposes: Map<String, Set<BoardPurpose>>,
+    followed: Set<String>,
+): AspectChoice {
+    val allowed = { board: String -> followed.isEmpty() || board in followed }
+    val purposeful = purposes.filterValues { it.isNotEmpty() }
+    val inPurposedBoard = { name: String -> notes[name]?.board in purposeful }
+    val inFollowedBoard = { name: String -> followed.isEmpty() || notes[name]?.board in followed }
+    val general = companionReferences(newestFirst.filter { !inPurposedBoard(it) && inFollowedBoard(it) }, open, notes)
+    val fromOpen = newestFirst.any { it in open }
+    if (fromOpen) {
+        val opened = companionReferences(newestFirst, open, notes).names
+        return AspectChoice(opened, COMPARED_PURPOSES.associateWith { opened.indices.toList() }, emptyMap(), ReferenceScope.OPEN)
+    }
+    val chosen = LinkedHashMap<BoardPurpose, List<String>>()
+    val boards = HashMap<BoardPurpose, List<String>>()
+    COMPARED_PURPOSES.forEach { purpose ->
+        val named = purposeful.filter { (board, uses) -> purpose in uses && allowed(board) }.keys
+        val fromBoards = newestFirst.filter { notes[it]?.board in named }.take(COMPANION_REFERENCE_LIMIT)
+        if (fromBoards.isNotEmpty()) boards[purpose] = named.filter { board -> fromBoards.any { notes[it]?.board == board } }.sorted()
+        chosen[purpose] = fromBoards.ifEmpty { general.names }
+    }
+    val union = chosen.values.flatten().distinct()
+    return AspectChoice(
+        union,
+        chosen.mapValues { (_, names) -> names.map(union::indexOf) },
+        boards,
+        if (boards.isEmpty()) general.scope else ReferenceScope.BOARDS,
+    )
 }
 
 fun referenceBoards(notes: Map<String, ReferenceNote>): List<String> =

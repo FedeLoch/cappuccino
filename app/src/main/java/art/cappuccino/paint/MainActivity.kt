@@ -151,6 +151,7 @@ class MainActivity : Activity(), ReferenceHost {
     private var ideaIndex = 0
     private var matchedFiles: List<File> = emptyList()
     private var matchedScope = ReferenceScope.NEWEST
+    private var matchedBoards: Map<BoardPurpose, List<String>> = emptyMap()
     private var referenceFilter = ""
     private var editingMask = false
     private var previewStale = false
@@ -509,17 +510,20 @@ class MainActivity : Activity(), ReferenceHost {
                 PendingSaves.finished()
                 then?.invoke()
                 val snapshot = java.nio.ByteBuffer.allocateDirect(thumbnail.capacity()).put(thumbnail.duplicate().apply { rewind() })
-                analyzer.execute { analyze(snapshot, referenceSet.first, referenceSet.second) }
+                analyzer.execute { analyze(snapshot, referenceSet) }
             }
         }
     }
 
     /** The images the companion compares with, and why those were chosen. */
-    private fun referenceChoice(): Pair<List<File>, ReferenceScope> {
+    private fun referenceChoice(): Pair<List<File>, AspectChoice> {
         val all = store.references(document.projectId)
-        val choice = companionReferences(all.map { it.name }, references.keys, store.referenceNotes(document.projectId))
+        val project = document.projectId
+        val choice = aspectReferences(
+            all.map { it.name }, references.keys, store.referenceNotes(project), store.boardPurposes(project), document.followedBoards.toSet(),
+        )
         val byName = all.associateBy { it.name }
-        return choice.names.mapNotNull(byName::get) to choice.scope
+        return choice.names.map(byName::getValue) to choice
     }
 
     private fun referenceProfiles(files: List<File>): List<VisualProfile> = files.mapNotNull { file ->
@@ -534,7 +538,8 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
-    private fun analyze(thumbnail: java.nio.ByteBuffer, files: List<File>, scope: ReferenceScope) {
+    private fun analyze(thumbnail: java.nio.ByteBuffer, referenceSet: Pair<List<File>, AspectChoice>) {
+        val (files, choice) = referenceSet
         thumbnail.rewind()
         val raw = thumbnail.order(ByteOrder.LITTLE_ENDIAN).asIntBuffer()
         val pixels = IntArray(raw.remaining())
@@ -558,7 +563,8 @@ class MainActivity : Activity(), ReferenceHost {
         }
         val note = earlier?.let { progressNote(it, now) }
         val artProfile = profileImage(pixels, ArtworkStore.THUMBNAIL_WIDTH, document.thumbnailHeight)
-        val matched = compareWithReferences(artProfile, referenceProfiles(files))
+        val profiles = referenceProfiles(files)
+        val matched = if (profiles.size == files.size) compareWithReferences(artProfile, profiles, choice.aspects) else compareWithReferences(artProfile, profiles)
         runOnUiThread {
             if (isDestroyed) return@runOnUiThread
             val changed = result.tips.map { it.text } != report?.tips?.map { it.text } ||
@@ -567,7 +573,8 @@ class MainActivity : Activity(), ReferenceHost {
             progress = note
             referenceMatch = matched
             matchedFiles = files
-            matchedScope = scope
+            matchedScope = choice.scope
+            matchedBoards = choice.boards
             if (changed && result.tips.isNotEmpty()) unreadTips = true
             if (unreadTips) peek?.mood = Mood.TIP
             companion.mood = if (unreadTips) Mood.TIP else Mood.IDLE
@@ -1113,8 +1120,17 @@ class MainActivity : Activity(), ReferenceHost {
         progress?.let { Tip("Progress", it) },
         referenceMatch?.let {
             Tip(
-                "Your references", "${it.summary} ${it.advice}", it.why,
-                listOf(NoteMark(tr("Furthest from your reference"), MarkShape.RING, it.farthest.first, it.farthest.second, 0.07f)),
+                "Your references",
+                listOfNotNull(
+                    it.summary, it.advice,
+                    matchedBoards[it.weakest]?.firstOrNull()?.let { board -> tr("From your %1 board.", board) },
+                ).joinToString(" "),
+                it.why,
+                if (it.marksCanvas) {
+                    listOf(NoteMark(tr("Furthest from your reference"), MarkShape.RING, it.farthest.first, it.farthest.second, 0.07f))
+                } else {
+                    emptyList()
+                },
                 NoteAction.OPEN_REFERENCE,
             )
         },
@@ -1207,6 +1223,7 @@ class MainActivity : Activity(), ReferenceHost {
                 label(
                     when (matchedScope) {
                         ReferenceScope.OPEN -> tr("Compared with your open references")
+                        ReferenceScope.BOARDS -> tr("Compared with your boards: %1", matchedBoards.values.flatten().distinct().joinToString(", "))
                         ReferenceScope.STARRED -> tr("Compared with your starred references")
                         ReferenceScope.NEWEST -> tr("Compared with your %1 newest references", matchedFiles.size)
                     },
@@ -3903,6 +3920,7 @@ class MainActivity : Activity(), ReferenceHost {
             )
             if (pickingReferences) gapped(wrapRow(referencePickActions(all)))
         }
+        if (referenceFilter in boards) boardControls(referenceFilter)
         val cell = (dp(PANEL_WIDTH) - dp(28) - dp(8)) / 3
         gapped(
             GridLayout(context).apply {
@@ -3978,6 +3996,41 @@ class MainActivity : Activity(), ReferenceHost {
             },
         )
         if (all.isEmpty()) gapped(label(tr("Add images, or share them here from another app."), 12f, MUTED_TEXT))
+    }
+
+    /** What the companion uses this board for, and whether this artwork follows it. */
+    private fun LinearLayout.boardControls(board: String) {
+        val project = document.projectId
+        val uses = store.boardPurposes(project)[board].orEmpty()
+        gapped(label(tr("Your companion uses this board for"), 12f, MUTED_TEXT))
+        gapped(
+            wrapRow(
+                BoardPurpose.entries.map { purpose ->
+                    smallChip(tr(purpose.label), purpose in uses) {
+                        val next = when {
+                            purpose in uses -> uses - purpose
+                            purpose == BoardPurpose.INSPIRATION -> setOf(purpose)
+                            else -> uses - BoardPurpose.INSPIRATION + purpose
+                        }
+                        store.setBoardPurposes(project, board, next)
+                        markUnsaved()
+                        rerender("references", ::referencesPanel)
+                    }
+                },
+            ),
+        )
+        val following = board in document.followedBoards
+        gapped(
+            wrapRow(
+                listOf(
+                    smallChip(tr("Only for this artwork"), following) {
+                        document.followedBoards = if (following) document.followedBoards - board else document.followedBoards + board
+                        markUnsaved()
+                        rerender("references", ::referencesPanel)
+                    },
+                ),
+            ),
+        )
     }
 
     private fun referencePickActions(all: List<File>): List<View> {

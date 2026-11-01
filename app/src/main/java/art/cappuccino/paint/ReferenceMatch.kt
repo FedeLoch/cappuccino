@@ -45,6 +45,10 @@ class ReferenceMatch(
     val closest: Int,
     /** The center of the area that differs most from the closest reference, as canvas shares. */
     val farthest: Pair<Float, Float>,
+    /** The kind of note the advice comes from, which is what needs the most attention. */
+    val weakest: BoardPurpose = BoardPurpose.PALETTE,
+    /** False when no reference speaks for composition, so there's no spot worth marking. */
+    val marksCanvas: Boolean = true,
 )
 
 fun profileImage(pixels: IntArray, width: Int, height: Int): VisualProfile {
@@ -201,37 +205,48 @@ private fun matchWhy(art: VisualProfile, references: List<VisualProfile>): Strin
 }
 
 /** Compares artwork with each reference, keeping the closest result for every area. */
-fun compareWithReferences(art: VisualProfile, references: List<VisualProfile>): ReferenceMatch? {
+fun compareWithReferences(
+    art: VisualProfile,
+    references: List<VisualProfile>,
+    aspects: Map<BoardPurpose, List<Int>> = COMPARED_PURPOSES.associateWith { references.indices.toList() },
+): ReferenceMatch? {
     if (references.isEmpty()) return null
+    fun set(purpose: BoardPurpose) = aspects[purpose].orEmpty().map(references::get)
+    val palette = set(BoardPurpose.PALETTE)
+    val tones = set(BoardPurpose.VALUES)
+    val layouts = set(BoardPurpose.COMPOSITION)
+    val moods = set(BoardPurpose.MOOD)
     // Empty paper can look like a cream background, so scores grow only as the page fills in.
     val developed = (art.coverage / FULL_COVERAGE).coerceIn(0f, 1f)
-    val color = references.maxOf { overlap(art.colors, it.colors) } * developed
-    val value = references.maxOf { overlap(art.values, it.values) } * developed
-    val layout = references.maxOf { layoutScore(art, it) } * developed
-    val mood = references.maxOf { moodScore(art, it) } * developed
-    val areas = listOf(
-        MatchArea("Palette", color),
-        MatchArea("Values", value),
-        MatchArea("Composition", layout),
-        MatchArea("Mood", mood),
+    val measured = listOfNotNull(
+        palette.takeIf { it.isNotEmpty() }?.let { set -> Triple(MatchArea("Palette", set.maxOf { overlap(art.colors, it.colors) } * developed), 0.35f, BoardPurpose.PALETTE) },
+        tones.takeIf { it.isNotEmpty() }?.let { set -> Triple(MatchArea("Values", set.maxOf { overlap(art.values, it.values) } * developed), 0.3f, BoardPurpose.VALUES) },
+        layouts.takeIf { it.isNotEmpty() }?.let { set -> Triple(MatchArea("Composition", set.maxOf { layoutScore(art, it) } * developed), 0.2f, BoardPurpose.COMPOSITION) },
+        moods.takeIf { it.isNotEmpty() }?.let { set -> Triple(MatchArea("Mood", set.maxOf { moodScore(art, it) } * developed), 0.15f, BoardPurpose.MOOD) },
     )
-    val overall = color * 0.35f + value * 0.3f + layout * 0.2f + mood * 0.15f
+    if (measured.isEmpty()) return null
+    val areas = measured.map { it.first }
+    val overall = measured.sumOf { (it.first.score * it.second).toDouble() }.toFloat() / measured.sumOf { it.second.toDouble() }.toFloat()
     val summary = when {
         art.coverage < EARLY_COVERAGE -> tr("It's still early to compare with your references.")
         overall >= CLOSE -> tr("You're close to your references.")
         overall >= CLOSER -> tr("You're getting closer to your references.")
         else -> tr("You're still far from your references.")
     }
-    val advice = when (areas.minBy { it.score }.name) {
-        "Palette" -> colorAdvice(art, references)
-        "Values" -> valueAdvice(art, references)
-        "Composition" -> layoutAdvice(art, references)
-        else -> moodAdvice(art, references)
+    val weakest = measured.minBy { it.first.score }.third
+    val advice = when (weakest) {
+        BoardPurpose.PALETTE -> colorAdvice(art, palette)
+        BoardPurpose.VALUES -> valueAdvice(art, tones)
+        BoardPurpose.COMPOSITION -> layoutAdvice(art, layouts)
+        else -> moodAdvice(art, moods)
     }
-    val suggestions = missingBins(art, references).take(MAX_SUGGESTIONS).map { bin ->
-        references.maxBy { it.colors[bin] }.binColors[bin]
+    val suggestions = if (palette.isEmpty()) {
+        emptyList()
+    } else {
+        missingBins(art, palette).take(MAX_SUGGESTIONS).map { bin -> palette.maxBy { it.colors[bin] }.binColors[bin] }
     }
-    val closest = references.indices.maxBy { index ->
+    val placed = aspects[BoardPurpose.COMPOSITION].orEmpty().ifEmpty { references.indices.toList() }
+    val closest = placed.maxBy { index ->
         val reference = references[index]
         overlap(art.colors, reference.colors) * 0.35f + overlap(art.values, reference.values) * 0.3f +
             layoutScore(art, reference) * 0.2f + moodScore(art, reference) * 0.15f
@@ -241,5 +256,5 @@ fun compareWithReferences(art: VisualProfile, references: List<VisualProfile>): 
     val targetMean = target.layout.average().toFloat()
     val cell = art.layout.indices.maxBy { abs((art.layout[it] - artMean) - (target.layout[it] - targetMean)) }
     val farthest = (cell % GRID_COLUMNS + 0.5f) / GRID_COLUMNS to (cell / GRID_COLUMNS + 0.5f) / GRID_ROWS
-    return ReferenceMatch(overall, areas, summary, advice, suggestions, matchWhy(art, references), closest, farthest)
+    return ReferenceMatch(overall, areas, summary, advice, suggestions, matchWhy(art, references), closest, farthest, weakest, layouts.isNotEmpty())
 }

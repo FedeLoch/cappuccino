@@ -82,4 +82,19 @@ class ReferenceMatchTest {
         assertTrue(match.areas.size == 4)
         assertTrue(match.colors.isNotEmpty())
     }
+
+    @Test
+    fun aPaletteReferenceOnlyAffectsThePaletteScore() {
+        val other = profile { _, _ -> 0xFFE0D020.toInt() }
+        val aspects = mapOf(BoardPurpose.PALETTE to listOf(1), BoardPurpose.COMPOSITION to listOf(0))
+        val match = compareWithReferences(reference, listOf(other, reference), aspects)!!
+        assertEquals(listOf("Palette", "Composition"), match.areas.map { it.name })
+        assertEquals(1f, match.areas.first { it.name == "Palette" }.score, 0.02f)
+    }
+
+    @Test
+    fun aPaletteOnlyBoardLeavesNoMarkOnTheCanvas() {
+        val match = compareWithReferences(reference, listOf(reference), mapOf(BoardPurpose.PALETTE to listOf(0)))!!
+        assertEquals(false, match.marksCanvas)
+    }
 }

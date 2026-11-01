@@ -50,8 +50,10 @@ Add reference images to a sketchbook and the companion measures how close your a
 them. You get a score for palette, values, composition, and mood, plus colors to try from your
 references.
 
-You choose what it compares with. It uses your open references first, then your starred ones,
-then your 40 newest. The note always says which set it used.
+You choose what it compares with. Open references come first. Otherwise, give a reference board a
+purpose, such as Palette, Values, Composition, Mood, or Inspiration, and each kind of note reads
+only the boards made for it. An artwork can follow just the boards you pick. Everything else falls
+back on your starred references, then your 40 newest. The note always says what it used.
 
 ### It shows its reasoning
 

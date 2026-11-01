@@ -40,6 +40,8 @@ class ArtworkDocument(
     var journalSequence: Int = 0,
     /** Saved tiles for each engine layer. A layer without an entry still uses its old file. */
     @Volatile var tiles: Map<Int, Map<Int, TileRef>> = emptyMap(),
+    /** The reference boards this artwork follows. Empty means all of them. */
+    var followedBoards: List<String> = emptyList(),
 ) {
     val thumbnailHeight get() = ArtworkStore.thumbnailHeight(width, height)
 }
@@ -405,6 +407,9 @@ class ArtworkStore(context: Context) {
             manifest.optString("variationOf"),
             manifest.optInt("journalSequence"),
             readTileMaps(manifest),
+            manifest.optJSONArray("followedBoards")?.let { boards ->
+                (0 until boards.length()).map(boards::getString)
+            }.orEmpty(),
         )
     }
 
@@ -553,6 +558,7 @@ class ArtworkStore(context: Context) {
             .put("variationOf", document.variationOf)
             .put("journalSequence", snapshot.journalSequence)
             .put("symmetry", document.symmetry)
+            .put("followedBoards", JSONArray(document.followedBoards))
             .put("symmetryCenter", JSONArray(document.symmetryCenter.map { it.toDouble() }))
             .put("activeLayer", snapshot.activeLayer)
             .put("nextLayerId", snapshot.nextLayerId)
@@ -608,8 +614,28 @@ class ArtworkStore(context: Context) {
 
     fun references(projectId: String): List<File> =
         referenceDir(projectId).listFiles().orEmpty()
-            .filter { it.name != REFERENCE_NOTES && !it.name.endsWith(".tmp") }
+            .filter { it.name != REFERENCE_NOTES && it.name != BOARD_PURPOSES && !it.name.endsWith(".tmp") }
             .sortedByDescending { it.lastModified() }
+
+    fun boardPurposes(projectId: String): Map<String, Set<BoardPurpose>> {
+        val file = File(referenceDir(projectId), BOARD_PURPOSES)
+        if (!file.exists()) return emptyMap()
+        val items = runCatching { JSONObject(file.readText()) }.getOrNull() ?: return emptyMap()
+        return items.keys().asSequence().associateWith { board ->
+            val uses = items.getJSONArray(board)
+            (0 until uses.length()).mapNotNull { index ->
+                BoardPurpose.entries.firstOrNull { it.name == uses.getString(index) }
+            }.toSet()
+        }
+    }
+
+    fun setBoardPurposes(projectId: String, board: String, uses: Set<BoardPurpose>) {
+        val items = JSONObject()
+        (boardPurposes(projectId) + (board to uses)).filterValues { it.isNotEmpty() }.forEach { (name, set) ->
+            items.put(name, JSONArray(set.map { it.name }))
+        }
+        writeAtomically(File(referenceDir(projectId), BOARD_PURPOSES), items.toString().toByteArray())
+    }
 
     fun referenceNotes(projectId: String): Map<String, ReferenceNote> {
         val file = File(referenceDir(projectId), REFERENCE_NOTES)
@@ -784,6 +810,7 @@ class ArtworkStore(context: Context) {
         private const val THUMBNAIL = "thumbnail.png"
         private const val SNAPSHOT = "snapshot.json"
         private const val REFERENCE_NOTES = "library.json"
+        private const val BOARD_PURPOSES = "boards.json"
         private const val PREVIEW = "preview.jpg"
         const val PREVIEW_WIDTH = 1600
 
