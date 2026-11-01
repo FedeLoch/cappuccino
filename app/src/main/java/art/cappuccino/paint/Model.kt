@@ -46,6 +46,8 @@ class BrushKind(
         val INK = BrushKind("ink", "Ink", 0.12f, 0.08f, 1f, 0f, 1f, 0f, 24f)
         private val LINER = BrushKind("liner", "Liner", 0.85f, 0.06f, 1f, 0f, 1f, 0f, 12f)
         private val PENCIL = BrushKind("pencil", "Pencil", 0.5f, 0.1f, 0.35f, 0.8f, 0.7f, 0.8f, 16f)
+        private val FINE_PENCIL = BrushKind("fine-pencil", "Fine pencil", 0.35f, 0.05f, 0.55f, 0.95f, 0.8f, 0.65f, 9f)
+        private val SOFT_PENCIL = BrushKind("soft-pencil", "Soft pencil", 0.55f, 0.07f, 0.42f, 0.9f, 0.55f, 0.95f, 30f)
         private val CHARCOAL = BrushKind("charcoal", "Charcoal", 0.7f, 0.1f, 0.55f, 0.6f, 0.6f, 1f, 60f)
         private val CHALK = BrushKind("chalk", "Chalk", 0.8f, 0.12f, 0.6f, 0.3f, 0.8f, 0.9f, 80f)
         private val MARKER = BrushKind("marker", "Marker", 0.9f, 0.05f, 0.18f, 0.2f, 0.9f, 0f, 70f)
@@ -142,7 +144,9 @@ class BrushKind(
         private val ERASERS = listOf(
             ERASE_INK,
             BrushKind("erase-liner", "Liner", 0.85f, 0.06f, 1f, 0f, 1f, 0f, 24f, true),
+            BrushKind("erase-fine-pencil", "Fine pencil", 0.35f, 0.05f, 0.55f, 0.95f, 0.8f, 0.65f, 18f, true),
             BrushKind("erase-pencil", "Pencil", 0.5f, 0.1f, 0.35f, 0.8f, 0.7f, 0.8f, 30f, true),
+            BrushKind("erase-soft-pencil", "Soft pencil", 0.55f, 0.07f, 0.42f, 0.9f, 0.55f, 0.95f, 50f, true),
             BrushKind("erase-charcoal", "Charcoal", 0.7f, 0.1f, 0.55f, 0.6f, 0.6f, 1f, 80f, true),
             BrushKind("erase-chalk", "Chalk", 0.8f, 0.12f, 0.6f, 0.3f, 0.8f, 0.9f, 80f, true),
             BrushKind("erase-marker", "Marker", 0.9f, 0.05f, 0.18f, 0.2f, 0.9f, 0f, 90f, true),
@@ -150,10 +154,10 @@ class BrushKind(
             BrushKind("erase-wash", "Wash", 0.7f, 0.08f, 0.08f, 0.5f, 0.2f, 0.35f, 220f, true),
             BrushKind("erase-lasso", "Lasso", 1f, 1f, 1f, 0f, 1f, 0f, 40f, true, BrushMode.LASSO),
         )
-        val PAINT_BRUSHES = listOf(INK, LINER, PENCIL, CHARCOAL, CHALK, MARKER, SOFT, WASH)
+        val PAINT_BRUSHES = listOf(INK, LINER, FINE_PENCIL, PENCIL, SOFT_PENCIL, CHARCOAL, CHALK, MARKER, SOFT, WASH)
         val BRUSH_FAMILIES = listOf(
-            "Sketch" to PAINT_BRUSHES.take(5),
-            "Paint" to PAINT_BRUSHES.drop(5) + TEXTURE_BRUSHES,
+            "Sketch" to PAINT_BRUSHES.take(7),
+            "Paint" to PAINT_BRUSHES.drop(7) + TEXTURE_BRUSHES,
             "Scatter" to SCATTER_BRUSHES,
         )
         val entries = PAINT_BRUSHES + TEXTURE_BRUSHES + SCATTER_BRUSHES + listOf(SMUDGE, FILL, GRADIENT, LASSO_FILL) + ERASERS

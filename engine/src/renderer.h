@@ -85,8 +85,8 @@ public:
     bool fillPolygon(const float* points, int count, const float* color, float opacity, bool erase,
                      bool alphaLock);
 
-    void setSelectionPolygon(const float* points, int count);
-    void selectColorAt(int x, int y, int tolerance);
+    void setSelectionPolygon(const float* points, int count, int mode);
+    void selectColorAt(int x, int y, int tolerance, int mode);
     void clearSelection();
     void invertSelection();
     bool hasSelection() const { return selectionActive_; }

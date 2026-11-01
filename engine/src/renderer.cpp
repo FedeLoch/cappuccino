@@ -933,21 +933,27 @@ void Renderer::uploadSelection() {
     selectionActive_ = true;
 }
 
-void Renderer::setSelectionPolygon(const float* points, int count) {
+void Renderer::setSelectionPolygon(const float* points, int count, int mode) {
     if (count < 3) {
-        clearSelection();
+        if (mode == 0) clearSelection();
         return;
     }
-    rasterizePolygon(points, count, width_, height_, selection_);
-    uploadSelection();
+    std::vector<uint8_t> shape;
+    rasterizePolygon(points, count, width_, height_, shape);
+    if (!selectionActive_) selection_.clear();
+    combineSelection(selection_, shape, mode);
+    if (!selection_.empty()) uploadSelection();
 }
 
-void Renderer::selectColorAt(int x, int y, int tolerance) {
+void Renderer::selectColorAt(int x, int y, int tolerance, int mode) {
     std::vector<uint8_t> reference(static_cast<size_t>(width_) * height_ * 4);
     readComposite(width_, height_, reference.data());
-    if (!floodMask(reference.data(), width_, height_, x, y, tolerance, selection_, nullptr)) return;
-    for (uint8_t& value : selection_) value = value != 0 ? 255 : 0;
-    uploadSelection();
+    std::vector<uint8_t> shape;
+    if (!floodMask(reference.data(), width_, height_, x, y, tolerance, shape, nullptr)) return;
+    for (uint8_t& value : shape) value = value != 0 ? 255 : 0;
+    if (!selectionActive_) selection_.clear();
+    combineSelection(selection_, shape, mode);
+    if (!selection_.empty()) uploadSelection();
 }
 
 void Renderer::clearSelection() {

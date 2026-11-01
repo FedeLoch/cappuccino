@@ -116,6 +116,9 @@ class MainActivity : Activity(), ReferenceHost {
     private var comparison: String? = null
     private val shapeHandles = ArrayList<PopupWindow>()
     private var recentStrip: LinearLayout? = null
+    private var selectionMode = 0
+    private val transformHandles = ArrayList<PopupWindow>()
+    private var transformCorners: FloatArray? = null
     private var pickerInks = false
     private var inks: FloatArray? = null
     private var stickerArt: Bitmap? = null
@@ -261,6 +264,7 @@ class MainActivity : Activity(), ReferenceHost {
             hideShapeHandles()
         }
         canvas.onShapeSnapped = ::showShapeHandles
+        canvas.onTransformMoved = ::moveTransformHandles
         canvas.onViewChanged = {
             positionHandles()
             noteOverlay?.invalidate()
@@ -703,12 +707,20 @@ class MainActivity : Activity(), ReferenceHost {
         swatch = colorButton
         val right = pill().apply {
             brushButton = iconButton(R.drawable.ic_brush, tr("Brushes")) {
-                if (canvas.brushKind.isEraser || canvas.brushKind.isTool) selectTool(lastBrush)
-                togglePanel("brushes", ::brushPanel)
+                if (canvas.brushKind.isEraser || canvas.brushKind.isTool) {
+                    closePanel()
+                    selectTool(lastBrush)
+                } else {
+                    togglePanel("brushes", ::brushPanel)
+                }
             }
             eraserButton = iconButton(R.drawable.ic_eraser, tr("Eraser")) {
-                if (!canvas.brushKind.isEraser) selectTool(lastEraser)
-                togglePanel("erasers", ::eraserPanel)
+                if (canvas.brushKind.isEraser) {
+                    togglePanel("erasers", ::eraserPanel)
+                } else {
+                    closePanel()
+                    selectTool(lastEraser)
+                }
             }
             addView(brushButton)
             addView(eraserButton)
@@ -937,6 +949,12 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
+    /** A small dot inside a larger touch area, so it stays quiet but easy to grab. */
+    private fun quietHandle() = android.graphics.drawable.InsetDrawable(
+        rounded(Color.WHITE, 7).apply { setStroke(dp(2), ROAST) },
+        dp(11),
+    )
+
     private fun hideShapeHandles() {
         shapeHandles.forEach { it.dismiss() }
         shapeHandles.clear()
@@ -954,7 +972,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
         listOf(0, 2).forEach { end ->
             val handle = View(this).apply {
-                background = rounded(ACCENT, 18).apply { setStroke(dp(3), Color.WHITE) }
+                background = quietHandle()
                 contentDescription = tr("Adjust shape")
             }
             val window = PopupWindow(handle, size, size).apply { isClippingEnabled = false }
@@ -1716,6 +1734,12 @@ class MainActivity : Activity(), ReferenceHost {
             },
         )
         if (!hasSelection) return@apply
+        gapped(
+            segmented(listOf(tr("New"), tr("Add"), tr("Remove")), selectionMode) {
+                selectionMode = it
+                rerender("tools", ::toolsPanel)
+            },
+        )
         gapped(actionRow(R.drawable.ic_transform, tr("Transform"), tr("Move, scale, or rotate the selection")) { selectionToLayer(cut = true, transform = true) })
         gapped(actionRow(R.drawable.ic_copy, tr("Copy to layer")) { selectionToLayer(cut = false, transform = false) })
         gapped(actionRow(R.drawable.ic_cut, tr("Cut to layer")) { selectionToLayer(cut = true, transform = false) })
@@ -1737,6 +1761,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun markSelection(active: Boolean) {
         hasSelection = active
+        if (!active) selectionMode = 0
         markTools()
     }
 
@@ -1774,13 +1799,15 @@ class MainActivity : Activity(), ReferenceHost {
     internal fun finishLasso(path: FloatArray) {
         canvas.selectionTool = SelectionTool.NONE
         hideLasso()
-        canvas.act { NativeEngine.setSelectionPolygon(it, path) }
-        markSelection(path.size >= 6)
+        val mode = selectionMode
+        canvas.act { NativeEngine.setSelectionPolygon(it, path, mode) }
+        markSelection(if (mode == 0) path.size >= 6 else hasSelection)
     }
 
     private fun finishWand(x: Int, y: Int) {
         canvas.selectionTool = SelectionTool.NONE
-        canvas.act { NativeEngine.selectColorAt(it, x, y, 40) }
+        val mode = selectionMode
+        canvas.act { NativeEngine.selectColorAt(it, x, y, 40, mode) }
         markSelection(true)
     }
 
@@ -2033,6 +2060,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     internal fun finishTransform(keep: Boolean) {
+        hideTransformHandles()
         canvas.endTransform(keep)
         if (keep) {
             history.record(Edit.Stroke)
@@ -2127,7 +2155,84 @@ class MainActivity : Activity(), ReferenceHost {
         transformControls = PopupWindow(controls, -2, -2).apply {
             showAtLocation(canvas, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, dp(24))
         }
-        say(tr("Drag to move. Pinch to scale and rotate."))
+        say(tr("Drag to move. Drag a corner to resize. Pinch to rotate."))
+        showTransformHandles(layer.id)
+    }
+
+    /** Finds what's drawn on the layer, so its corners can carry handles that work with a pen. */
+    private fun showTransformHandles(layer: Int) {
+        val width = TEXT_FIND_WIDTH
+        val height = max(1, width * document.height / document.width)
+        canvas.snapshot { engine ->
+            val small = ArtworkStore.pixelBuffer(width, height)
+            NativeEngine.readLayerThumbnail(engine, layer, width, height, small)
+            small.rewind()
+            var left = width
+            var top = height
+            var right = -1
+            var bottom = -1
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    if (small.get((y * width + x) * 4 + 3).toInt() and 0xFF <= 8) continue
+                    left = min(left, x)
+                    right = max(right, x + 1)
+                    top = min(top, y)
+                    bottom = max(bottom, y + 1)
+                }
+            }
+            if (right < 0) return@snapshot
+            val scale = document.width / width.toFloat()
+            val corners = floatArrayOf(
+                left * scale, top * scale, right * scale, top * scale,
+                right * scale, bottom * scale, left * scale, bottom * scale,
+            )
+            runOnUiThread { if (!isDestroyed && canvas.transformMode) placeTransformHandles(corners) }
+        }
+    }
+
+    private fun placeTransformHandles(corners: FloatArray) {
+        hideTransformHandles()
+        transformCorners = corners
+        val size = dp(36)
+        for (corner in 0 until 4) {
+            val handle = View(this).apply {
+                background = quietHandle()
+                contentDescription = tr("Resize")
+            }
+            val window = PopupWindow(handle, size, size).apply { isClippingEnabled = false }
+            var lastDistance = 0f
+            handle.setOnTouchListener { _, event ->
+                val across = (corner + 2) % 4
+                val anchor = canvas.transformedToScreen(corners[across * 2], corners[across * 2 + 1])
+                val distance = kotlin.math.hypot(event.rawX - anchor[0], event.rawY - anchor[1])
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> lastDistance = distance
+                    MotionEvent.ACTION_MOVE -> if (lastDistance > 1f && distance > 1f) {
+                        canvas.scaleTransform(distance / lastDistance, anchor[0], anchor[1])
+                        lastDistance = distance
+                    }
+                }
+                true
+            }
+            val spot = canvas.transformedToScreen(corners[corner * 2], corners[corner * 2 + 1])
+            window.showAtLocation(canvas, Gravity.NO_GRAVITY, spot[0].toInt() - size / 2, spot[1].toInt() - size / 2)
+            transformHandles.add(window)
+        }
+    }
+
+    private fun moveTransformHandles() {
+        val corners = transformCorners ?: return
+        val size = dp(36)
+        transformHandles.forEachIndexed { corner, window ->
+            val spot = canvas.transformedToScreen(corners[corner * 2], corners[corner * 2 + 1])
+            window.update(spot[0].toInt() - size / 2, spot[1].toInt() - size / 2, -1, -1)
+        }
+    }
+
+    private fun hideTransformHandles() {
+        transformHandles.forEach { it.dismiss() }
+        transformHandles.clear()
+        transformCorners = null
     }
 
     private fun eraserPanel() = column().apply {

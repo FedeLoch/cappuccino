@@ -50,6 +50,16 @@ int main() {
     rasterizePolygon(triangle, 3, kSize, kSize, mask);
     assert(mask[5 * kSize + 5] == 255);
     assert(mask[17 * kSize + 17] == 0);
+    std::vector<uint8_t> selection{255, 255, 0, 0};
+    combineSelection(selection, {0, 0, 255, 0}, 1);
+    assert((selection == std::vector<uint8_t>{255, 255, 255, 0}));
+    combineSelection(selection, {255, 0, 0, 0}, 2);
+    assert((selection == std::vector<uint8_t>{0, 255, 255, 0}));
+    combineSelection(selection, {0, 0, 0, 255}, 0);
+    assert((selection == std::vector<uint8_t>{0, 0, 0, 255}));
+    std::vector<uint8_t> none;
+    combineSelection(none, {255}, 2);
+    assert(none.empty());
     std::puts("fill tests passed");
     return 0;
 }

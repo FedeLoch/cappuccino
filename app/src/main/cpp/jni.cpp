@@ -188,14 +188,14 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_commitLayerTransfo
 }
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setSelectionPolygon(
-    JNIEnv* env, jobject, jlong handle, jfloatArray points) {
+    JNIEnv* env, jobject, jlong handle, jfloatArray points, jint mode) {
     const FloatArray values(env, points);
-    renderer(handle)->setSelectionPolygon(values.get(), values.size() / 2);
+    renderer(handle)->setSelectionPolygon(values.get(), values.size() / 2, mode);
 }
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_selectColorAt(
-    JNIEnv*, jobject, jlong handle, jint x, jint y, jint tolerance) {
-    renderer(handle)->selectColorAt(x, y, tolerance);
+    JNIEnv*, jobject, jlong handle, jint x, jint y, jint tolerance, jint mode) {
+    renderer(handle)->selectColorAt(x, y, tolerance, mode);
 }
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_clearSelection(JNIEnv*, jobject,

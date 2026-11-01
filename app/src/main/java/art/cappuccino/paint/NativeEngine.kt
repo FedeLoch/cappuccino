@@ -68,8 +68,8 @@ object NativeEngine {
     external fun fillAt(handle: Long, x: Int, y: Int, red: Float, green: Float, blue: Float): Boolean
     external fun setLayerTransform(handle: Long, id: Int, transform: FloatArray)
     external fun commitLayerTransform(handle: Long)
-    external fun setSelectionPolygon(handle: Long, points: FloatArray)
-    external fun selectColorAt(handle: Long, x: Int, y: Int, tolerance: Int)
+    external fun setSelectionPolygon(handle: Long, points: FloatArray, mode: Int)
+    external fun selectColorAt(handle: Long, x: Int, y: Int, tolerance: Int, mode: Int)
     external fun clearSelection(handle: Long)
     external fun invertSelection(handle: Long)
     external fun copySelectionToLayer(handle: Long, newId: Int, cut: Boolean)

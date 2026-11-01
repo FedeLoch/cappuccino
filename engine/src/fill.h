@@ -17,6 +17,9 @@ bool floodMask(const uint8_t* pixels, int width, int height, int x, int y, int t
                std::vector<uint8_t>& mask, FillBounds* bounds);
 
 // Marks the inside of a closed polygon, given as x and y pairs, using the even-odd rule.
+// Joins a new shape to a selection: 0 replaces it, 1 adds, and 2 removes.
+void combineSelection(std::vector<uint8_t>& selection, const std::vector<uint8_t>& shape, int mode);
+
 void rasterizePolygon(const float* points, int count, int width, int height,
                       std::vector<uint8_t>& mask);
 

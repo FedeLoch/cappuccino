@@ -84,6 +84,17 @@ void rasterizePolygon(const float* points, int count, int width, int height,
     }
 }
 
+void combineSelection(std::vector<uint8_t>& selection, const std::vector<uint8_t>& shape, int mode) {
+    if (mode == 0 || selection.size() != shape.size()) {
+        if (mode != 2) selection = shape;
+        return;
+    }
+    for (size_t index = 0; index < shape.size(); ++index) {
+        if (shape[index] == 0) continue;
+        selection[index] = mode == 1 ? shape[index] : 0;
+    }
+}
+
 void polygonCoverage(const float* points, int count, int width, int height,
                      std::vector<uint8_t>& coverage, FillBounds& bounds) {
     constexpr int kSteps = 4;

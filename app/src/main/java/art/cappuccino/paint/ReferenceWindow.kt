@@ -26,7 +26,7 @@ import android.widget.SeekBar
 import android.widget.TextView
 import kotlin.math.roundToInt
 
-private const val MIN_WIDTH_DP = 180
+private const val MIN_WIDTH_DP = 96
 private const val MAX_TOOL_DP = 36
 private const val MIN_TOOL_DP = 22
 private const val MAX_ZOOM = 12f

@@ -125,6 +125,7 @@ class CanvasView(
     var onPickMove: (Int, Float, Float) -> Unit = { _, _, _ -> }
     var onPickEnd: () -> Unit = {}
     var onShapeSnapped: (BrushKind, FloatArray, Float) -> Unit = { _, _, _ -> }
+    var onTransformMoved: () -> Unit = {}
     var onStrokeCommitted: () -> Unit = {}
     var onUndoGesture: () -> Unit = {}
     var onRedoGesture: () -> Unit = {}
@@ -413,16 +414,34 @@ class CanvasView(
                     previousX = event.x
                     previousY = event.y
                 }
-                val onScreen = Matrix(layerMatrix)
-                onScreen.postConcat(viewMatrix)
-                onScreen.postConcat(change)
-                viewMatrix.invert(inverseMatrix)
-                onScreen.postConcat(inverseMatrix)
-                layerMatrix.set(onScreen)
-                publishTransform()
+                applyTransform(change)
             }
         }
         return true
+    }
+
+    private fun applyTransform(change: Matrix) {
+        val onScreen = Matrix(layerMatrix)
+        onScreen.postConcat(viewMatrix)
+        onScreen.postConcat(change)
+        viewMatrix.invert(inverseMatrix)
+        onScreen.postConcat(inverseMatrix)
+        layerMatrix.set(onScreen)
+        publishTransform()
+        onTransformMoved()
+    }
+
+    /** Resizes what's being transformed around a point on screen, for dragging a corner handle. */
+    fun scaleTransform(factor: Float, screenX: Float, screenY: Float) {
+        applyTransform(Matrix().apply { postScale(factor, factor, screenX, screenY) })
+    }
+
+    /** Where a point of the layer sits on screen right now, with its transform applied. */
+    fun transformedToScreen(x: Float, y: Float): FloatArray {
+        val point = floatArrayOf(x, y)
+        layerMatrix.mapPoints(point)
+        viewMatrix.mapPoints(point)
+        return point
     }
 
     override fun onHoverEvent(event: MotionEvent): Boolean {

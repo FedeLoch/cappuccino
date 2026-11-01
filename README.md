@@ -99,7 +99,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 
 ### Draw
 
-- Fourteen brushes, including Sponge and Dry brush textures
+- Sixteen brushes, including Sponge and Dry brush textures
 - Scatter brushes for leaves, grass, rocks, and particles
 - Smudge, fill, gradient, and lasso fill tools, plus a lasso eraser for blocking in silhouettes
 - Hold at the end of a stroke to snap it to a clean line, ellipse, or box. Lines lean toward your perspective guides
@@ -123,7 +123,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Filters: blur, motion blur, sharpen, noise, gradient map, levels, and depth fade
 - Import images as new layers, then move, scale, and rotate them into place
 - Make a sticker from your drawing: a new top layer with a die-cut border and soft shadow, or a transparent PNG
-- Lasso and magic wand selections, transform, and hue, saturation, and tone adjustments
+- Lasso and magic wand selections you can add to or remove from, transform with corner handles, and hue, saturation, and tone adjustments
 - One undo history for strokes and layer changes
 - Canvases up to 8192 pixels on a side
 
