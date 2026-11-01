@@ -1,4 +1,4 @@
-<img src="docs/icon.png" alt="Cappuccino app icon" width="96">
+![Cappuccino, draw with a little companion. Free, no ads.](marketing/banner-1024x500.png)
 
 # Cappuccino
 
@@ -16,6 +16,16 @@ Most drawing apps give you tools and leave you alone with the hard questions. Is
 clearly? Are the values working? Am I getting closer to the look I'm after? Cappuccino's
 companion is there for those moments, like a friend looking over your shoulder only when you
 ask.
+
+<table>
+  <tr>
+    <td><img src="marketing/carousel-1-meet.png" alt="The ink blot companion saying hello"></td>
+    <td><img src="marketing/carousel-2-notes.png" alt="The ink blot companion leaving a note about hues"></td>
+    <td><img src="marketing/carousel-4-hide.png" alt="The ink blot companion peeking from behind a toolbar"></td>
+  </tr>
+</table>
+
+See it in motion in the [short companion video](marketing/cappuccino-companion-reel.mp4).
 
 Choose a paint drop, ink blot, foam cup, or coffee drop:
 
@@ -69,6 +79,13 @@ is one tap from the canvas.
 | Why | Match | Idea |
 |---|---|---|
 | ![The measurements behind a note, with the artwork beside its closest reference](docs/screenshots/companion-why.png) | ![Scores for palette, values, composition, and mood, with colors to try](docs/screenshots/companion-match.png) | ![An idea from the companion with a Try it button](docs/screenshots/companion-idea.png) |
+
+### It grows with your work
+
+The companion remembers where an artwork was at your last sitting and tells you when it has come a
+long way. Its notes follow your stage: shapes while you sketch, values while you block in, color
+as you finish. **Not useful** hides a note you don't want, and a topic you keep turning away goes
+quiet. **Compare** tells you which variation reads clearest at a small size.
 
 ### It leaves your art to you
 
