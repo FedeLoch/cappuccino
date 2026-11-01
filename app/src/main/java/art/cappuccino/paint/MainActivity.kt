@@ -66,6 +66,7 @@ private const val LAYER_GAP = 4
 private const val RETIRED_LAYERS = 6
 private val LEFT_PANELS = setOf("actions", "references", "view", "tools")
 private const val PICK_TIP = 45
+private const val PICK_FLASH_MS = 700L
 private const val PEEK_SIZE = 60
 private const val PEEK_OVERLAP = 24
 private const val PEEK_TILT = 10f
@@ -109,6 +110,7 @@ class MainActivity : Activity(), ReferenceHost {
     private var lassoWindow: PopupWindow? = null
     private var pickRing: PopupWindow? = null
     private var pickView: PickRing? = null
+    private val endPickFlash = Runnable { hidePickRing() }
     private var hasSelection = false
     private var tipIndex = 0
     private var ideaIndex = 0
@@ -1027,8 +1029,11 @@ class MainActivity : Activity(), ReferenceHost {
                             smallChip(tr("Try it"), true) {
                                 brush?.let(::selectTool)
                                 idea.accentHue?.let { hue ->
-                                    setColor(Color.HSVToColor(floatArrayOf(hue, 0.7f, 0.85f)))
-                                    rememberColor()
+                                    flashPickRing(
+                                        Color.HSVToColor(floatArrayOf(hue, 0.7f, 0.85f)),
+                                        companionX + dp(28).toFloat(),
+                                        companionY.toFloat(),
+                                    )
                                 }
                                 closePanel()
                             },
@@ -1075,9 +1080,9 @@ class MainActivity : Activity(), ReferenceHost {
                                 View(context).apply {
                                     background = rounded(color, 8)
                                     contentDescription = tr("Use this color")
-                                    setOnClickListener {
-                                        setColor(color)
-                                        rememberColor()
+                                    setOnClickListener { spot ->
+                                        val place = IntArray(2).also(spot::getLocationOnScreen)
+                                        flashPickRing(color, place[0] + spot.width / 2f, place[1].toFloat())
                                     }
                                 },
                                 LinearLayout.LayoutParams(0, dp(34), 1f).apply { marginEnd = dp(3) },
@@ -1438,14 +1443,25 @@ class MainActivity : Activity(), ReferenceHost {
             pickRing = PopupWindow(view, size, size).apply {
                 isClippingEnabled = false
                 isTouchable = false
-                showAtLocation(canvas, Gravity.NO_GRAVITY, x.toInt() - size / 2, y.toInt() - size - dp(24))
+                showAtLocation(canvas, Gravity.NO_GRAVITY, x.toInt() - size / 2, max(0, y.toInt() - size - dp(24)))
             }
         }
         ring.picked = color
-        pickRing?.update(x.toInt() - size / 2, y.toInt() - size - dp(24), -1, -1)
+        pickRing?.update(x.toInt() - size / 2, max(0, y.toInt() - size - dp(24)), -1, -1)
     }
 
+    /** Shows the ring for a moment when a color comes from a tap, not a held pick. */
+    private fun flashPickRing(color: Int, x: Float, y: Float) {
+        showPickRing(color, x, y)
+        setColor(color)
+        handler.removeCallbacks(endPickFlash)
+        handler.postDelayed(endPickFlash, PICK_FLASH_MS)
+    }
+
+    internal val pickRingShowing get() = pickRing != null
+
     private fun hidePickRing() {
+        handler.removeCallbacks(endPickFlash)
         pickView?.let {
             setColor(it.picked)
             rememberColor()
@@ -3440,10 +3456,9 @@ class MainActivity : Activity(), ReferenceHost {
         rerender("references", ::referencesPanel)
     }
 
-    override fun onReferenceColor(color: Int) {
-        setColor(color)
-        rememberColor()
-    }
+    override fun onReferencePick(color: Int, screenX: Float, screenY: Float) = showPickRing(color, screenX, screenY)
+
+    override fun onReferencePickEnd() = hidePickRing()
 
     override fun onReferencePalette(reference: ReferenceWindow) {
         val bitmap = reference.bitmap
@@ -3515,6 +3530,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     override fun onPause() {
+        hidePickRing()
         save(withPreview = previewStale)
         super.onPause()
     }

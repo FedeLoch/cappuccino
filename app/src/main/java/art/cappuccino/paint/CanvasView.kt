@@ -816,7 +816,8 @@ class CanvasView(
     private fun endPick() {
         if (!picking) return
         picking = false
-        onPickEnd()
+        // Waits its turn on the GL thread, so a color still being read can't reopen the ring.
+        act { post { onPickEnd() } }
     }
 
     private fun gesturePointers(event: MotionEvent, skip: Int): Pair<Int, Int> {

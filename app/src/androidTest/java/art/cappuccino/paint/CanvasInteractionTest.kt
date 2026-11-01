@@ -182,6 +182,39 @@ class CanvasInteractionTest {
     }
 
     @Test
+    fun aFingerHoldClosesThePickRingEvenWhenLiftedStraightAway() {
+        repeat(6) {
+            val down = SystemClock.uptimeMillis()
+            val finger = listOf(Pointer(0, width / 2f, height / 2f))
+            inject(MotionEvent.ACTION_DOWN, down, 0, finger, stylus = false)
+            SystemClock.sleep(510)
+            inject(MotionEvent.ACTION_UP, down, 510, finger, stylus = false)
+        }
+        settle()
+        var ringShowing = true
+        onStudio { ringShowing = it.pickRingShowing }
+        assertFalse("the pick ring stayed on screen", ringShowing)
+    }
+
+    @Test
+    fun pickingFromAReferenceShowsTheRingUntilItEnds() {
+        var ringShowing = false
+        onStudio {
+            it.onReferencePick(Color.RED, 300f, 300f)
+            ringShowing = it.pickRingShowing
+        }
+        assertTrue("the ring should show while picking", ringShowing)
+        onStudio {
+            it.onReferencePickEnd()
+            ringShowing = it.pickRingShowing
+        }
+        assertFalse("the ring should close when the pick ends", ringShowing)
+        var color = 0
+        scenario.onActivity { color = it.currentColor }
+        assertEquals("the reference color should be used", Color.RED, color)
+    }
+
+    @Test
     fun clippedLayerOnlyShowsOverTheLayerBelow() {
         val lineY = height / 2f
         val crossX = width * 0.6f
@@ -337,6 +370,12 @@ class CanvasInteractionTest {
         var color = 0
         scenario.onActivity { color = it.currentColor }
         assertEquals("the paper color should be picked", Color.WHITE, color)
+        var ringShowing = true
+        repeat(20) {
+            if (ringShowing) SystemClock.sleep(100)
+            onStudio { ringShowing = it.pickRingShowing }
+        }
+        assertFalse("the pick ring should close with the pen", ringShowing)
         assertFalse("holding should leave no mark", hasInk(x, y))
     }
 

@@ -37,7 +37,8 @@ private const val DRAWING_ALPHA = 0.35f
 interface ReferenceHost {
     fun onReferenceChanged()
     fun onReferenceClosed(reference: ReferenceWindow)
-    fun onReferenceColor(color: Int)
+    fun onReferencePick(color: Int, screenX: Float, screenY: Float)
+    fun onReferencePickEnd()
     fun onReferencePalette(reference: ReferenceWindow)
     fun onReferenceToLayer(reference: ReferenceWindow)
 }
@@ -256,6 +257,7 @@ class ReferenceWindow(
                 }
             },
         )
+        private var picking = false
         private val press = GestureDetector(
             activity,
             object : GestureDetector.SimpleOnGestureListener() {
@@ -265,7 +267,9 @@ class ReferenceWindow(
                 }
 
                 override fun onLongPress(event: MotionEvent) {
-                    if (!scale.isInProgress) host.onReferenceColor(pickColor(event.x, event.y))
+                    if (scale.isInProgress) return
+                    picking = true
+                    host.onReferencePick(pickColor(event.x, event.y), event.rawX, event.rawY)
                 }
             },
         )
@@ -308,6 +312,17 @@ class ReferenceWindow(
         override fun onTouchEvent(event: MotionEvent): Boolean {
             scale.onTouchEvent(event)
             press.onTouchEvent(event)
+            if (picking) {
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_MOVE ->
+                        host.onReferencePick(pickColor(event.x, event.y), event.rawX, event.rawY)
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        picking = false
+                        host.onReferencePickEnd()
+                    }
+                }
+                return true
+            }
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_UP -> {
                     lastX = event.rawX
