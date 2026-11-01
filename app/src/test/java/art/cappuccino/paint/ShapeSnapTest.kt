@@ -82,4 +82,24 @@ class ShapeSnapTest {
         assertNotNull(snapShape(wobblyLine(400f, 120f)))
         assertNull(snapShape(floatArrayOf(0f, 0f, 2f, 2f, 3f, 3f, 4f, 4f)))
     }
+
+    @Test
+    fun aLineHandleMovesItsEndAndKeepsItStraight() {
+        val line = floatArrayOf(0f, 0f, 50f, 0f, 100f, 0f)
+        val anchors = shapeAnchors(line)
+        val moved = reshapeShape(line, anchors, floatArrayOf(0f, 0f, 0f, 200f))
+        assertEquals(0f, moved[2], 0.01f)
+        assertEquals(100f, moved[3], 0.01f)
+        assertEquals(200f, moved[5], 0.01f)
+    }
+
+    @Test
+    fun aClosedShapeStretchesBetweenItsBoxCorners() {
+        val box = floatArrayOf(0f, 0f, 100f, 0f, 100f, 50f, 0f, 50f, 0f, 0f)
+        val anchors = shapeAnchors(box)
+        assertEquals(100f, anchors[2], 0.01f)
+        val moved = reshapeShape(box, anchors, floatArrayOf(10f, 10f, 210f, 110f))
+        assertEquals(210f, moved[2], 0.01f)
+        assertEquals(110f, moved[5], 0.01f)
+    }
 }

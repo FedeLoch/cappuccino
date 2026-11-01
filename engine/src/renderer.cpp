@@ -280,6 +280,7 @@ uniform float uUseHide;
 uniform sampler2D uClipHide;
 uniform float uUseClipHide;
 uniform float uOpacity;
+uniform float uMatte;
 uniform sampler2D uTintMask;
 uniform vec4 uTint;
 out vec4 fragColor;
@@ -292,6 +293,8 @@ void main() {
     clip *= 1.0 - uUseClipHide * texture(uClipHide, vPlace).a;
     float shown = 1.0 - uUseHide * texture(uHide, vUv).a;
     fragColor = uSolid.a > 0.0 ? uSolid : texture(uTexture, vUv) * uOpacity * clip * shown;
+    // Some blends need clear pixels to read as a color that leaves the canvas unchanged.
+    fragColor.rgb += (1.0 - fragColor.a) * uMatte;
 })";
 
 constexpr char kFilterVertex[] = R"(#version 300 es
@@ -445,6 +448,7 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     canvasSize_ = glGetUniformLocation(canvasProgram_, "uSize");
     canvasSolid_ = glGetUniformLocation(canvasProgram_, "uSolid");
     canvasOpacity_ = glGetUniformLocation(canvasProgram_, "uOpacity");
+    canvasMatte_ = glGetUniformLocation(canvasProgram_, "uMatte");
     canvasClip_ = glGetUniformLocation(canvasProgram_, "uClip");
     canvasUseClip_ = glGetUniformLocation(canvasProgram_, "uUseClip");
     canvasUseHide_ = glGetUniformLocation(canvasProgram_, "uUseHide");
@@ -512,6 +516,7 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     liquifyProgram_ = link(kMeshVertex, kCanvasFragment);
     liquifyMatrix_ = glGetUniformLocation(liquifyProgram_, "uMatrix");
     liquifyOpacity_ = glGetUniformLocation(liquifyProgram_, "uOpacity");
+    liquifyMatte_ = glGetUniformLocation(liquifyProgram_, "uMatte");
     liquifyUseClip_ = glGetUniformLocation(liquifyProgram_, "uUseClip");
     liquifyUseHide_ = glGetUniformLocation(liquifyProgram_, "uUseHide");
     liquifyUseClipHide_ = glGetUniformLocation(liquifyProgram_, "uUseClipHide");
@@ -1182,6 +1187,7 @@ void Renderer::liquifyDab(float fromX, float fromY, float toX, float toY, float 
 
 void Renderer::drawLiquify(const float* matrix, float opacity, bool clipped, const Layer& layer) {
     glUseProgram(liquifyProgram_);
+    glUniform1f(liquifyMatte_, blendMatte_);
     glUniformMatrix4fv(liquifyMatrix_, 1, GL_FALSE, matrix);
     glUniform1f(liquifyOpacity_, opacity);
     glUniform1f(liquifyUseClip_, clipped ? 1.0f : 0.0f);
@@ -1724,12 +1730,29 @@ void Renderer::drawCanvas(const float* matrix) {
         if (!layer.clip) base = &layer;
         const bool clipped = layer.clip && base != nullptr;
         if (!layer.visible || (clipped && !base->visible)) continue;
+        glBlendEquation(GL_FUNC_ADD);
+        blendMatte_ = 0.0f;
         switch (layer.blend) {
             case BlendMode::kNormal: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
             case BlendMode::kMultiply: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break;
             case BlendMode::kScreen: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
             case BlendMode::kAdd: glBlendFunc(GL_ONE, GL_ONE); break;
+            case BlendMode::kDarken:
+                glBlendEquation(GL_MIN);
+                blendMatte_ = 1.0f;
+                break;
+            case BlendMode::kLighten: glBlendEquation(GL_MAX); break;
+            case BlendMode::kSoftLight:
+                glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
+                blendMatte_ = 0.5f;
+                break;
+            case BlendMode::kSubtract:
+                glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
+                glBlendFunc(GL_ONE, GL_ONE);
+                break;
+            case BlendMode::kExclusion: glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_COLOR); break;
         }
+        glUniform1f(canvasMatte_, blendMatte_);
         glUniform1f(canvasOpacity_, layer.opacity);
         glUniform1f(canvasUseClip_, clipped ? 1.0f : 0.0f);
         useHide(&layer, kHideUnit, canvasUseHide_);
@@ -1772,6 +1795,8 @@ void Renderer::drawCanvas(const float* matrix) {
             glBindVertexArray(canvasVao_);
         }
     }
+    glBlendEquation(GL_FUNC_ADD);
+    glUniform1f(canvasMatte_, 0.0f);
     glUniform1f(canvasUseClip_, 0.0f);
     glUniform1f(canvasUseHide_, 0.0f);
     glUniform1f(canvasUseClipHide_, 0.0f);

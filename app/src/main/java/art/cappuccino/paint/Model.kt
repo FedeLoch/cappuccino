@@ -160,7 +160,9 @@ class BrushKind(
     }
 }
 
-val BLEND_MODES = listOf("Normal", "Multiply", "Screen", "Additive")
+val BLEND_MODES = listOf(
+    "Normal", "Multiply", "Screen", "Additive", "Darken", "Lighten", "Soft light", "Subtract", "Exclusion",
+)
 
 data class LayerInfo(
     val id: Int,
@@ -175,6 +177,9 @@ data class LayerInfo(
     var maskId: Int = 0,
     var maskEnabled: Boolean = true,
     var maskFile: String? = null,
+    var text: String? = null,
+    var textSize: Float = 0f,
+    var textColor: Int = 0,
 )
 
 data class LayerGroup(
@@ -217,6 +222,9 @@ val FILTERS = listOf(
 val LIQUIFY_TOOLS = listOf("Push", "Grow", "Shrink", "Restore")
 
 class ToolSettings(var diameter: Float, var opacity: Float = 1f, var stabilizer: Float = 0f)
+
+fun findArtworks(artworks: List<ArtworkInfo>, query: String) =
+    artworks.filter { it.name.contains(query.trim(), ignoreCase = true) }
 
 data class Project(val id: String, var name: String, var color: Int = 0)
 

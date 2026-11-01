@@ -37,6 +37,7 @@ private const val PREVIEW_MAX_HEIGHT = 420
 private const val BOOK_WIDTH = 168
 private const val BOOK_HEIGHT = 224
 private const val SWATCH_SIZE = 34
+private const val SMALL_SHEET_WIDTH = 440
 private const val SWATCH_COLUMNS = 6
 private const val DISABLED_ALPHA = 0.45f
 
@@ -308,6 +309,168 @@ class NewArtworkSheet(
     }
 }
 
+class SheetChoice(val label: String, val icon: Int? = null, val danger: Boolean = false, val run: () -> Unit)
+
+private fun Context.sheetRow(icon: Int?, content: String, tint: Int, onClick: () -> Unit) = LinearLayout(this).apply {
+    gravity = Gravity.CENTER_VERTICAL
+    minimumHeight = dp(42)
+    setOnClickListener { onClick() }
+    if (icon != null) {
+        addView(
+            ImageView(context).apply {
+                setImageResource(icon)
+                setColorFilter(if (tint == ESPRESSO) COCOA else tint)
+            },
+            LinearLayout.LayoutParams(dp(20), dp(20)).apply { marginEnd = dp(12) },
+        )
+    }
+    addView(label(content, 14f, tint))
+}
+
+private fun Context.smallSheetBody(title: String, close: () -> Unit) = LinearLayout(this).apply {
+    orientation = LinearLayout.VERTICAL
+    setPadding(dp(24), dp(20), dp(24), dp(18))
+    addView(
+        LinearLayout(context).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(serif(title, 22f), LinearLayout.LayoutParams(0, -2, 1f))
+            addView(creamChip(tr("Cancel")) { close() })
+        },
+    )
+}
+
+private fun Context.sheetButton(content: String, tint: Int, onClick: () -> Unit) = label(content, 15f, Color.WHITE).apply {
+    gravity = Gravity.CENTER
+    minHeight = dp(44)
+    minWidth = dp(112)
+    setPadding(dp(20), 0, dp(20), 0)
+    background = rounded(tint, 12)
+    setOnClickListener { onClick() }
+}
+
+private fun Activity.smallSheet(content: View): Dialog = sheet(content).apply {
+    window?.setLayout(
+        min(dp(SMALL_SHEET_WIDTH), resources.displayMetrics.widthPixels - dp(SHEET_MARGIN)),
+        ViewGroup.LayoutParams.WRAP_CONTENT,
+    )
+}
+
+/** A short list of choices on the same cream card as the rest of the home screen. */
+fun Activity.choiceSheet(title: String, choices: List<SheetChoice>) {
+    lateinit var dialog: Dialog
+    val content = smallSheetBody(title) { dialog.dismiss() }.apply {
+        addView(View(context), LinearLayout.LayoutParams(-1, dp(8)))
+        choices.forEach { choice ->
+            addView(
+                sheetRow(choice.icon, choice.label, if (choice.danger) ACCENT else ESPRESSO) {
+                    dialog.dismiss()
+                    choice.run()
+                },
+            )
+        }
+    }
+    dialog = smallSheet(content)
+    dialog.show()
+}
+
+/** Asks for one short piece of text. */
+fun Activity.askSheet(title: String, current: String, done: (String) -> Unit) {
+    lateinit var dialog: Dialog
+    val field = EditText(this).apply {
+        setText(current)
+        setSelectAllOnFocus(true)
+    }
+    fieldStyle(field, "")
+    val content = smallSheetBody(title) { dialog.dismiss() }.apply {
+        addView(field, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
+        addView(
+            sheetButton(tr("Save"), ACCENT) {
+                val text = field.text.toString().trim()
+                if (text.isNotEmpty()) {
+                    dialog.dismiss()
+                    done(text)
+                }
+            },
+            LinearLayout.LayoutParams(-2, -2).apply {
+                gravity = Gravity.END
+                topMargin = dp(16)
+            },
+        )
+    }
+    dialog = smallSheet(content)
+    dialog.show()
+}
+
+/** Double checks before something that can't be taken back. */
+fun Activity.confirmSheet(title: String, message: String?, action: () -> Unit) {
+    lateinit var dialog: Dialog
+    val content = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(24), dp(22), dp(24), dp(18))
+        addView(serif(title, 22f))
+        if (message != null) {
+            addView(label(message, 14f, COCOA), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        }
+        addView(
+            LinearLayout(context).apply {
+                gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                addView(creamChip(tr("Keep")) { dialog.dismiss() })
+                addView(
+                    sheetButton(tr("Delete"), ACCENT) {
+                        dialog.dismiss()
+                        action()
+                    },
+                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(10) },
+                )
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(18) },
+        )
+    }
+    dialog = smallSheet(content)
+    dialog.show()
+}
+
+/** Four small pages from the companion the first time the app opens. */
+fun Activity.tourSheet(look: CompanionLook, finished: () -> Unit) {
+    val pages = listOf(
+        tr("Hi, I'm your companion.") to tr("I look at your art while you draw and leave small notes. Tap me to read them, or drag me out of the way."),
+        tr("Draw with your pen") to tr("Your fingers move the canvas. Two fingers tap to undo, three to redo, four to hide everything."),
+        tr("Pick any color") to tr("Hold the pen still, or hold a finger on the canvas, and the color wheel appears. It works on references too."),
+        tr("Need some quiet?") to tr("Ask me to hide and I'll peek from the toolbar's corner. Tap me when you want me back."),
+    )
+    var page = 0
+    lateinit var dialog: Dialog
+    val face = CompanionView(this).apply {
+        this.look = look
+        contentDescription = tr("Your companion")
+    }
+    val heading = serif("", 24f)
+    val text = label("", 15f, COCOA)
+    val next = sheetButton("", ACCENT) {}
+    fun show() {
+        heading.text = pages[page].first
+        text.text = pages[page].second
+        next.text = if (page == pages.lastIndex) tr("Start drawing") else tr("Next")
+    }
+    next.setOnClickListener {
+        if (page == pages.lastIndex) dialog.dismiss() else page++
+        show()
+    }
+    show()
+    val content = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(dp(28), dp(24), dp(28), dp(22))
+        addView(face, LinearLayout.LayoutParams(dp(72), dp(72)))
+        addView(heading, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10) })
+        addView(text.apply { gravity = Gravity.CENTER }, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        addView(next, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(18) })
+    }
+    dialog = smallSheet(content)
+    dialog.setOnDismissListener { finished() }
+    dialog.show()
+}
+
 /** Names a new sketchbook beside a cover that follows along as you choose. */
 fun Activity.newSketchbookSheet(firstColor: Int, create: (String, Int) -> Unit) {
     lateinit var dialog: Dialog
@@ -452,21 +615,9 @@ fun Activity.artworkSheet(
     delete: () -> Unit,
 ) {
     lateinit var dialog: Dialog
-    fun action(icon: Int, content: String, tint: Int = ESPRESSO, run: () -> Unit) = LinearLayout(this).apply {
-        gravity = Gravity.CENTER_VERTICAL
-        minimumHeight = dp(42)
-        setOnClickListener {
-            dialog.dismiss()
-            run()
-        }
-        addView(
-            ImageView(context).apply {
-                setImageResource(icon)
-                setColorFilter(if (tint == ESPRESSO) COCOA else tint)
-            },
-            LinearLayout.LayoutParams(dp(20), dp(20)),
-        )
-        addView(label(content, 14f, tint), LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
+    fun action(icon: Int, content: String, tint: Int = ESPRESSO, run: () -> Unit) = sheetRow(icon, content, tint) {
+        dialog.dismiss()
+        run()
     }
     val screenWidth = resources.displayMetrics.widthPixels / resources.displayMetrics.density
     val wide = screenWidth >= TWO_COLUMN_WIDTH

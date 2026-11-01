@@ -1,7 +1,6 @@
 package art.cappuccino.paint
 
 import android.app.Activity
-import android.app.AlertDialog
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.BitmapFactory
@@ -27,6 +26,8 @@ import kotlin.math.max
 
 private const val ALL = "all"
 private const val PICK_REFERENCES = 42
+private const val TOUR_SEEN = "tourSeen"
+private const val SEARCH_FROM = 6
 private const val CREATE_BACKUP = 43
 private const val OPEN_BACKUP = 44
 private const val OPEN_PSD = 45
@@ -46,6 +47,7 @@ class GalleryActivity : Activity() {
     private var referenceFilter = ""
     private var selected = ALL
     private var showingReferences = false
+    private var searchText = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -71,6 +73,18 @@ class GalleryActivity : Activity() {
     override fun onResume() {
         super.onResume()
         render()
+        if (PendingSaves.busy) {
+            // The artwork just left is still saving, so its new thumbnail comes a moment later.
+            background.execute {
+                PendingSaves.await()
+                runOnUiThread { if (!isDestroyed) render() }
+            }
+        }
+        val preferences = getSharedPreferences("studio", MODE_PRIVATE)
+        if (!preferences.getBoolean(TOUR_SEEN, false) && store.artworks().isEmpty()) {
+            preferences.edit().putBoolean(TOUR_SEEN, true).apply()
+            tourSheet(CompanionLook.COFFEE_DROP) {}
+        }
     }
 
     private fun quietChip(content: String, selected: Boolean = false, onClick: () -> Unit) =
@@ -147,11 +161,7 @@ class GalleryActivity : Activity() {
             )
         }
         if (artworks.size > 1) {
-            root.addView(label(tr("Recent"), 14f, COCOA), spaced())
-            val cell = dp(220)
-            val layout = grid(cell)
-            artworks.drop(1).forEach { layout.addView(card(it, cell)) }
-            root.addView(layout, spaced())
+            addSearchableGrid(artworks.drop(1), dp(220), tr("Recent"))
         }
     }
 
@@ -384,9 +394,59 @@ class GalleryActivity : Activity() {
             root.addView(label(tr("Start your first artwork here."), 16f, COCOA), spaced())
             return
         }
-        val cell = dp(240)
+        addSearchableGrid(artworks, dp(240))
+    }
+
+    /** A grid with a quiet magnifier. The field only appears when asked for, and only redraws the grid. */
+    private fun addSearchableGrid(artworks: List<ArtworkInfo>, cell: Int, title: String? = null) {
         val layout = grid(cell)
-        artworks.forEach { layout.addView(card(it, cell)) }
+        fun fill() {
+            layout.removeAllViews()
+            findArtworks(artworks, searchText).forEach { layout.addView(card(it, cell)) }
+        }
+        val field = EditText(this)
+        fieldStyle(field, tr("Search"))
+        field.setText(searchText)
+        field.visibility = if (searchText.isEmpty()) View.GONE else View.VISIBLE
+        field.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(text: android.text.Editable?) {
+                searchText = text.toString()
+                fill()
+            }
+        })
+        val heading = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(label(title.orEmpty(), 14f, COCOA), LinearLayout.LayoutParams(0, -2, 1f))
+            if (artworks.size >= SEARCH_FROM) {
+                addView(
+                    ImageView(context).apply {
+                        setImageResource(R.drawable.ic_search)
+                        setColorFilter(COCOA)
+                        setPadding(dp(8), dp(8), dp(8), dp(8))
+                        contentDescription = tr("Search")
+                        setOnClickListener {
+                            val top = (parent as View).top
+                            val opening = field.visibility != View.VISIBLE
+                            field.visibility = if (opening) View.VISIBLE else View.GONE
+                            if (opening) {
+                                field.requestFocus()
+                                getSystemService(android.view.inputmethod.InputMethodManager::class.java)
+                                    .showSoftInput(field, 0)
+                                (root.parent as? ScrollView)?.let { page -> page.post { page.smoothScrollTo(0, top) } }
+                            } else {
+                                field.setText("")
+                            }
+                        }
+                    },
+                    LinearLayout.LayoutParams(dp(36), dp(36)),
+                )
+            }
+        }
+        if (title != null || artworks.size >= SEARCH_FROM) root.addView(heading, spaced())
+        root.addView(field, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        fill()
         root.addView(layout, spaced())
     }
 
@@ -445,14 +505,16 @@ class GalleryActivity : Activity() {
                 }
             },
             move = {
-                val names = listOf(tr("Unsorted")) + projects.map { it.name }
-                AlertDialog.Builder(this)
-                    .setTitle(tr("Move to"))
-                    .setItems(names.toTypedArray()) { _, index ->
-                        store.moveArtwork(art.id, projects.getOrNull(index - 1)?.id.orEmpty())
-                        render()
-                    }
-                    .show()
+                val places = listOf("" to tr("Unsorted")) + projects.map { it.id to it.name }
+                choiceSheet(
+                    tr("Move to"),
+                    places.map { (id, name) ->
+                        SheetChoice(name) {
+                            store.moveArtwork(art.id, id)
+                            render()
+                        }
+                    },
+                )
             },
             duplicate = {
                 store.duplicateArtwork(art.id)
@@ -472,17 +534,17 @@ class GalleryActivity : Activity() {
     }
 
     private fun projectOptions(project: Project) {
-        AlertDialog.Builder(this)
-            .setTitle(project.name)
-            .setItems(arrayOf(tr("Rename"), tr("Change cover color"), tr("Delete"))) { _, choice ->
-                if (choice == 0) {
+        choiceSheet(
+            project.name,
+            listOf(
+                SheetChoice(tr("Rename"), R.drawable.ic_rename) {
                     ask(tr("Rename sketchbook"), project.name) {
                         store.renameProject(project.id, it)
                         render()
                     }
-                } else if (choice == 1) {
-                    chooseCover(project)
-                } else {
+                },
+                SheetChoice(tr("Change cover color"), R.drawable.ic_palette) { chooseCover(project) },
+                SheetChoice(tr("Delete"), R.drawable.ic_trash, danger = true) {
                     confirm(
                         tr("Delete %1?", project.name),
                         tr("Its artworks move to Unsorted. Its references are deleted."),
@@ -491,9 +553,9 @@ class GalleryActivity : Activity() {
                         selected = ALL
                         render()
                     }
-                }
-            }
-            .show()
+                },
+            ),
+        )
     }
 
     /** Shows every cover color as a small sketchbook, ready to tap. */
@@ -648,12 +710,10 @@ class GalleryActivity : Activity() {
     }
 
     private fun backupOptions() {
-        AlertDialog.Builder(this)
-            .setTitle(tr("Backup"))
-            .setItems(arrayOf(tr("Save a backup file"), tr("Restore from a backup file"), tr("Language"))) { _, choice ->
-                if (choice == 2) {
-                    chooseLanguage()
-                } else if (choice == 0) {
+        choiceSheet(
+            tr("Backup"),
+            listOf(
+                SheetChoice(tr("Save a backup file"), R.drawable.ic_export) {
                     startActivityForResult(
                         Intent(Intent.ACTION_CREATE_DOCUMENT)
                             .addCategory(Intent.CATEGORY_OPENABLE)
@@ -661,26 +721,30 @@ class GalleryActivity : Activity() {
                             .putExtra(Intent.EXTRA_TITLE, "Cappuccino backup.zip"),
                         CREATE_BACKUP,
                     )
-                } else {
+                },
+                SheetChoice(tr("Restore from a backup file"), R.drawable.ic_copy) {
                     startActivityForResult(
                         Intent(Intent.ACTION_OPEN_DOCUMENT)
                             .addCategory(Intent.CATEGORY_OPENABLE)
                             .setType("application/zip"),
                         OPEN_BACKUP,
                     )
-                }
-            }
-            .show()
+                },
+                SheetChoice(tr("Language"), R.drawable.ic_rename) { chooseLanguage() },
+            ),
+        )
     }
 
     private fun chooseLanguage() {
-        AlertDialog.Builder(this)
-            .setTitle(tr("Language"))
-            .setItems(Language.entries.map { it.label }.toTypedArray()) { _, index ->
-                (application as CappuccinoApp).saveLanguage(Language.entries[index])
-                render()
-            }
-            .show()
+        choiceSheet(
+            tr("Language"),
+            Language.entries.map { language ->
+                SheetChoice(language.label) {
+                    (application as CappuccinoApp).saveLanguage(language)
+                    render()
+                }
+            },
+        )
     }
 
     private fun runBackup(uri: android.net.Uri, restoring: Boolean) {
@@ -706,30 +770,9 @@ class GalleryActivity : Activity() {
         }
     }
 
-    private fun ask(title: String, current: String, done: (String) -> Unit) {
-        val field = EditText(this).apply {
-            setText(current)
-            setSelectAllOnFocus(true)
-            isSingleLine = true
-        }
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setView(field)
-            .setNegativeButton(tr("Cancel"), null)
-            .setPositiveButton(tr("Save")) { _, _ ->
-                field.text.toString().trim().takeIf { it.isNotEmpty() }?.let(done)
-            }
-            .show()
-    }
+    private fun ask(title: String, current: String, done: (String) -> Unit) = askSheet(title, current, done)
 
-    private fun confirm(title: String, message: String, action: () -> Unit) {
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setMessage(message)
-            .setNegativeButton(tr("Keep"), null)
-            .setPositiveButton(tr("Delete")) { _, _ -> action() }
-            .show()
-    }
+    private fun confirm(title: String, message: String, action: () -> Unit) = confirmSheet(title, message, action)
 
     override fun onDestroy() {
         background.shutdown()

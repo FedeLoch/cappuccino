@@ -85,7 +85,8 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Smudge, fill, gradient, and lasso fill tools, plus a lasso eraser for blocking in silhouettes
 - Hold at the end of a stroke to snap it to a clean line, ellipse, or box. Lines lean toward your perspective guides
 - Live symmetry: left-right, top-bottom, four-way, or radial, with a center you can move
-- Custom brushes with imported texture tips, favorites, a stabilizer, and an adjustable pressure curve
+- Custom brushes with imported texture tips and scatter settings, favorites, a stabilizer, and a pressure curve for each brush
+- Hold at the end of a stroke to snap a clean shape, then drag its handles to adjust it
 - Every brush shape also works as an eraser
 - Low-latency stylus drawing with pressure, and tilt on pens that support it
 - Hold the pen, or press its side button, to pick a color
@@ -98,7 +99,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 
 ### Build your image
 
-- Layers with blend modes, opacity, layer masks, clipping masks, transparency lock, and groups
+- Layers with nine blend modes, multi-select, editable text, opacity, layer masks, clipping masks, transparency lock, and groups
 - Liquify: push, grow, shrink, and restore parts of a layer
 - Filters: blur, motion blur, sharpen, noise, gradient map, levels, and depth fade
 - Lasso and magic wand selections, transform, and hue, saturation, and tone adjustments
@@ -167,7 +168,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 
 - Automatic saving that writes only the tiles you changed, with the previous version kept
 - Finished strokes are written to disk as you draw, and return after a crash
-- Export to PNG, layered PSD, and time-lapse video
+- Export to PNG, layered PSD, and time-lapse video in the length you choose
 - Design sheets that put all variations on one page, and a PNG for each thumbnail frame
 - PSD import for 8-bit RGB files
 - Backup and restore of your whole library in one file

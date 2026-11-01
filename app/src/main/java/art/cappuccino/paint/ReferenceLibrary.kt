@@ -105,19 +105,19 @@ fun Activity.referenceOptions(
                 store.updateReferenceNote(projectId, file.name) { it.copy(starred = !it.starred) }
                 changed()
             }
-            1 -> chooseBoard(store, projectId, file, changed)
-            2 -> chooseSketchbook(store, projectId, file, moved)
+            1 -> chooseBoard(store, projectId, listOf(file), changed)
+            2 -> chooseSketchbook(store, projectId, listOf(file), moved)
             else -> delete()
         }
     }.show()
 }
 
-private fun Activity.chooseBoard(store: ArtworkStore, projectId: String, file: File, changed: () -> Unit) {
+fun Activity.chooseBoard(store: ArtworkStore, projectId: String, files: List<File>, changed: () -> Unit) {
     val boards = referenceBoards(store.referenceNotes(projectId))
     val items = (boards + tr("New board") + tr("No board")).toTypedArray()
     AlertDialog.Builder(this).setTitle(tr("Board")).setItems(items) { _, choice ->
         fun assign(board: String) {
-            store.updateReferenceNote(projectId, file.name) { it.copy(board = board) }
+            files.forEach { file -> store.updateReferenceNote(projectId, file.name) { it.copy(board = board) } }
             changed()
         }
         when (choice) {
@@ -138,14 +138,14 @@ private fun Activity.chooseBoard(store: ArtworkStore, projectId: String, file: F
     }.show()
 }
 
-private fun Activity.chooseSketchbook(store: ArtworkStore, projectId: String, file: File, moved: () -> Unit) {
+fun Activity.chooseSketchbook(store: ArtworkStore, projectId: String, files: List<File>, moved: () -> Unit) {
     val targets = (store.projects().map { it.id to it.name } + ("" to tr("Unsorted")))
         .filter { it.first != projectId }
     if (targets.isEmpty()) return
     AlertDialog.Builder(this)
         .setTitle(tr("Move to"))
         .setItems(targets.map { it.second }.toTypedArray()) { _, choice ->
-            if (store.moveReference(file, projectId, targets[choice].first)) moved()
+            if (files.count { store.moveReference(it, projectId, targets[choice].first) } > 0) moved()
         }
         .show()
 }

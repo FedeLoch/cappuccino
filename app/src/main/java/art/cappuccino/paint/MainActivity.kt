@@ -67,6 +67,8 @@ private const val RETIRED_LAYERS = 6
 private val LEFT_PANELS = setOf("actions", "references", "view", "tools")
 private const val PICK_TIP = 45
 private const val PICK_FLASH_MS = 700L
+private const val QUICK_COLORS = 4
+private const val NEW_SITTING_MS = 6L * 60 * 60 * 1000
 private const val PEEK_SIZE = 60
 private const val PEEK_OVERLAP = 24
 private const val PEEK_TILT = 10f
@@ -77,6 +79,7 @@ private const val HIDE_MS = 480L
 private const val HIDE_HOP_DP = 26
 private const val REFERENCE_PROFILE_SIZE = 240
 private val TEXT_SIZES = listOf(0.03f, 0.05f, 0.09f)
+private const val TEXT_FIND_WIDTH = 512
 private const val BRUSH_TIP_SIZE = 128
 
 class MainActivity : Activity(), ReferenceHost {
@@ -87,6 +90,9 @@ class MainActivity : Activity(), ReferenceHost {
 
     private val handler = Handler(Looper.getMainLooper())
     private val saver = Executors.newSingleThreadExecutor()
+    private val analyzer = Executors.newSingleThreadExecutor { work ->
+        Thread { Thread.currentThread().priority = Thread.MIN_PRIORITY; work.run() }
+    }
     private val savedFiles = HashMap<Int, String>()
     private val recentColors = ArrayList<Int>()
     private val chrome = ArrayList<PopupWindow>()
@@ -98,6 +104,16 @@ class MainActivity : Activity(), ReferenceHost {
     private var unsaved = false
     private var penDown = false
     private var report: AnalysisReport? = null
+    private var progress: String? = null
+    private var earlier: ArtSnapshot? = null
+    private var earlierLoaded = false
+    private var comparison: String? = null
+    private val shapeHandles = ArrayList<PopupWindow>()
+    private var recentStrip: LinearLayout? = null
+    private var pickingReferences = false
+    private val pickedReferences = LinkedHashSet<String>()
+    private var pickingLayers = false
+    private val pickedLayers = LinkedHashSet<Int>()
     private var unreadTips = false
     private var swatch: View? = null
 
@@ -204,6 +220,7 @@ class MainActivity : Activity(), ReferenceHost {
             bodyColor = canvas.brushColor
         }
         canvas.onStrokeStart = {
+            hideShapeHandles()
             penDown = true
             closePanel()
             fadeChrome(0.15f)
@@ -219,7 +236,11 @@ class MainActivity : Activity(), ReferenceHost {
             handler.postDelayed(nap, NAP_DELAY_MS)
             markUnsaved(strokeOnly = true)
         }
-        canvas.onGestureStart = { closePanel() }
+        canvas.onGestureStart = {
+            closePanel()
+            hideShapeHandles()
+        }
+        canvas.onShapeSnapped = ::showShapeHandles
         canvas.onViewChanged = {
             positionHandles()
             noteOverlay?.invalidate()
@@ -468,7 +489,8 @@ class MainActivity : Activity(), ReferenceHost {
                 }
                 PendingSaves.finished()
                 then?.invoke()
-                analyze(thumbnail, referenceSet.first, referenceSet.second)
+                val snapshot = java.nio.ByteBuffer.allocateDirect(thumbnail.capacity()).put(thumbnail.duplicate().apply { rewind() })
+                analyzer.execute { analyze(snapshot, referenceSet.first, referenceSet.second) }
             }
         }
     }
@@ -506,6 +528,16 @@ class MainActivity : Activity(), ReferenceHost {
         val result = analyzeArtwork(
             pixels, ArtworkStore.THUMBNAIL_WIDTH, document.thumbnailHeight, document.light.takeIf { it != Light.OFF }?.degrees,
         )
+        val now = ArtSnapshot(System.currentTimeMillis(), result.contrast, result.coverage, result.colored)
+        if (!earlierLoaded) {
+            earlierLoaded = true
+            val saved = store.snapshot(document.id)
+            if (saved == null || now.time - saved.time >= NEW_SITTING_MS) {
+                store.saveSnapshot(document.id, now)
+                earlier = saved
+            }
+        }
+        val note = earlier?.let { progressNote(it, now) }
         val artProfile = profileImage(pixels, ArtworkStore.THUMBNAIL_WIDTH, document.thumbnailHeight)
         val matched = compareWithReferences(artProfile, referenceProfiles(files))
         runOnUiThread {
@@ -513,6 +545,7 @@ class MainActivity : Activity(), ReferenceHost {
             val changed = result.tips.map { it.text } != report?.tips?.map { it.text } ||
                 matched?.summary != referenceMatch?.summary
             report = result
+            progress = note
             referenceMatch = matched
             matchedFiles = files
             matchedScope = scope
@@ -539,6 +572,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.brushDiameter = settings.diameter
         canvas.brushOpacity = settings.opacity
         canvas.stabilizerStrength = settings.stabilizer
+        canvas.pressureGamma = preferences.getFloat("pressure-${kind.id}", preferences.getFloat("pressureGamma", 0.75f))
         if (kind.isEraser) {
             lastEraser = kind
             canvas.eraserKind = kind
@@ -575,6 +609,21 @@ class MainActivity : Activity(), ReferenceHost {
         recentColors.remove(canvas.brushColor)
         recentColors.add(0, canvas.brushColor)
         if (recentColors.size > 8) recentColors.removeAt(recentColors.size - 1)
+        showRecentColors()
+    }
+
+    private fun showRecentColors() {
+        val strip = recentStrip ?: return
+        strip.visibility = if (recentColors.isEmpty()) View.INVISIBLE else View.VISIBLE
+        for (index in 0 until strip.childCount) {
+            val dot = strip.getChildAt(index)
+            val color = recentColors.getOrNull(index)
+            dot.visibility = if (color == null) View.INVISIBLE else View.VISIBLE
+            if (color == null) continue
+            dot.background = rounded(color, 11).apply { setStroke(dp(1), TEXT_COLOR) }
+            dot.contentDescription = tr("Use this color")
+            dot.setOnClickListener { setColor(color) }
+        }
     }
 
     private fun place(content: View, gravity: Int, x: Int, y: Int) {
@@ -655,6 +704,15 @@ class MainActivity : Activity(), ReferenceHost {
             })
         }
         place(sliders, Gravity.START or Gravity.CENTER_VERTICAL, dp(6), 0)
+        sliders.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        val strip = pill(vertical = true).apply {
+            setPadding(dp(5), dp(5), dp(5), dp(5))
+            repeat(QUICK_COLORS) { addView(View(context), LinearLayout.LayoutParams(dp(22), dp(22)).apply { setMargins(0, dp(2), 0, dp(2)) }) }
+        }
+        recentStrip = strip
+        strip.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        place(strip, Gravity.START or Gravity.CENTER_VERTICAL, dp(9), (sliders.measuredHeight + strip.measuredHeight) / 2 + dp(8))
+        showRecentColors()
         selectTool(canvas.brushKind)
         markMaskEditing()
         if (preferences.getBoolean("companion", true)) showCompanion()
@@ -853,6 +911,51 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
+    private fun hideShapeHandles() {
+        shapeHandles.forEach { it.dismiss() }
+        shapeHandles.clear()
+    }
+
+    /** Two handles that stay on a snapped shape until the next stroke, so it can still be adjusted. */
+    private fun showShapeHandles(kind: BrushKind, shape: FloatArray, pressure: Float) {
+        hideShapeHandles()
+        val size = dp(36)
+        var current = shape
+        var anchors = shapeAnchors(shape)
+        fun place(window: PopupWindow, end: Int) {
+            val spot = canvas.canvasToScreen(anchors[end], anchors[end + 1])
+            window.update(spot[0].toInt() - size / 2, spot[1].toInt() - size / 2, -1, -1)
+        }
+        listOf(0, 2).forEach { end ->
+            val handle = View(this).apply {
+                background = rounded(ACCENT, 18).apply { setStroke(dp(3), Color.WHITE) }
+                contentDescription = tr("Adjust shape")
+            }
+            val window = PopupWindow(handle, size, size).apply { isClippingEnabled = false }
+            handle.setOnTouchListener { _, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_MOVE -> {
+                        val point = canvas.screenToCanvas(event.rawX, event.rawY)
+                        anchors = anchors.copyOf().also {
+                            it[end] = point[0]
+                            it[end + 1] = point[1]
+                        }
+                        place(window, end)
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        current = reshapeShape(current, shapeAnchors(current), anchors)
+                        undoEdit()
+                        canvas.redrawShape(kind, current, pressure)
+                    }
+                }
+                true
+            }
+            val spot = canvas.canvasToScreen(anchors[end], anchors[end + 1])
+            window.showAtLocation(canvas, Gravity.NO_GRAVITY, spot[0].toInt() - size / 2, spot[1].toInt() - size / 2)
+            shapeHandles.add(window)
+        }
+    }
+
     private fun fadeChrome(alpha: Float) {
         if (interfaceHidden && alpha > 0f) return
         (chrome + listOfNotNull(companionWindow)).forEach {
@@ -951,7 +1054,44 @@ class MainActivity : Activity(), ReferenceHost {
         showNoteMarks(emptyList())
     }
 
-    private fun companionTips(): List<Tip> = listOfNotNull(
+    private fun mutedNotes() = preferences.getStringSet("mutedNotes", emptySet()).orEmpty()
+
+    private fun mutedTopics(): Map<String, Int> =
+        preferences.getString("mutedTopics", "").orEmpty().split('|').filter { it.contains('=') }
+            .associate { it.substringBefore('=') to (it.substringAfter('=').toIntOrNull() ?: 0) }
+
+    private fun muteNote(tip: Tip) {
+        val topics = mutedTopics().toMutableMap()
+        topics[tip.topic] = (topics[tip.topic] ?: 0) + 1
+        preferences.edit()
+            .putStringSet("mutedNotes", mutedNotes() + tip.text)
+            .putString("mutedTopics", topics.entries.joinToString("|") { "${it.key}=${it.value}" })
+            .apply()
+        companionSection = 0
+        rerender("companion", ::companionPanel)
+    }
+
+    private fun compareVariations(family: List<ArtworkInfo>) {
+        saver.execute {
+            val readable = family.mapNotNull { art ->
+                val bitmap = BitmapFactory.decodeFile(store.thumbnail(art.id).path) ?: return@mapNotNull null
+                val pixels = IntArray(bitmap.width * bitmap.height)
+                bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
+                art to analyzeArtwork(pixels, bitmap.width, bitmap.height)
+            }
+            val best = readable.getOrNull(clearestAtASmallSize(readable.map { it.second }))?.first
+            runOnUiThread {
+                comparison = best?.let { tr("%1 reads clearest at a small size. Its lights and darks separate the most.", it.name) }
+                companionSection = 6
+                rerender("companion", ::companionPanel)
+            }
+        }
+    }
+
+    private fun companionTips(): List<Tip> = withoutMuted(allTips(), mutedNotes(), mutedTopics())
+
+    private fun allTips(): List<Tip> = listOfNotNull(
+        progress?.let { Tip("Progress", it) },
         referenceMatch?.let {
             Tip(
                 "Your references", "${it.summary} ${it.advice}", it.why,
@@ -1126,10 +1266,28 @@ class MainActivity : Activity(), ReferenceHost {
                 )
             }
         }
+        if (companionSection == 6) comparison?.let { gapped(label(it, 14f)) }
         if (companionSection == 2) {
+            val family = store.variations(document.id)
             gapped(
                 wrapRow(
-                    listOf(smallChip(tr("Hide")) { setCompanionVisible(false) }) +
+                    listOfNotNull(
+                        tip?.let { note -> smallChip(tr("Not useful")) { muteNote(note) } },
+                        if (family.size > 1) smallChip(tr("Compare")) { compareVariations(family) } else null,
+                        smallChip(tr("Hide")) { setCompanionVisible(false) },
+                    ) +
+                        (
+                            if (mutedNotes().isEmpty()) {
+                                emptyList()
+                            } else {
+                                listOf(
+                                    smallChip(tr("Bring notes back")) {
+                                        preferences.edit().remove("mutedNotes").remove("mutedTopics").apply()
+                                        rerender("companion", ::companionPanel)
+                                    },
+                                )
+                            }
+                        ) +
                         CompanionLook.entries.map { look ->
                             smallChip(tr(look.label), companion.look == look) { chooseCompanion(look) }
                         },
@@ -1296,7 +1454,7 @@ class MainActivity : Activity(), ReferenceHost {
             val gamma = ((canvas.pressureGamma - 0.4f) / 1.2f * 100).roundToInt()
             addView(toolSlider(tr("Pressure: soft to firm"), gamma) {
                 canvas.pressureGamma = 0.4f + it / 100f * 1.2f
-                preferences.edit().putFloat("pressureGamma", canvas.pressureGamma).apply()
+                preferences.edit().putFloat("pressure-${active.id}", canvas.pressureGamma).apply()
             })
             gapped(label(tr("Snap shapes"), 12f, MUTED_TEXT))
             addView(
@@ -1307,6 +1465,7 @@ class MainActivity : Activity(), ReferenceHost {
                 },
             )
             gapped(label(tr("Hold at the end of a stroke for a clean line, ellipse, or box."), 12f, MUTED_TEXT))
+            gapped(label(tr("Hold a brush to add it to ★."), 12f, MUTED_TEXT))
             if (active.custom) {
                 gapped(
                     wrapRow(
@@ -1318,7 +1477,6 @@ class MainActivity : Activity(), ReferenceHost {
                 )
             }
         }
-        gapped(label(tr("Hold a brush to add it to ★."), 12f, MUTED_TEXT))
     }
 
     private fun LinearLayout.addTool(kind: BrushKind, icon: Int, detail: String, index: Int) {
@@ -1364,12 +1522,15 @@ class MainActivity : Activity(), ReferenceHost {
         editingBrush?.id ?: UUID.randomUUID().toString(), name.ifBlank { tr("My brush") },
         shape[0], shape[1], shape[2], shape[3], shape[4], shape[5], source.defaultSize,
         tip = draftTip, custom = true,
+        scatter = shape.getOrElse(6) { 0f }, sizeJitter = shape.getOrElse(7) { 0f },
+        angleJitter = shape.getOrElse(8) { 0f }, shadeJitter = shape.getOrElse(9) { 0f },
     )
 
     private fun brushEditor(source: BrushKind, editing: Boolean): View = column().apply {
         addView(label(if (editing) tr("Edit brush") else tr("New brush"), 16f))
         val shape = floatArrayOf(
             source.minScale, source.spacing, source.flow, source.pressureFlow, source.hardness, source.grain,
+            source.scatter, source.sizeJitter, source.angleJitter, source.shadeJitter,
         )
         val name = EditText(context).apply {
             setText(if (editing) source.label else "")
@@ -1394,9 +1555,13 @@ class MainActivity : Activity(), ReferenceHost {
             Triple(tr("Pressure fade"), 3, 1f),
             Triple(tr("Hardness"), 4, 1f),
             Triple(tr("Grain"), 5, 1f),
+            Triple(tr("Scatter"), 6, 2f),
+            Triple(tr("Size variation"), 7, 1f),
+            Triple(tr("Angle variation"), 8, 1f),
+            Triple(tr("Shade variation"), 9, 1f),
         ).forEach { (title, index, range) ->
             addView(toolSlider(title, (shape[index] / range * 100).roundToInt()) {
-                shape[index] = maxOf(0.02f, it / 100f * range)
+                shape[index] = maxOf(if (index >= 6) 0f else 0.02f, it / 100f * range)
                 refresh()
             })
         }
@@ -1506,10 +1671,7 @@ class MainActivity : Activity(), ReferenceHost {
                 )
             },
         )
-        if (!hasSelection) {
-            gapped(label(tr("Make a selection to keep painting inside it, or to move part of a layer."), 13f, MUTED_TEXT))
-            return@apply
-        }
+        if (!hasSelection) return@apply
         gapped(actionRow(R.drawable.ic_transform, tr("Transform"), tr("Move, scale, or rotate the selection")) { selectionToLayer(cut = true, transform = true) })
         gapped(actionRow(R.drawable.ic_copy, tr("Copy to layer")) { selectionToLayer(cut = false, transform = false) })
         gapped(actionRow(R.drawable.ic_cut, tr("Cut to layer")) { selectionToLayer(cut = true, transform = false) })
@@ -1781,7 +1943,13 @@ class MainActivity : Activity(), ReferenceHost {
         return intArrayOf(point[0].toInt() - dp(18), point[1].toInt() - dp(18))
     }
 
-    private fun exportTimelapse() {
+    private fun askTimelapseLength() = choiceSheet(
+        tr("Time-lapse length"),
+        listOf(15, 30, 60).map { seconds -> SheetChoice(tr("%1 seconds", seconds)) { exportTimelapse(seconds) } } +
+            SheetChoice(tr("Every saved moment")) { exportTimelapse(null) },
+    )
+
+    private fun exportTimelapse(seconds: Int?) {
         val frames = store.timelapseFrames(document.id)
         if (frames.size < 2) {
             Toast.makeText(this, tr("Draw a little more to build a time-lapse"), Toast.LENGTH_SHORT).show()
@@ -1795,7 +1963,7 @@ class MainActivity : Activity(), ReferenceHost {
             val saved = runCatching {
                 val target = store.exportTimelapseTarget(name)!!
                 contentResolver.openFileDescriptor(target, "w")!!.use {
-                    TimelapseEncoder.encode(frames, width, height, it.fileDescriptor)
+                    TimelapseEncoder.encode(frames, width, height, seconds, it.fileDescriptor)
                 }
             }.isSuccess
             runOnUiThread {
@@ -2061,15 +2229,9 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun hex(color: Int) = String.format("#%06X", color and 0xFFFFFF)
 
-    private fun confirmDeletePalette(palette: Palette) {
-        AlertDialog.Builder(this)
-            .setTitle(tr("Delete %1?", tr(palette.name)))
-            .setNegativeButton(tr("Keep"), null)
-            .setPositiveButton(tr("Delete")) { _, _ ->
-                store.deletePalette(palette.id)
-                rerender("color", ::colorPanel)
-            }
-            .show()
+    private fun confirmDeletePalette(palette: Palette) = confirmSheet(tr("Delete %1?", tr(palette.name)), null) {
+        store.deletePalette(palette.id)
+        rerender("color", ::colorPanel)
     }
 
     private fun savePalette(name: String, colors: List<Int>) {
@@ -2482,6 +2644,13 @@ class MainActivity : Activity(), ReferenceHost {
             LinearLayout(context).apply {
                 gravity = Gravity.CENTER_VERTICAL
                 addView(label(tr("Layers"), 16f), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(
+                    iconButton(R.drawable.ic_group, tr("Select layers")) {
+                        pickingLayers = !pickingLayers
+                        pickedLayers.clear()
+                        refreshLayers()
+                    }.apply { if (pickingLayers) background = rounded(SURFACE_RAISED, 18) },
+                )
                 addView(iconButton(R.drawable.ic_add, tr("Add layer")) { addLayer() })
             },
         )
@@ -2507,6 +2676,10 @@ class MainActivity : Activity(), ReferenceHost {
         }
         gapped(list)
         requestLayerThumbnails()
+        if (pickingLayers) {
+            gapped(wrapRow(layerPickActions()))
+            return@apply
+        }
         if (active == null) return@apply
 
         gapped(label(tr("Opacity"), 12f, MUTED_TEXT))
@@ -2582,8 +2755,57 @@ class MainActivity : Activity(), ReferenceHost {
                 ),
             )
         }
+        if (active.text != null) {
+            gapped(wrapRow(listOf(smallChip(tr("Edit text")) { askForText(active) })))
+        }
         if (editingMask) gapped(label(tr("Painting on the mask. Tap Mask to return to the layer."), 12f, ACCENT))
-        gapped(label(tr("Hold a layer to rename it. Drag its lines to reorder."), 12f, MUTED_TEXT))
+    }
+
+    private fun layerPickActions(): List<View> {
+        val picked = document.layers.filter { it.id in pickedLayers }
+        fun finish() {
+            pickingLayers = false
+            pickedLayers.clear()
+            refreshLayers()
+        }
+        val actions = arrayListOf<View>(smallChip(tr("Done")) { finish() })
+        if (picked.isEmpty()) return actions
+        actions += smallChip(tr("Group")) {
+            val id = document.nextGroupId++
+            editLayers {
+                document.groups.add(LayerGroup(id, tr("Group %1", id)))
+                picked.forEach { it.groupId = id }
+            }
+            finish()
+        }
+        actions += smallChip(tr("Show or hide")) {
+            val visible = picked.none { it.visible }
+            editLayers(structural = false) { picked.forEach { it.visible = visible } }
+            refreshLayers()
+        }
+        actions += smallChip(tr("Merge")) {
+            val places = picked.map(document.layers::indexOf).sorted()
+            if (places.last() - places.first() != places.size - 1) {
+                Toast.makeText(this, tr("Pick layers next to each other"), Toast.LENGTH_SHORT).show()
+            } else {
+                picked.drop(1).reversed().forEach(::mergeDown)
+                finish()
+            }
+        }
+        actions += smallChip(tr("Delete")) {
+            if (picked.size >= document.layers.size) {
+                Toast.makeText(this, tr("An artwork needs at least one layer"), Toast.LENGTH_SHORT).show()
+            } else {
+                setEditingMask(false)
+                editLayers {
+                    val first = document.layers.indexOf(picked.first())
+                    document.layers.removeAll(picked.toSet())
+                    document.activeLayer = document.layers[max(0, first - 1)].id
+                }
+                finish()
+            }
+        }
+        return actions
     }
 
     private fun groupRow(group: LayerGroup): View = LinearLayout(this).apply {
@@ -2634,13 +2856,16 @@ class MainActivity : Activity(), ReferenceHost {
         refreshLayers()
     }
 
+    internal fun setBlend(layer: LayerInfo, blend: Int) {
+        editLayers(structural = false) { layerById(layer.id)?.blend = blend }
+        refreshLayers()
+    }
+
     private fun chooseBlend(anchor: View, layer: LayerInfo) {
         PopupMenu(this, anchor).apply {
             BLEND_MODES.forEachIndexed { index, name -> menu.add(0, index, index, tr(name)) }
             setOnMenuItemClickListener {
-                val blend = it.itemId
-                editLayers(structural = false) { layerById(layer.id)?.blend = blend }
-                refreshLayers()
+                setBlend(layer, it.itemId)
                 true
             }
             show()
@@ -2664,10 +2889,15 @@ class MainActivity : Activity(), ReferenceHost {
         }
         val row = LinearLayout(this).apply {
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(if (selected) ACCENT else SURFACE_RAISED, 10)
+            val highlighted = if (pickingLayers) layer.id in pickedLayers else selected
+            background = rounded(if (highlighted) ACCENT else SURFACE_RAISED, 10)
             setPadding(dp(6), 0, dp(2), 0)
             setOnClickListener {
-                selectLayer(layer)
+                if (pickingLayers) {
+                    if (!pickedLayers.remove(layer.id)) pickedLayers.add(layer.id)
+                } else {
+                    selectLayer(layer)
+                }
                 refreshLayers()
             }
             setOnLongClickListener {
@@ -2824,21 +3054,7 @@ class MainActivity : Activity(), ReferenceHost {
         refreshLayers()
     }
 
-    private fun askForName(title: String, current: String, done: (String) -> Unit) {
-        val field = EditText(this).apply {
-            setText(current)
-            setSelectAllOnFocus(true)
-            isSingleLine = true
-        }
-        AlertDialog.Builder(this)
-            .setTitle(title)
-            .setView(field)
-            .setNegativeButton(tr("Cancel"), null)
-            .setPositiveButton(tr("Save")) { _, _ ->
-                field.text.toString().trim().takeIf { it.isNotEmpty() }?.let(done)
-            }
-            .show()
-    }
+    private fun askForName(title: String, current: String, done: (String) -> Unit) = askSheet(title, current, done)
 
     private fun renameLayer(layer: LayerInfo) = askForName(tr("Rename layer"), layer.name) { name ->
         editLayers(structural = false) { layer.name = name }
@@ -2930,7 +3146,7 @@ class MainActivity : Activity(), ReferenceHost {
         gapped(
             actionRow(R.drawable.ic_video, tr("Time-lapse"), tr("A video of your progress")) {
                 closePanel()
-                exportTimelapse()
+                askTimelapseLength()
             },
         )
         gapped(label(tr("Language"), 13f, MUTED_TEXT))
@@ -2948,9 +3164,12 @@ class MainActivity : Activity(), ReferenceHost {
         )
     }
 
-    private fun askForText() {
-        val input = EditText(this).apply { hint = tr("Your label") }
-        var size = 1
+    private fun askForText(editing: LayerInfo? = null) {
+        val input = EditText(this).apply {
+            hint = tr("Your label")
+            setText(editing?.text.orEmpty())
+        }
+        var size = TEXT_SIZES.indexOfFirst { it >= (editing?.textSize ?: 0f) - 0.001f }.coerceAtLeast(0).let { if (editing == null) 1 else it }
         val sizes = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         fun showSizes() {
             sizes.removeAllViews()
@@ -2968,13 +3187,79 @@ class MainActivity : Activity(), ReferenceHost {
             gapped(sizes)
         }
         AlertDialog.Builder(this)
-            .setTitle(tr("Add text"))
+            .setTitle(if (editing == null) tr("Add text") else tr("Edit text"))
             .setView(form)
             .setNegativeButton(tr("Cancel"), null)
-            .setPositiveButton(tr("Add")) { _, _ ->
-                input.text.toString().takeIf { it.isNotBlank() }?.let { addText(it, TEXT_SIZES[size]) }
+            .setPositiveButton(if (editing == null) tr("Add") else tr("Save")) { _, _ ->
+                input.text.toString().takeIf { it.isNotBlank() }?.let {
+                    if (editing == null) addText(it, TEXT_SIZES[size]) else replaceText(editing, it, TEXT_SIZES[size])
+                }
             }
             .show()
+    }
+
+    private fun drawTextPage(text: String, size: Float, color: Int, centerX: Float, centerY: Float): java.nio.ByteBuffer {
+        val page = Bitmap.createBitmap(document.width, document.height, Bitmap.Config.ARGB_8888)
+        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = color
+            textSize = size
+            textAlign = android.graphics.Paint.Align.CENTER
+        }
+        val lines = text.split("\n")
+        val top = centerY - lines.size * paint.textSize / 2f
+        lines.forEachIndexed { index, line ->
+            android.graphics.Canvas(page).drawText(line, centerX, top + (index + 1) * paint.textSize, paint)
+        }
+        val pixels = ArtworkStore.pixelBuffer(document.width, document.height)
+        page.copyPixelsToBuffer(pixels)
+        page.recycle()
+        pixels.rewind()
+        return pixels
+    }
+
+    /** Swaps in freshly set text where the old text now sits, so editing it keeps your placement. */
+    internal fun replaceText(layer: LayerInfo, text: String, heightShare: Float) {
+        val width = TEXT_FIND_WIDTH
+        val height = max(1, width * document.height / document.width)
+        val small = ArtworkStore.pixelBuffer(width, height)
+        val color = layer.textColor
+        val id = document.nextLayerId++
+        engineLayers.add(id)
+        canvas.act { engine ->
+            NativeEngine.readLayerThumbnail(engine, layer.id, width, height, small)
+            small.rewind()
+            var left = width
+            var top = height
+            var right = -1
+            var bottom = -1
+            for (y in 0 until height) {
+                for (x in 0 until width) {
+                    if (small.get((y * width + x) * 4 + 3).toInt() and 0xFF <= 8) continue
+                    left = min(left, x)
+                    right = max(right, x)
+                    top = min(top, y)
+                    bottom = max(bottom, y)
+                }
+            }
+            val found = right >= 0
+            val centerX = if (found) (left + right + 1) / 2f / width * document.width else document.width / 2f
+            val centerY = if (found) (top + bottom + 1) / 2f / height * document.height else document.height / 2f
+            val pixels = drawTextPage(text, document.height * heightShare, color, centerX, centerY)
+            NativeEngine.createLayer(engine, id)
+            NativeEngine.writeLayer(engine, id, pixels)
+            NativeEngine.markLayerDirty(engine, id)
+            runOnUiThread {
+                editLayers {
+                    val index = document.layers.indexOf(layer)
+                    document.layers[index] = layer.copy(
+                        id = id, name = text.lineSequence().first().take(24), text = text, textSize = heightShare,
+                        file = null, maskId = 0, maskFile = null,
+                    )
+                    document.activeLayer = id
+                }
+                refreshLayers()
+            }
+        }
     }
 
     /** Draws text on a new layer and starts a transform so it can be placed. */
@@ -2984,21 +3269,8 @@ class MainActivity : Activity(), ReferenceHost {
             return
         }
         setEditingMask(false)
-        val page = Bitmap.createBitmap(document.width, document.height, Bitmap.Config.ARGB_8888)
-        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            color = canvas.brushColor
-            textSize = document.height * heightShare
-            textAlign = android.graphics.Paint.Align.CENTER
-        }
-        val lines = text.split("\n")
-        val top = (document.height - lines.size * paint.textSize) / 2f
-        lines.forEachIndexed { index, line ->
-            android.graphics.Canvas(page).drawText(line, document.width / 2f, top + (index + 1) * paint.textSize, paint)
-        }
-        val pixels = ArtworkStore.pixelBuffer(document.width, document.height)
-        page.copyPixelsToBuffer(pixels)
-        page.recycle()
-        pixels.rewind()
+        val color = canvas.brushColor
+        val pixels = drawTextPage(text, document.height * heightShare, color, document.width / 2f, document.height / 2f)
         val id = document.nextLayerId++
         engineLayers.add(id)
         canvas.act { engine ->
@@ -3008,7 +3280,10 @@ class MainActivity : Activity(), ReferenceHost {
         }
         editLayers {
             val index = document.layers.indexOfFirst { it.id == document.activeLayer } + 1
-            document.layers.add(index, LayerInfo(id, text.lineSequence().first().take(24)))
+            document.layers.add(
+                index,
+                LayerInfo(id, text.lineSequence().first().take(24), text = text, textSize = heightShare, textColor = color),
+            )
             document.activeLayer = id
         }
         startTransform()
@@ -3252,7 +3527,13 @@ class MainActivity : Activity(), ReferenceHost {
             val filters = listOf(tr("All") to "", "★" to STARRED_FILTER) + boards.map { it to it }
             gapped(
                 wrapRow(
-                    filters.map { (name, value) ->
+                    listOf(
+                        smallChip(tr("Select"), pickingReferences) {
+                            pickingReferences = !pickingReferences
+                            pickedReferences.clear()
+                            rerender("references", ::referencesPanel)
+                        },
+                    ) + filters.map { (name, value) ->
                         smallChip(name, referenceFilter == value) {
                             referenceFilter = value
                             rerender("references", ::referencesPanel)
@@ -3260,6 +3541,7 @@ class MainActivity : Activity(), ReferenceHost {
                     },
                 ),
             )
+            if (pickingReferences) gapped(wrapRow(referencePickActions(all)))
         }
         val cell = (dp(PANEL_WIDTH) - dp(28) - dp(8)) / 3
         gapped(
@@ -3293,7 +3575,8 @@ class MainActivity : Activity(), ReferenceHost {
                     val open = references.containsKey(file.name)
                     addView(
                         FrameLayout(context).apply {
-                            background = rounded(if (open) ACCENT else SURFACE, 10)
+                            val marked = if (pickingReferences) file.name in pickedReferences else open
+                            background = rounded(if (marked) ACCENT else SURFACE, 10)
                             setPadding(dp(3), dp(3), dp(3), dp(3))
                             addView(
                                 ImageView(context).apply {
@@ -3303,7 +3586,11 @@ class MainActivity : Activity(), ReferenceHost {
                                     thumbnails.show(file, cell, this)
                                     contentDescription = if (open) tr("Close reference") else tr("Open reference")
                                     setOnClickListener {
-                                        toggleReference(file)
+                                        if (pickingReferences) {
+                                            if (!pickedReferences.remove(file.name)) pickedReferences.add(file.name)
+                                        } else {
+                                            toggleReference(file)
+                                        }
                                         rerender("references", ::referencesPanel)
                                     }
                                     setOnLongClickListener {
@@ -3330,15 +3617,47 @@ class MainActivity : Activity(), ReferenceHost {
                 }
             },
         )
-        val hint = if (all.isEmpty()) {
-            tr("Add images, or share them here from another app.")
-        } else {
-            tr("Tap to open. Hold to star, sort, move, or delete. On a reference, tap for tools.")
+        if (all.isEmpty()) gapped(label(tr("Add images, or share them here from another app."), 12f, MUTED_TEXT))
+    }
+
+    private fun referencePickActions(all: List<File>): List<View> {
+        val picked = all.filter { it.name in pickedReferences }
+        val project = document.projectId
+        fun finish() {
+            pickingReferences = false
+            pickedReferences.clear()
+            rerender("references", ::referencesPanel)
         }
-        gapped(label(hint, 12f, MUTED_TEXT))
-        if (all.isNotEmpty()) {
-            gapped(label(tr("Your companion compares with open references first, then starred ones."), 12f, MUTED_TEXT))
+        val actions = arrayListOf<View>(
+            smallChip(tr("All")) {
+                pickedReferences.addAll(all.map { it.name })
+                rerender("references", ::referencesPanel)
+            },
+        )
+        if (picked.isEmpty()) return actions
+        actions += smallChip("★") {
+            picked.forEach { file -> store.updateReferenceNote(project, file.name) { it.copy(starred = true) } }
+            finish()
         }
+        actions += smallChip(tr("Board")) { chooseBoard(store, project, picked) { finish() } }
+        actions += smallChip(tr("Move")) {
+            chooseSketchbook(store, project, picked) {
+                picked.forEach { references.remove(it.name)?.dismiss() }
+                rememberReferences()
+                finish()
+            }
+        }
+        actions += smallChip(tr("Delete")) {
+            confirmSheet(tr("Delete %1 references?", picked.size), tr("They're removed from this project and every artwork using them.")) {
+                picked.forEach { file ->
+                    references.remove(file.name)?.dismiss()
+                    store.deleteReference(project, file)
+                }
+                rememberReferences()
+                finish()
+            }
+        }
+        return actions
     }
 
     private fun manageReference(file: File) {
@@ -3355,18 +3674,14 @@ class MainActivity : Activity(), ReferenceHost {
         )
     }
 
-    private fun confirmDeleteReference(file: File) {
-        AlertDialog.Builder(this)
-            .setTitle(tr("Delete this reference?"))
-            .setMessage(tr("It's removed from this project and every artwork using it."))
-            .setNegativeButton(tr("Keep"), null)
-            .setPositiveButton(tr("Delete")) { _, _ ->
-                references.remove(file.name)?.dismiss()
-                store.deleteReference(document.projectId, file)
-                rememberReferences()
-                rerender("references", ::referencesPanel)
-            }
-            .show()
+    private fun confirmDeleteReference(file: File) = confirmSheet(
+        tr("Delete this reference?"),
+        tr("It's removed from this project and every artwork using it."),
+    ) {
+        references.remove(file.name)?.dismiss()
+        store.deleteReference(document.projectId, file)
+        rememberReferences()
+        rerender("references", ::referencesPanel)
     }
 
     @Deprecated("Deprecated in Java")
@@ -3551,6 +3866,8 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.release()
         thumbnails.close()
         journalWriter.shutdown()
+        // A save still running hands its picture to the analyzer, so that stops after the saves.
+        saver.execute { analyzer.shutdown() }
         saver.shutdown()
         super.onDestroy()
     }

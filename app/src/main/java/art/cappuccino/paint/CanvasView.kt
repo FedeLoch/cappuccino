@@ -124,6 +124,7 @@ class CanvasView(
     var onGradientDone: () -> Unit = {}
     var onPickMove: (Int, Float, Float) -> Unit = { _, _, _ -> }
     var onPickEnd: () -> Unit = {}
+    var onShapeSnapped: (BrushKind, FloatArray, Float) -> Unit = { _, _, _ -> }
     var onStrokeCommitted: () -> Unit = {}
     var onUndoGesture: () -> Unit = {}
     var onRedoGesture: () -> Unit = {}
@@ -328,6 +329,12 @@ class CanvasView(
                 (height - canvasHeight * scale) / 2f,
             )
             fitted = true
+        } else if (oldWidth > 0 && oldHeight > 0) {
+            // Keeps the same part of the canvas in the middle at the same share of the screen.
+            val before = min(oldWidth / canvasWidth.toFloat(), oldHeight / canvasHeight.toFloat())
+            val after = min(width / canvasWidth.toFloat(), height / canvasHeight.toFloat())
+            viewMatrix.postScale(after / before, after / before, oldWidth / 2f, oldHeight / 2f)
+            viewMatrix.postTranslate((width - oldWidth) / 2f, (height - oldHeight) / 2f)
         }
         publishView()
     }
@@ -601,8 +608,16 @@ class CanvasView(
         renderer.cancel()
         act {
             NativeEngine.cancelStroke(it)
-            post { drawShape(kind, shape, pressure) }
+            post {
+                drawShape(kind, shape, pressure)
+                onShapeSnapped(kind, shape, pressure)
+            }
         }
+    }
+
+    /** Takes back the last shape and draws it again, for dragging a snapped shape's handles. */
+    fun redrawShape(kind: BrushKind, shape: FloatArray, pressure: Float) {
+        act { post { drawShape(kind, shape, pressure) } }
     }
 
     private fun drawShape(kind: BrushKind, shape: FloatArray, pressure: Float) {

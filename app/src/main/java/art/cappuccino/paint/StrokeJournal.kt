@@ -105,6 +105,8 @@ object PendingSaves {
     private val lock = Object()
     private var running = 0
 
+    val busy get() = synchronized(lock) { running > 0 }
+
     fun started() = synchronized(lock) { running++ }
 
     fun finished() = synchronized(lock) {

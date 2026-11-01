@@ -51,7 +51,7 @@ fun <G> withPsdGroups(
 fun psdFolder(name: String, opacity: Float, visible: Boolean) =
     PsdLayer(name, opacity, visible, 0, false, ByteArray(0), OPEN_FOLDER)
 
-private val BLEND_KEYS = listOf("norm", "mul ", "scrn", "lddg")
+private val BLEND_KEYS = listOf("norm", "mul ", "scrn", "lddg", "dark", "lite", "sLit", "fsub", "smud")
 
 /** Writes layered PSD files with PackBits compression. Pixels arrive as premultiplied RGBA. */
 class PsdWriter(private val width: Int, private val height: Int) {

@@ -42,6 +42,9 @@ class AnalysisReport(
     val values: IntArray,
     val silhouette: IntArray,
     val ideas: List<Idea> = emptyList(),
+    val contrast: Float = 0f,
+    val coverage: Float = 0f,
+    val colored: Float = 0f,
 )
 
 private const val PAPER_DISTANCE = 18
@@ -183,7 +186,12 @@ fun analyzeArtwork(pixels: IntArray, width: Int, height: Int, lightDegrees: Int?
         if (coloredWeight > 0f) saturationTotal / coloredWeight else 0f,
         coverage,
     )
-    return AnalysisReport(tips, width, height, values, silhouette, ideas)
+    val cellMeans = cellLight.indices.filter { cellCounts[it] > 0 }.map { cellLight[it] / cellCounts[it] }
+    val contrast = if (cellMeans.isEmpty()) 0f else cellMeans.max() - cellMeans.min()
+    return AnalysisReport(
+        orderForStage(tips, artStage(coverage)), width, height, values, silhouette, ideas,
+        contrast, coverage, coloredWeight / max(markCount, 1),
+    )
 }
 
 /** Open invitations to experiment. They suggest what to try, and never say what's wrong. */

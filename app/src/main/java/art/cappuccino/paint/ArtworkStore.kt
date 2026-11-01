@@ -72,6 +72,29 @@ class ArtworkStore(context: Context) {
 
     fun thumbnail(id: String) = File(artworkDir(id), THUMBNAIL)
 
+    fun snapshot(id: String): ArtSnapshot? {
+        val file = File(artworkDir(id), SNAPSHOT)
+        if (!file.exists()) return null
+        return runCatching {
+            val item = JSONObject(file.readText())
+            ArtSnapshot(
+                item.getLong("time"), item.getDouble("contrast").toFloat(),
+                item.getDouble("coverage").toFloat(), item.getDouble("colored").toFloat(),
+            )
+        }.getOrNull()
+    }
+
+    fun saveSnapshot(id: String, snapshot: ArtSnapshot) {
+        File(artworkDir(id), SNAPSHOT).writeText(
+            JSONObject()
+                .put("time", snapshot.time)
+                .put("contrast", snapshot.contrast.toDouble())
+                .put("coverage", snapshot.coverage.toDouble())
+                .put("colored", snapshot.colored.toDouble())
+                .toString(),
+        )
+    }
+
     fun journal(id: String) = StrokeJournal(artworkDir(id))
 
     fun palettes(): List<Palette> = readPalettes(palettesFile)
@@ -163,6 +186,10 @@ class ArtworkStore(context: Context) {
                 item.getDouble("size").toFloat(),
                 tip = File(root, "brush-$id.tip").takeIf { it.exists() }?.readBytes(),
                 custom = true,
+                scatter = item.optDouble("scatter", 0.0).toFloat(),
+                sizeJitter = item.optDouble("sizeJitter", 0.0).toFloat(),
+                angleJitter = item.optDouble("angleJitter", 0.0).toFloat(),
+                shadeJitter = item.optDouble("shadeJitter", 0.0).toFloat(),
             )
         }
     }
@@ -181,7 +208,11 @@ class ArtworkStore(context: Context) {
                     .put("pressureFlow", it.pressureFlow.toDouble())
                     .put("hardness", it.hardness.toDouble())
                     .put("grain", it.grain.toDouble())
-                    .put("size", it.defaultSize.toDouble()),
+                    .put("size", it.defaultSize.toDouble())
+                    .put("scatter", it.scatter.toDouble())
+                    .put("sizeJitter", it.sizeJitter.toDouble())
+                    .put("angleJitter", it.angleJitter.toDouble())
+                    .put("shadeJitter", it.shadeJitter.toDouble()),
             )
         }
         writeAtomically(brushesFile, array.toString().toByteArray())
@@ -329,6 +360,9 @@ class ArtworkStore(context: Context) {
                 item.optInt("mask"),
                 item.optBoolean("maskEnabled", true),
                 item.optString("maskFile").ifEmpty { null },
+                item.optString("text").ifEmpty { null },
+                item.optDouble("textSize", 0.0).toFloat(),
+                item.optInt("textColor"),
             )
         }.toMutableList()
         return ArtworkDocument(
@@ -482,6 +516,9 @@ class ArtworkStore(context: Context) {
                     .put("mask", layer.maskId)
                     .put("maskEnabled", layer.maskEnabled)
                     .put("maskFile", (if (layer.maskId in tiles) null else layer.maskFile) ?: "")
+                    .put("text", layer.text ?: "")
+                    .put("textSize", layer.textSize.toDouble())
+                    .put("textColor", layer.textColor)
                     .put("maskTiles", tiles[layer.maskId]?.let { tileJson(it, packs) } ?: JSONObject.NULL),
             )
         }
@@ -743,6 +780,7 @@ class ArtworkStore(context: Context) {
         private const val MANIFEST = "manifest.json"
         private const val PREVIOUS_MANIFEST = "manifest.prev.json"
         private const val THUMBNAIL = "thumbnail.png"
+        private const val SNAPSHOT = "snapshot.json"
         private const val REFERENCE_NOTES = "library.json"
         private const val PREVIEW = "preview.jpg"
         const val PREVIEW_WIDTH = 1600

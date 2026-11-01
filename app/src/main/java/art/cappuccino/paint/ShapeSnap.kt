@@ -20,6 +20,46 @@ private const val SIDE_POINTS = 12
 private const val ELLIPSE_POINTS = 96
 private const val SEARCH_STEP_DEGREES = 2
 
+/** Two handles for a snapped shape: a line's ends, or the corners of a closed shape's box. */
+fun shapeAnchors(shape: FloatArray): FloatArray {
+    val last = shape.size - 2
+    val closed = hypot(shape[last] - shape[0], shape[last + 1] - shape[1]) < 1f
+    if (!closed) return floatArrayOf(shape[0], shape[1], shape[last], shape[last + 1])
+    val xs = shape.filterIndexed { index, _ -> index % 2 == 0 }
+    val ys = shape.filterIndexed { index, _ -> index % 2 == 1 }
+    return floatArrayOf(xs.min(), ys.min(), xs.max(), ys.max())
+}
+
+/** Moves a snapped shape so its handles land on [target]. Lines turn, closed shapes stretch. */
+fun reshapeShape(shape: FloatArray, anchors: FloatArray, target: FloatArray): FloatArray {
+    val last = shape.size - 2
+    val closed = hypot(shape[last] - shape[0], shape[last + 1] - shape[1]) < 1f
+    val spanX = anchors[2] - anchors[0]
+    val spanY = anchors[3] - anchors[1]
+    val result = shape.copyOf()
+    if (closed) {
+        val scaleX = if (abs(spanX) < 1f) 1f else (target[2] - target[0]) / spanX
+        val scaleY = if (abs(spanY) < 1f) 1f else (target[3] - target[1]) / spanY
+        for (index in result.indices step 2) {
+            result[index] = target[0] + (shape[index] - anchors[0]) * scaleX
+            result[index + 1] = target[1] + (shape[index + 1] - anchors[1]) * scaleY
+        }
+        return result
+    }
+    val toX = target[2] - target[0]
+    val toY = target[3] - target[1]
+    val square = maxOf(spanX * spanX + spanY * spanY, 1f)
+    for (index in result.indices step 2) {
+        val x = shape[index] - anchors[0]
+        val y = shape[index + 1] - anchors[1]
+        val along = (x * spanX + y * spanY) / square
+        val across = (y * spanX - x * spanY) / square
+        result[index] = target[0] + along * toX - across * toY
+        result[index + 1] = target[1] + along * toY + across * toX
+    }
+    return result
+}
+
 /**
  * Turns a hand-drawn stroke, as x and y pairs, into a clean line, ellipse, or rectangle. Lines
  * lean toward [vanishing] points and level axes. Returns null when it isn't close to one.

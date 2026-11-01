@@ -29,7 +29,7 @@ class StudioFeatureTest {
             }
         }
         val video = File(context.cacheDir, "test.mp4")
-        video.outputStream().use { TimelapseEncoder.encode(frames, 960, 640, it.fd) }
+        video.outputStream().use { TimelapseEncoder.encode(frames, 960, 640, null, it.fd) }
 
         val reader = MediaMetadataRetriever()
         reader.setDataSource(video.path)

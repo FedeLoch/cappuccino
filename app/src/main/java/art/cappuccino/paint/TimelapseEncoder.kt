@@ -13,12 +13,20 @@ import java.io.FileDescriptor
 
 private const val FRAME_RATE = 15
 private const val BIT_RATE = 3_000_000
-private const val HOLD_LAST_FRAMES = 30
+private const val HOLD_LAST_FRAMES = 45
 private const val TIMEOUT_US = 10_000L
+
+/** Picks evenly spread frames for a video of [seconds], or keeps them all, then holds the last one. */
+fun timelapseTimeline(frameCount: Int, seconds: Int?): List<Int> {
+    if (frameCount == 0) return emptyList()
+    val wanted = seconds?.let { minOf(it * FRAME_RATE, frameCount) } ?: frameCount
+    val picked = List(wanted) { if (wanted == 1) frameCount - 1 else it * (frameCount - 1) / (wanted - 1) }
+    return picked + List(HOLD_LAST_FRAMES) { frameCount - 1 }
+}
 
 /** Turns saved progress frames into an H.264 video. */
 object TimelapseEncoder {
-    fun encode(frames: List<File>, width: Int, height: Int, output: FileDescriptor) {
+    fun encode(frames: List<File>, width: Int, height: Int, seconds: Int?, output: FileDescriptor) {
         val evenWidth = width and 1.inv()
         val evenHeight = height and 1.inv()
         val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, evenWidth, evenHeight)
@@ -56,9 +64,8 @@ object TimelapseEncoder {
         }
 
         val paint = Paint(Paint.FILTER_BITMAP_FLAG)
-        val timeline = frames + List(HOLD_LAST_FRAMES) { frames.last() }
-        for (frame in timeline) {
-            val bitmap = BitmapFactory.decodeFile(frame.path) ?: continue
+        for (index in timelapseTimeline(frames.size, seconds)) {
+            val bitmap = BitmapFactory.decodeFile(frames[index].path) ?: continue
             val canvas = surface.lockHardwareCanvas()
             canvas.drawColor(Color.WHITE)
             canvas.drawBitmap(

@@ -22,7 +22,17 @@ struct Rect {
     int height() const { return bottom - top; }
 };
 
-enum class BlendMode { kNormal = 0, kMultiply = 1, kScreen = 2, kAdd = 3 };
+enum class BlendMode {
+    kNormal = 0,
+    kMultiply = 1,
+    kScreen = 2,
+    kAdd = 3,
+    kDarken = 4,
+    kLighten = 5,
+    kSoftLight = 6,
+    kSubtract = 7,
+    kExclusion = 8,
+};
 
 struct BrushParams {
     BrushShape shape;
@@ -194,6 +204,9 @@ private:
     GLint canvasSize_ = -1;
     GLint canvasSolid_ = -1;
     GLint canvasOpacity_ = -1;
+    GLint canvasMatte_ = -1;
+    GLint liquifyMatte_ = -1;
+    float blendMatte_ = 0.0f;
     GLuint vao_ = 0;
     GLuint vbo_ = 0;
     GLuint canvasVao_ = 0;

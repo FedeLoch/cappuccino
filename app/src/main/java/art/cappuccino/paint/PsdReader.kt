@@ -40,7 +40,9 @@ private class LayerRecord(
 
 /** Reads 8-bit RGB PSD files. One level of group folders is kept, and nested ones join it. */
 object PsdReader {
-    private val BLENDS = mapOf("norm" to 0, "mul " to 1, "scrn" to 2, "lddg" to 3)
+    private val BLENDS = mapOf(
+        "norm" to 0, "mul " to 1, "scrn" to 2, "lddg" to 3, "dark" to 4, "lite" to 5, "sLit" to 6, "fsub" to 7, "smud" to 8,
+    )
 
     fun read(data: ByteArray): PsdImage {
         val input = ByteBuffer.wrap(data)

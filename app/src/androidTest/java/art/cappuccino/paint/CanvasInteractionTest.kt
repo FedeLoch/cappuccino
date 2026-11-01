@@ -215,6 +215,46 @@ class CanvasInteractionTest {
     }
 
     @Test
+    fun newBlendModesLeaveTheCanvasAloneWhereTheLayerIsClear() {
+        val y = height / 2f
+        onStudio { it.addLayer() }
+        listOf(4, 5, 6, 7, 8).forEach { blend ->
+            onStudio { it.setBlend(it.activeLayer()!!, blend) }
+            settle()
+            assertFalse("blend $blend changed the canvas through clear pixels", hasInk(width / 2f, y))
+        }
+        onStudio { it.setBlend(it.activeLayer()!!, 4) }
+        stroke(width * 0.3f, y, width * 0.7f, y)
+        settle()
+        assertTrue("darken should show a dark stroke", hasInk(width / 2f, y))
+    }
+
+    @Test
+    fun editingTextReplacesItAndKeepsItOnTheCanvas() {
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.addText("Hero", 0.2f)
+        }
+        settle()
+        onStudio { it.finishTransform(true) }
+        settle()
+        var first = 0
+        onStudio {
+            first = it.activeLayer()!!.id
+            it.replaceText(it.activeLayer()!!, "Villain", 0.2f)
+        }
+        var text: String? = null
+        repeat(20) {
+            onStudio { text = it.activeLayer()?.text }
+            if (text != "Villain") SystemClock.sleep(300)
+        }
+        assertEquals("Villain", text)
+        var second = 0
+        onStudio { second = it.activeLayer()!!.id }
+        assertTrue("the text should sit on a new layer so undo can bring it back", first != second)
+    }
+
+    @Test
     fun clippedLayerOnlyShowsOverTheLayerBelow() {
         val lineY = height / 2f
         val crossX = width * 0.6f
