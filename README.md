@@ -27,7 +27,7 @@ ask.
 
 See it in motion in the [short companion video](marketing/cappuccino-companion-reel.mp4).
 
-Choose a paint drop, ink blot, foam cup, or coffee drop:
+Choose a paint drop, ink blot, foam cup, coffee drop, or flat white:
 
 ![The four companions, each shown idle, with a tip ready, thinking, and napping](docs/screenshots/companions.png)
 

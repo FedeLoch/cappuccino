@@ -176,7 +176,7 @@ class GalleryActivity : Activity() {
                         background = rounded(Color.WHITE, 8)
                         clipToOutline = true
                         contentDescription = art.name
-                        setImageBitmap(BitmapFactory.decodeFile(store.thumbnail(art.id).path))
+                        thumbnails.show(store.previewFile(art.id), resources.displayMetrics.widthPixels, this)
                     },
                 )
                 addView(moreButton(art), moreSpot())
@@ -641,13 +641,13 @@ class GalleryActivity : Activity() {
         val cell = dp(180)
         val layout = grid(cell)
         all.filter { it.name in shown }.forEach { file ->
-            layout.addView(referenceCell(file, cell, notes[file.name]?.starred == true))
+            layout.addView(referenceCell(file, cell, notes[file.name]?.starred == true, notes[file.name]?.board.orEmpty()))
         }
         root.addView(layout, spaced())
         root.addView(label(tr("Hold a reference to star, sort, move, or delete it."), 13f, COCOA), spaced())
     }
 
-    private fun referenceCell(file: File, size: Int, starred: Boolean) = FrameLayout(this).apply {
+    private fun referenceCell(file: File, size: Int, starred: Boolean, block: String) = FrameLayout(this).apply {
         layoutParams = GridLayout.LayoutParams().apply {
             width = size
             height = size
@@ -676,6 +676,15 @@ class GalleryActivity : Activity() {
                 }
             },
         )
+        if (block.isNotEmpty()) {
+            addView(
+                label(tr(block), 11f, ESPRESSO).apply {
+                    background = rounded(PAGE_CREAM, 7)
+                    setPadding(dp(7), dp(2), dp(7), dp(2))
+                },
+                FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply { setMargins(dp(6), 0, 0, dp(6)) },
+            )
+        }
         if (starred) {
             addView(
                 label("★", 18f, Color.WHITE).apply { setShadowLayer(5f, 0f, 1f, Color.BLACK) },

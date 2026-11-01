@@ -1002,6 +1002,8 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun fadeChrome(alpha: Float) {
         if (interfaceHidden && alpha > 0f) return
+        companion.still = alpha == 0f
+        peek?.still = alpha == 0f
         (chrome + listOfNotNull(companionWindow)).forEach {
             it.contentView.animate().alpha(alpha).setDuration(120).start()
         }
@@ -1341,11 +1343,29 @@ class MainActivity : Activity(), ReferenceHost {
                                     },
                                 )
                             }
-                        ) +
-                        CompanionLook.entries.map { look ->
-                            smallChip(tr(look.label), companion.look == look) { chooseCompanion(look) }
-                        },
+                        ),
                 ),
+            )
+            gapped(
+                LinearLayout(context).apply {
+                    CompanionLook.entries.forEach { look ->
+                        addView(
+                            FrameLayout(context).apply {
+                                if (companion.look == look) background = rounded(SURFACE_RAISED, 12)
+                                contentDescription = tr(look.label)
+                                setOnClickListener { chooseCompanion(look) }
+                                val preview = CompanionView(context).also {
+                                    it.look = look
+                                    it.still = true
+                                    it.bodyColor = canvas.brushColor
+                                    it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                                }
+                                addView(preview, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
+                            },
+                            LinearLayout.LayoutParams(0, dp(48), 1f),
+                        )
+                    }
+                },
             )
         }
     }
@@ -4179,6 +4199,20 @@ class MainActivity : Activity(), ReferenceHost {
                             }
                         },
                     )
+                    val block = notes[file.name]?.board.orEmpty()
+                    if (block.isNotEmpty()) {
+                        addView(
+                            label(tr(block), 9f).apply {
+                                background = rounded(SURFACE, 6)
+                                setPadding(dp(5), dp(1), dp(5), dp(1))
+                                maxLines = 1
+                                ellipsize = android.text.TextUtils.TruncateAt.END
+                            },
+                            FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.START).apply {
+                                setMargins(dp(3), 0, dp(3), dp(3))
+                            },
+                        )
+                    }
                     if (notes[file.name]?.starred == true) {
                         addView(
                             label("★", 13f).apply { setShadowLayer(4f, 0f, 1f, Color.BLACK) },

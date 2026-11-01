@@ -397,6 +397,7 @@ val SPANISH = mapOf(
     "This palette uses one hue family, which feels unified. Vary lightness to add depth." to "Esta paleta usa una familia de tonos y se siente unificada. Varía la luminosidad para dar profundidad.",
     "Time-lapse" to "Time-lapse",
     "Tools" to "Herramientas",
+    "Flat white" to "Flat white",
     "Color palettes" to "Paletas de color",
     "Lights" to "Luces",
     "Character design" to "Diseño de personajes",

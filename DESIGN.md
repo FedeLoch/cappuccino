@@ -67,13 +67,14 @@ Gestures:
 A small, original companion lives on the canvas screen. It is the app's signature and
 the one allowed exception to the main-screen control rule.
 
-The app has four companions, and the artist picks one in the companion panel. Light direction,
+The app has five companions, and the artist picks one in the companion panel. Light direction,
 figure height, and sketch-stage notes join the color, value, composition, and silhouette tips. Only one
 appears at a time, and both share the same behavior and advice.
 
 - Paint drop: a warm drop that takes on the current brush color.
 - Ink blot: a dark blot with a light outline, so it stays visible on dark canvases.
 - Foam cup: a small cappuccino whose foam heart takes on the current brush color.
+- Flat white: a low cup with a poured rosetta and steam that keeps rising, even while it hides.
 - Coffee drop: a coffee-colored drop with a foam cap.
 
 Each companion starts with four expressions: idle, tip ready, thinking, and napping.
