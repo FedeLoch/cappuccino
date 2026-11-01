@@ -10,6 +10,7 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -32,6 +33,12 @@ private const val SHEET_MAX_WIDTH = 720
 private const val SHEET_MARGIN = 32
 private const val PRESET_COLUMNS = 4
 private const val TWO_COLUMN_WIDTH = 620
+private const val PREVIEW_MAX_HEIGHT = 420
+private const val BOOK_WIDTH = 168
+private const val BOOK_HEIGHT = 224
+private const val SWATCH_SIZE = 34
+private const val SWATCH_COLUMNS = 6
+private const val DISABLED_ALPHA = 0.45f
 
 class CanvasPreset(val label: String, val width: Int, val height: Int, val tall: Boolean = false)
 
@@ -301,6 +308,135 @@ class NewArtworkSheet(
     }
 }
 
+/** Names a new sketchbook beside a cover that follows along as you choose. */
+fun Activity.newSketchbookSheet(firstColor: Int, create: (String, Int) -> Unit) {
+    lateinit var dialog: Dialog
+    var color = firstColor
+    val title = serif(tr("Untitled"), 20f).apply {
+        setTextColor(Color.WHITE)
+        maxLines = 4
+    }
+    val spine = View(this)
+    val book = FrameLayout(this).apply {
+        addView(spine, FrameLayout.LayoutParams(dp(14), -1))
+        addView(
+            title,
+            FrameLayout.LayoutParams(-1, -2).apply {
+                setMargins(dp(28), dp(18), dp(14), dp(14))
+            },
+        )
+    }
+    val swatches = ArrayList<View>()
+    fun paint() {
+        val (cover, edge) = SKETCHBOOK_COLORS[color]
+        book.background = rounded(cover, 14)
+        spine.background = rounded(edge, 7)
+        swatches.forEachIndexed { index, swatch ->
+            val (fill) = SKETCHBOOK_COLORS[index]
+            swatch.background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(fill)
+                setStroke(dp(if (index == color) 3 else 1), if (index == color) ESPRESSO else OAT)
+            }
+        }
+    }
+    val createButton = label(tr("Create"), 15f, Color.WHITE).apply {
+        gravity = Gravity.CENTER
+        minHeight = dp(44)
+        minWidth = dp(112)
+        setPadding(dp(20), 0, dp(20), 0)
+        background = rounded(ACCENT, 12)
+        alpha = DISABLED_ALPHA
+    }
+    val field = EditText(this)
+    fieldStyle(field, tr("Untitled"))
+    field.addTextChangedListener(object : TextWatcher {
+        override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) = Unit
+        override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+        override fun afterTextChanged(text: Editable?) {
+            val name = text.toString().trim()
+            title.text = name.ifEmpty { tr("Untitled") }
+            createButton.alpha = if (name.isEmpty()) DISABLED_ALPHA else 1f
+        }
+    })
+    createButton.setOnClickListener {
+        val name = field.text.toString().trim()
+        if (name.isEmpty()) return@setOnClickListener
+        dialog.dismiss()
+        create(name, color)
+    }
+    val wide = resources.displayMetrics.widthPixels / resources.displayMetrics.density >= TWO_COLUMN_WIDTH
+    val choices = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        addView(label(tr("Name"), 13f, COCOA))
+        addView(field, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
+        addView(label(tr("Cover"), 13f, COCOA), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(18) })
+        addView(
+            GridLayout(context).apply {
+                columnCount = SWATCH_COLUMNS
+                SKETCHBOOK_COLORS.indices.forEach { index ->
+                    val swatch = View(context).apply {
+                        contentDescription = tr("Cover color %1", index + 1)
+                        setOnClickListener {
+                            color = index
+                            paint()
+                        }
+                    }
+                    swatches += swatch
+                    addView(
+                        swatch,
+                        GridLayout.LayoutParams().apply {
+                            width = dp(SWATCH_SIZE)
+                            height = dp(SWATCH_SIZE)
+                            setMargins(0, 0, dp(10), dp(10))
+                        },
+                    )
+                }
+            },
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) },
+        )
+    }
+    paint()
+    val content = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        setPadding(dp(24), dp(22), dp(24), dp(22))
+        addView(
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(serif(tr("New sketchbook"), 26f), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(creamChip(tr("Cancel")) { dialog.dismiss() })
+            },
+        )
+        addView(
+            LinearLayout(context).apply {
+                orientation = if (wide) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+                addView(
+                    book,
+                    LinearLayout.LayoutParams(dp(BOOK_WIDTH), dp(BOOK_HEIGHT)).apply {
+                        gravity = Gravity.CENTER_HORIZONTAL
+                    },
+                )
+                addView(
+                    choices,
+                    LinearLayout.LayoutParams(if (wide) 0 else -1, -2, if (wide) 1f else 0f).apply {
+                        if (wide) marginStart = dp(24) else topMargin = dp(18)
+                    },
+                )
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(18) },
+        )
+        addView(
+            createButton,
+            LinearLayout.LayoutParams(-2, -2).apply {
+                gravity = Gravity.END
+                topMargin = dp(8)
+            },
+        )
+    }
+    dialog = sheet(content)
+    dialog.show()
+}
+
 /** Everything about one artwork, with the actions you can take on it. */
 fun Activity.artworkSheet(
     art: ArtworkInfo,
@@ -316,9 +452,21 @@ fun Activity.artworkSheet(
     delete: () -> Unit,
 ) {
     lateinit var dialog: Dialog
-    fun action(content: String, selected: Boolean = false, run: () -> Unit) = creamChip(content, selected) {
-        dialog.dismiss()
-        run()
+    fun action(icon: Int, content: String, tint: Int = ESPRESSO, run: () -> Unit) = LinearLayout(this).apply {
+        gravity = Gravity.CENTER_VERTICAL
+        minimumHeight = dp(42)
+        setOnClickListener {
+            dialog.dismiss()
+            run()
+        }
+        addView(
+            ImageView(context).apply {
+                setImageResource(icon)
+                setColorFilter(if (tint == ESPRESSO) COCOA else tint)
+            },
+            LinearLayout.LayoutParams(dp(20), dp(20)),
+        )
+        addView(label(content, 14f, tint), LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
     }
     val screenWidth = resources.displayMetrics.widthPixels / resources.displayMetrics.density
     val wide = screenWidth >= TWO_COLUMN_WIDTH
@@ -326,6 +474,7 @@ fun Activity.artworkSheet(
     val preview = ImageView(this).apply {
         scaleType = ImageView.ScaleType.FIT_CENTER
         adjustViewBounds = true
+        maxHeight = dp(PREVIEW_MAX_HEIGHT)
         background = rounded(OAT, 12)
         clipToOutline = true
         contentDescription = art.name
@@ -333,27 +482,36 @@ fun Activity.artworkSheet(
     }
     val facts = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        addView(serif(art.name, 24f))
-        addView(label(tr("Edited %1", DateUtils.getRelativeTimeSpanString(art.updated).toString().lowercase()), 13f, COCOA))
-        addView(label(tr("%1 x %2 pixels · %3 layers", art.width, art.height, art.layers), 13f, COCOA))
+        addView(serif(art.name, 26f))
+        addView(
+            label(tr("Edited %1", DateUtils.getRelativeTimeSpanString(art.updated).toString().lowercase()), 13f, COCOA),
+            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4) },
+        )
+        val size = if (art.layers == 1) {
+            tr("%1 x %2 pixels · 1 layer", art.width, art.height)
+        } else {
+            tr("%1 x %2 pixels · %3 layers", art.width, art.height, art.layers)
+        }
+        addView(label(size, 13f, COCOA))
         addView(label(sketchbook, 13f, COCOA))
         addView(
-            action(tr("Continue drawing"), true) { open(art.id) },
-            LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) },
+            label(tr("Continue drawing"), 15f, Color.WHITE).apply {
+                gravity = Gravity.CENTER
+                background = rounded(ACCENT, 12)
+                minHeight = dp(46)
+                setOnClickListener {
+                    dialog.dismiss()
+                    open(art.id)
+                }
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) },
         )
-        val more = GridLayout(context).apply {
-            columnCount = 2
-            listOf(
-                action(tr("Rename"), run = rename),
-                action(tr("Move to project"), run = move),
-                action(tr("Duplicate"), run = duplicate),
-                action(tr("Make a variation"), run = variation),
-                action(tr("Delete"), run = delete),
-            ).forEach { chipView ->
-                addView(chipView, GridLayout.LayoutParams().apply { setMargins(0, 0, dp(6), dp(6)) })
-            }
-        }
-        addView(more, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10) })
+        addView(View(context), LinearLayout.LayoutParams(-1, dp(6)))
+        addView(action(R.drawable.ic_rename, tr("Rename"), run = rename))
+        addView(action(R.drawable.ic_gallery, tr("Move to sketchbook"), run = move))
+        addView(action(R.drawable.ic_duplicate, tr("Duplicate"), run = duplicate))
+        addView(action(R.drawable.ic_palette, tr("Make a variation"), run = variation))
+        addView(action(R.drawable.ic_trash, tr("Delete"), ACCENT, delete))
     }
     val content = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL

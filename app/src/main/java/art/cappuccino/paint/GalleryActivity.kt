@@ -249,8 +249,8 @@ class GalleryActivity : Activity() {
             setStroke(dp(2), COCOA, dp(8).toFloat(), dp(6).toFloat())
         }
         setOnClickListener {
-            ask(tr("New sketchbook"), "") {
-                selected = store.createProject(it).id
+            newSketchbookSheet(store.projects().size % SKETCHBOOK_COLORS.size) { name, color ->
+                selected = store.createProject(name, color).id
                 render()
             }
         }

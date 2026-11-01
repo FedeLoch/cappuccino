@@ -128,9 +128,9 @@ class ArtworkStore(context: Context) {
         writeAtomically(projectsFile, array.toString().toByteArray())
     }
 
-    fun createProject(name: String): Project {
+    fun createProject(name: String, color: Int = projects().size % SKETCHBOOK_COLORS.size): Project {
         val existing = projects()
-        val project = Project(UUID.randomUUID().toString(), name, existing.size % SKETCHBOOK_COLORS.size)
+        val project = Project(UUID.randomUUID().toString(), name, color)
         writeProjects(existing + project)
         return project
     }
