@@ -622,7 +622,7 @@ class GalleryActivity : Activity() {
                 isHorizontalScrollBarEnabled = false
                 addView(
                     LinearLayout(context).apply {
-                        val filters = listOf(tr("All") to "", "★" to STARRED_FILTER) + boards.map { it to it }
+                        val filters = listOf(tr("All") to "", "★" to STARRED_FILTER) + boards.map { tr(it) to it }
                         filters.forEach { (name, value) ->
                             addView(
                                 quietChip(name, referenceFilter == value) {

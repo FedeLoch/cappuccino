@@ -91,4 +91,24 @@ class ReferenceLibraryTest {
         assertEquals(ReferenceScope.NEWEST, choice.scope)
         assertEquals(files, choice.names(BoardPurpose.MOOD))
     }
+
+    @Test
+    fun blocksComeReadyAndYourChoiceWins() {
+        val used = withBlockPurposes(emptyMap())
+        assertEquals(setOf(BoardPurpose.PALETTE), used["Color palettes"])
+        assertEquals(setOf(BoardPurpose.VALUES), withBlockPurposes(mapOf("Color palettes" to setOf(BoardPurpose.VALUES)))["Color palettes"])
+    }
+
+    @Test
+    fun aPerspectiveBlockIsNeverCompared() {
+        val notes = mapOf("line" to ReferenceNote(board = "Perspective"), "loose" to ReferenceNote())
+        val choice = aspectReferences(listOf("line", "loose"), emptySet(), notes, withBlockPurposes(emptyMap()), emptySet())
+        assertEquals(listOf("loose"), choice.names)
+    }
+
+    @Test
+    fun yourOwnBlocksFollowTheReadyMadeOnes() {
+        val blocks = referenceBlocks(mapOf("a" to ReferenceNote(board = "Dragons"), "b" to ReferenceNote(board = "Lights")))
+        assertEquals(REFERENCE_BLOCKS.keys.toList() + "Dragons", blocks)
+    }
 }

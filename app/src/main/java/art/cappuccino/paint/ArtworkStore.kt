@@ -617,7 +617,9 @@ class ArtworkStore(context: Context) {
             .filter { it.name != REFERENCE_NOTES && it.name != BOARD_PURPOSES && !it.name.endsWith(".tmp") }
             .sortedByDescending { it.lastModified() }
 
-    fun boardPurposes(projectId: String): Map<String, Set<BoardPurpose>> {
+    fun boardPurposes(projectId: String) = withBlockPurposes(savedBoardPurposes(projectId))
+
+    private fun savedBoardPurposes(projectId: String): Map<String, Set<BoardPurpose>> {
         val file = File(referenceDir(projectId), BOARD_PURPOSES)
         if (!file.exists()) return emptyMap()
         val items = runCatching { JSONObject(file.readText()) }.getOrNull() ?: return emptyMap()
@@ -631,7 +633,7 @@ class ArtworkStore(context: Context) {
 
     fun setBoardPurposes(projectId: String, board: String, uses: Set<BoardPurpose>) {
         val items = JSONObject()
-        (boardPurposes(projectId) + (board to uses)).filterValues { it.isNotEmpty() }.forEach { (name, set) ->
+        (savedBoardPurposes(projectId) + (board to uses)).forEach { (name, set) ->
             items.put(name, JSONArray(set.map { it.name }))
         }
         writeAtomically(File(referenceDir(projectId), BOARD_PURPOSES), items.toString().toByteArray())

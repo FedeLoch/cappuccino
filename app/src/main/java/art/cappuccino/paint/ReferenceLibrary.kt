@@ -31,6 +31,25 @@ enum class BoardPurpose(val label: String) {
 
 val COMPARED_PURPOSES = BoardPurpose.entries - BoardPurpose.INSPIRATION
 
+/** Ready-made blocks, each already telling the companion what to read in it. Sorting is optional. */
+val REFERENCE_BLOCKS = linkedMapOf(
+    "Color palettes" to setOf(BoardPurpose.PALETTE),
+    "Lights" to setOf(BoardPurpose.VALUES),
+    "Composition" to setOf(BoardPurpose.COMPOSITION),
+    "Mood" to setOf(BoardPurpose.MOOD),
+    "Character design" to setOf(BoardPurpose.PALETTE, BoardPurpose.VALUES),
+    "Environment" to setOf(BoardPurpose.PALETTE, BoardPurpose.VALUES, BoardPurpose.COMPOSITION, BoardPurpose.MOOD),
+    "Perspective" to setOf(BoardPurpose.INSPIRATION),
+    "Inspiration" to setOf(BoardPurpose.INSPIRATION),
+)
+
+/** A block's own purposes, unless you changed them. */
+fun withBlockPurposes(saved: Map<String, Set<BoardPurpose>>) = REFERENCE_BLOCKS + saved
+
+/** The ready-made blocks first, then the ones you named. */
+fun referenceBlocks(notes: Map<String, ReferenceNote>) =
+    REFERENCE_BLOCKS.keys.toList() + referenceBoards(notes).filter { it !in REFERENCE_BLOCKS }
+
 /** Which images the companion compares with for each kind of note, and the boards they came from. */
 class AspectChoice(
     val names: List<String>,
@@ -151,49 +170,35 @@ fun Activity.referenceOptions(
     delete: () -> Unit,
 ) {
     val note = store.referenceNotes(projectId)[file.name] ?: ReferenceNote()
-    val items = arrayOf(
-        if (note.starred) tr("Remove star") else tr("Add star"),
-        if (note.board.isEmpty()) tr("Add to a board") else tr("Change board"),
-        tr("Move to another sketchbook"),
-        tr("Delete"),
-    )
-    AlertDialog.Builder(this).setItems(items) { _, choice ->
-        when (choice) {
-            0 -> {
+    choiceSheet(
+        tr("Reference"),
+        listOf(
+            SheetChoice(if (note.board.isEmpty()) tr("Move to a block") else tr("Change block"), R.drawable.ic_gallery) {
+                chooseBoard(store, projectId, listOf(file), changed)
+            },
+            SheetChoice(if (note.starred) tr("Remove star") else tr("Add star"), R.drawable.ic_pin) {
                 store.updateReferenceNote(projectId, file.name) { it.copy(starred = !it.starred) }
                 changed()
-            }
-            1 -> chooseBoard(store, projectId, listOf(file), changed)
-            2 -> chooseSketchbook(store, projectId, listOf(file), moved)
-            else -> delete()
-        }
-    }.show()
+            },
+            SheetChoice(tr("Move to another sketchbook"), R.drawable.ic_copy) {
+                chooseSketchbook(store, projectId, listOf(file), moved)
+            },
+            SheetChoice(tr("Delete"), R.drawable.ic_trash, danger = true) { delete() },
+        ),
+    )
 }
 
 fun Activity.chooseBoard(store: ArtworkStore, projectId: String, files: List<File>, changed: () -> Unit) {
-    val boards = referenceBoards(store.referenceNotes(projectId))
-    val items = (boards + tr("New board") + tr("No board")).toTypedArray()
-    AlertDialog.Builder(this).setTitle(tr("Board")).setItems(items) { _, choice ->
-        fun assign(board: String) {
-            files.forEach { file -> store.updateReferenceNote(projectId, file.name) { it.copy(board = board) } }
-            changed()
-        }
-        when (choice) {
-            boards.size -> {
-                val input = EditText(this).apply { hint = tr("Costumes, lighting, or forests") }
-                AlertDialog.Builder(this)
-                    .setTitle(tr("New board"))
-                    .setView(input)
-                    .setNegativeButton(tr("Cancel"), null)
-                    .setPositiveButton(tr("Save")) { _, _ ->
-                        input.text.toString().trim().takeIf { it.isNotEmpty() }?.let(::assign)
-                    }
-                    .show()
-            }
-            boards.size + 1 -> assign("")
-            else -> assign(boards[choice])
-        }
-    }.show()
+    fun assign(board: String) {
+        files.forEach { file -> store.updateReferenceNote(projectId, file.name) { it.copy(board = board) } }
+        changed()
+    }
+    choiceSheet(
+        tr("Block"),
+        referenceBlocks(store.referenceNotes(projectId)).map { block -> SheetChoice(tr(block)) { assign(block) } } +
+            SheetChoice(tr("New block")) { askSheet(tr("New block"), "", ::assign) } +
+            SheetChoice(tr("Not in a block")) { assign("") },
+    )
 }
 
 fun Activity.chooseSketchbook(store: ArtworkStore, projectId: String, files: List<File>, moved: () -> Unit) {

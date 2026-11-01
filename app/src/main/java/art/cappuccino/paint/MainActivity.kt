@@ -32,7 +32,6 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.PopupMenu
 import android.widget.PopupWindow
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -68,6 +67,7 @@ private const val PICK_TIP = 45
 private const val PICK_LAYER_IMAGE = 46
 private const val PICK_FLASH_MS = 700L
 private const val QUICK_COLORS = 4
+private const val BLEND_LIST_WIDTH = 180
 private const val PRINT_VIEW = 4
 private const val STICKER_SIDE = 1024
 private const val STICKER_PREVIEW = 300
@@ -1141,7 +1141,7 @@ class MainActivity : Activity(), ReferenceHost {
                 "Your references",
                 listOfNotNull(
                     it.summary, it.advice,
-                    matchedBoards[it.weakest]?.firstOrNull()?.let { board -> tr("From your %1 board.", board) },
+                    matchedBoards[it.weakest]?.firstOrNull()?.let { board -> tr("From your %1 references.", tr(board)) },
                 ).joinToString(" "),
                 it.why,
                 if (it.marksCanvas) {
@@ -1241,7 +1241,7 @@ class MainActivity : Activity(), ReferenceHost {
                 label(
                     when (matchedScope) {
                         ReferenceScope.OPEN -> tr("Compared with your open references")
-                        ReferenceScope.BOARDS -> tr("Compared with your boards: %1", matchedBoards.values.flatten().distinct().joinToString(", "))
+                        ReferenceScope.BOARDS -> tr("Compared with: %1", matchedBoards.values.flatten().distinct().joinToString(", ") { tr(it) })
                         ReferenceScope.STARRED -> tr("Compared with your starred references")
                         ReferenceScope.NEWEST -> tr("Compared with your %1 newest references", matchedFiles.size)
                     },
@@ -3060,14 +3060,38 @@ class MainActivity : Activity(), ReferenceHost {
         refreshLayers()
     }
 
+    /** Stays in the app's own window, so opening it never takes focus and flashes the screen. */
     private fun chooseBlend(anchor: View, layer: LayerInfo) {
-        PopupMenu(this, anchor).apply {
-            BLEND_MODES.forEachIndexed { index, name -> menu.add(0, index, index, tr(name)) }
-            setOnMenuItemClickListener {
-                setBlend(layer, it.itemId)
-                true
+        lateinit var list: PopupWindow
+        val rows = column().apply {
+            BLEND_MODES.forEachIndexed { index, name ->
+                addView(
+                    label(tr(name), 14f).apply {
+                        gravity = Gravity.CENTER_VERTICAL
+                        minHeight = dp(40)
+                        setPadding(dp(14), 0, dp(14), 0)
+                        if (index == layer.blend) background = rounded(SURFACE_RAISED, 10)
+                        setOnClickListener {
+                            list.dismiss()
+                            setBlend(layer, index)
+                        }
+                    },
+                    LinearLayout.LayoutParams(-1, -2),
+                )
             }
-            show()
+        }
+        val body = ScrollView(this).apply {
+            background = rounded(SURFACE, 12)
+            elevation = dp(8).toFloat()
+            setPadding(dp(6), dp(6), dp(6), dp(6))
+            addView(rows)
+        }
+        list = PopupWindow(body, dp(BLEND_LIST_WIDTH), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            isOutsideTouchable = true
+            isClippingEnabled = true
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            elevation = dp(8).toFloat()
+            showAsDropDown(anchor, 0, dp(4), Gravity.END)
         }
     }
 
@@ -3998,116 +4022,186 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun referencesPanel(): View = column().apply {
-        addView(label(tr("References"), 16f))
         val notes = store.referenceNotes(document.projectId)
-        val boards = referenceBoards(notes)
-        if (referenceFilter.isNotEmpty() && referenceFilter != STARRED_FILTER && referenceFilter !in boards) referenceFilter = ""
+        val blocks = referenceBlocks(notes)
+        if (referenceFilter.isNotEmpty() && referenceFilter != STARRED_FILTER && referenceFilter !in blocks) referenceFilter = ""
         val all = store.references(document.projectId)
-        val shown = filterReferences(all.map { it.name }, notes, referenceFilter).toSet()
-        val files = all.filter { it.name in shown }
-        if (all.isNotEmpty()) {
-            val filters = listOf(tr("All") to "", "★" to STARRED_FILTER) + boards.map { it to it }
-            gapped(
-                wrapRow(
-                    listOf(
+        val inside = referenceFilter.isNotEmpty()
+        addView(
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                if (inside) {
+                    addView(
+                        smallChip("‹") {
+                            referenceFilter = ""
+                            pickingReferences = false
+                            pickedReferences.clear()
+                            rerender("references", ::referencesPanel)
+                        },
+                        LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) },
+                    )
+                }
+                val title = if (referenceFilter == STARRED_FILTER) "★" else if (inside) tr(referenceFilter) else tr("References")
+                addView(label(title, 16f), LinearLayout.LayoutParams(0, -2, 1f))
+                if (all.isNotEmpty()) {
+                    addView(
                         smallChip(tr("Select"), pickingReferences) {
                             pickingReferences = !pickingReferences
                             pickedReferences.clear()
                             rerender("references", ::referencesPanel)
                         },
-                    ) + filters.map { (name, value) ->
-                        smallChip(name, referenceFilter == value) {
-                            referenceFilter = value
+                    )
+                }
+                addView(
+                    iconButton(R.drawable.ic_add, tr("Add references")) {
+                        startActivityForResult(
+                            Intent(Intent.ACTION_OPEN_DOCUMENT)
+                                .addCategory(Intent.CATEGORY_OPENABLE)
+                                .setType("image/*")
+                                .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true),
+                            PICK_REFERENCES,
+                        )
+                    },
+                )
+            },
+        )
+        if (all.isEmpty()) {
+            gapped(label(tr("Add images, or share them here from another app."), 12f, MUTED_TEXT))
+            return@apply
+        }
+        val names = if (inside) {
+            filterReferences(all.map { it.name }, notes, referenceFilter).toSet()
+        } else {
+            all.filter { notes[it.name]?.board.isNullOrEmpty() }.map { it.name }.toSet()
+        }
+        val files = all.filter { it.name in names }
+        if (!inside) {
+            val full = blocks.filter { block -> all.any { notes[it.name]?.board == block } }
+            if (full.isNotEmpty()) gapped(blockGrid(full, all, notes))
+            val quiet = buildList {
+                if (all.any { notes[it.name]?.starred == true }) add(STARRED_FILTER)
+                addAll(blocks - full.toSet())
+            }
+            gapped(
+                wrapRow(
+                    quiet.map { block ->
+                        smallChip(if (block == STARRED_FILTER) "★" else tr(block)) {
+                            referenceFilter = block
                             rerender("references", ::referencesPanel)
                         }
                     },
                 ),
             )
-            if (pickingReferences) gapped(wrapRow(referencePickActions(all)))
+            if (files.isNotEmpty()) gapped(label(tr("Not sorted"), 12f, MUTED_TEXT))
         }
-        if (referenceFilter in boards) boardControls(referenceFilter)
-        val cell = (dp(PANEL_WIDTH) - dp(28) - dp(8)) / 3
-        gapped(
-            GridLayout(context).apply {
-                columnCount = 3
-                addView(
-                    LinearLayout(context).apply {
-                        orientation = LinearLayout.VERTICAL
-                        gravity = Gravity.CENTER
-                        background = rounded(SURFACE_RAISED, 10)
-                        contentDescription = tr("Add references")
-                        addView(ImageView(context).apply { setImageResource(R.drawable.ic_add) }, LinearLayout.LayoutParams(dp(24), dp(24)))
-                        addView(label(tr("Add"), 12f), LinearLayout.LayoutParams(-2, -2))
-                        setOnClickListener {
-                            startActivityForResult(
-                                Intent(Intent.ACTION_OPEN_DOCUMENT)
-                                    .addCategory(Intent.CATEGORY_OPENABLE)
-                                    .setType("image/*")
-                                    .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true),
-                                PICK_REFERENCES,
-                            )
-                        }
-                    },
-                    GridLayout.LayoutParams().apply {
-                        width = cell
-                        height = cell
-                        setMargins(0, 0, dp(4), dp(4))
-                    },
-                )
-                files.forEach { file ->
-                    val open = references.containsKey(file.name)
+        if (pickingReferences) gapped(wrapRow(referencePickActions(files)))
+        if (referenceFilter in blocks) boardControls(referenceFilter)
+        if (files.isNotEmpty()) gapped(referenceGrid(files, notes))
+    }
+
+    /** Each block with a peek at its first images. */
+    private fun blockGrid(blocks: List<String>, all: List<File>, notes: Map<String, ReferenceNote>) = GridLayout(this).apply {
+        columnCount = 2
+        val width = (dp(PANEL_WIDTH) - dp(28) - dp(8)) / 2
+        val peek = (width - dp(16) - dp(4)) / 3
+        blocks.forEach { block ->
+            val inside = all.filter { notes[it.name]?.board == block }
+            addView(
+                column().apply {
+                    background = rounded(SURFACE_RAISED, 12)
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    contentDescription = tr(block)
+                    setOnClickListener {
+                        referenceFilter = block
+                        rerender("references", ::referencesPanel)
+                    }
                     addView(
-                        FrameLayout(context).apply {
-                            val marked = if (pickingReferences) file.name in pickedReferences else open
-                            background = rounded(if (marked) ACCENT else SURFACE, 10)
-                            setPadding(dp(3), dp(3), dp(3), dp(3))
-                            addView(
-                                ImageView(context).apply {
-                                    scaleType = ImageView.ScaleType.CENTER_CROP
-                                    background = rounded(SURFACE_RAISED, 8)
-                                    clipToOutline = true
-                                    thumbnails.show(file, cell, this)
-                                    contentDescription = if (open) tr("Close reference") else tr("Open reference")
-                                    setOnClickListener {
-                                        if (pickingReferences) {
-                                            if (!pickedReferences.remove(file.name)) pickedReferences.add(file.name)
-                                        } else {
-                                            toggleReference(file)
-                                        }
-                                        rerender("references", ::referencesPanel)
-                                    }
-                                    setOnLongClickListener {
-                                        manageReference(file)
-                                        true
-                                    }
-                                },
-                            )
-                            if (notes[file.name]?.starred == true) {
+                        LinearLayout(context).apply {
+                            inside.take(3).forEach { file ->
                                 addView(
-                                    label("★", 13f).apply { setShadowLayer(4f, 0f, 1f, Color.BLACK) },
-                                    FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
-                                        setMargins(0, dp(2), dp(5), 0)
+                                    ImageView(context).apply {
+                                        scaleType = ImageView.ScaleType.CENTER_CROP
+                                        background = rounded(SURFACE, 6)
+                                        clipToOutline = true
+                                        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                                        thumbnails.show(file, peek, this)
                                     },
+                                    LinearLayout.LayoutParams(peek, peek).apply { marginEnd = dp(2) },
                                 )
                             }
                         },
-                        GridLayout.LayoutParams().apply {
-                            width = cell
-                            height = cell
-                            setMargins(0, 0, dp(4), dp(4))
+                        LinearLayout.LayoutParams(-1, peek),
+                    )
+                    addView(
+                        label("${tr(block)} · ${inside.size}", 12f).apply {
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                        },
+                        LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) },
+                    )
+                },
+                GridLayout.LayoutParams().apply {
+                    this.width = width
+                    setMargins(0, 0, dp(4), dp(4))
+                },
+            )
+        }
+    }
+
+    private fun referenceGrid(files: List<File>, notes: Map<String, ReferenceNote>) = GridLayout(this).apply {
+        columnCount = 3
+        val cell = (dp(PANEL_WIDTH) - dp(28) - dp(8)) / 3
+        files.forEach { file ->
+            val open = references.containsKey(file.name)
+            addView(
+                FrameLayout(context).apply {
+                    val marked = if (pickingReferences) file.name in pickedReferences else open
+                    background = rounded(if (marked) ACCENT else SURFACE, 10)
+                    setPadding(dp(3), dp(3), dp(3), dp(3))
+                    addView(
+                        ImageView(context).apply {
+                            scaleType = ImageView.ScaleType.CENTER_CROP
+                            background = rounded(SURFACE_RAISED, 8)
+                            clipToOutline = true
+                            thumbnails.show(file, cell, this)
+                            contentDescription = if (open) tr("Close reference") else tr("Open reference")
+                            setOnClickListener {
+                                if (pickingReferences) {
+                                    if (!pickedReferences.remove(file.name)) pickedReferences.add(file.name)
+                                } else {
+                                    toggleReference(file)
+                                }
+                                rerender("references", ::referencesPanel)
+                            }
+                            setOnLongClickListener {
+                                manageReference(file)
+                                true
+                            }
                         },
                     )
-                }
-            },
-        )
-        if (all.isEmpty()) gapped(label(tr("Add images, or share them here from another app."), 12f, MUTED_TEXT))
+                    if (notes[file.name]?.starred == true) {
+                        addView(
+                            label("★", 13f).apply { setShadowLayer(4f, 0f, 1f, Color.BLACK) },
+                            FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END).apply {
+                                setMargins(0, dp(2), dp(5), 0)
+                            },
+                        )
+                    }
+                },
+                GridLayout.LayoutParams().apply {
+                    width = cell
+                    height = cell
+                    setMargins(0, 0, dp(4), dp(4))
+                },
+            )
+        }
     }
 
     /** What the companion uses this board for, and whether this artwork follows it. */
     private fun LinearLayout.boardControls(board: String) {
         val project = document.projectId
         val uses = store.boardPurposes(project)[board].orEmpty()
-        gapped(label(tr("Your companion uses this board for"), 12f, MUTED_TEXT))
+        gapped(label(tr("Your companion reads this block for"), 12f, MUTED_TEXT))
         gapped(
             wrapRow(
                 BoardPurpose.entries.map { purpose ->
@@ -4157,7 +4251,7 @@ class MainActivity : Activity(), ReferenceHost {
             picked.forEach { file -> store.updateReferenceNote(project, file.name) { it.copy(starred = true) } }
             finish()
         }
-        actions += smallChip(tr("Board")) { chooseBoard(store, project, picked) { finish() } }
+        actions += smallChip(tr("Block")) { chooseBoard(store, project, picked) { finish() } }
         actions += smallChip(tr("Move")) {
             chooseSketchbook(store, project, picked) {
                 picked.forEach { references.remove(it.name)?.dismiss() }
@@ -4231,8 +4325,14 @@ class MainActivity : Activity(), ReferenceHost {
             (0 until clip.itemCount).map { clip.getItemAt(it).uri }
         }.orEmpty()
         val project = document.projectId
+        val block = referenceFilter.takeIf { it.isNotEmpty() && it != STARRED_FILTER }
         saver.execute {
-            (multiple.ifEmpty { single }).forEach { uri -> runCatching { store.addReference(project, uri) } }
+            (multiple.ifEmpty { single }).forEach { uri ->
+                runCatching {
+                    val added = store.addReference(project, uri)
+                    if (added != null && block != null) store.updateReferenceNote(project, added.name) { it.copy(board = block) }
+                }
+            }
             runOnUiThread {
                 closePanel()
                 showPanel("references", referencesPanel())
