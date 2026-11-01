@@ -119,6 +119,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Layers with nine blend modes, multi-select, editable text, opacity, layer masks, clipping masks, transparency lock, and groups
 - Liquify: push, grow, shrink, and restore parts of a layer
 - Filters: blur, motion blur, sharpen, noise, gradient map, levels, and depth fade
+- Make a sticker from your drawing: a die-cut border layer with a soft shadow, or a transparent PNG
 - Lasso and magic wand selections, transform, and hue, saturation, and tone adjustments
 - One undo history for strokes and layer changes
 - Canvases up to 8192 pixels on a side
@@ -185,6 +186,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 
 - Automatic saving that writes only the tiles you changed, with the previous version kept
 - Finished strokes are written to disk as you draw, and return after a crash
+- CMYK sliders and a print preview that show how colors may change on paper, as a close guide without a printer profile
 - Export to PNG, layered PSD, and time-lapse video in the length you choose
 - Design sheets that put all variations on one page, and a PNG for each thumbnail frame
 - PSD import for 8-bit RGB files

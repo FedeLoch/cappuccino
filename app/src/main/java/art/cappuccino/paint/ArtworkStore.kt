@@ -363,6 +363,7 @@ class ArtworkStore(context: Context) {
                 item.optString("text").ifEmpty { null },
                 item.optDouble("textSize", 0.0).toFloat(),
                 item.optInt("textColor"),
+                item.optBoolean("sticker"),
             )
         }.toMutableList()
         return ArtworkDocument(
@@ -519,6 +520,7 @@ class ArtworkStore(context: Context) {
                     .put("text", layer.text ?: "")
                     .put("textSize", layer.textSize.toDouble())
                     .put("textColor", layer.textColor)
+                    .put("sticker", layer.sticker)
                     .put("maskTiles", tiles[layer.maskId]?.let { tileJson(it, packs) } ?: JSONObject.NULL),
             )
         }

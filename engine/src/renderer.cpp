@@ -313,6 +313,17 @@ uniform int uMode;
 out vec4 fragColor;
 void main() {
     vec3 color = texture(uTexture, vUv).rgb;
+    if (uMode == 4) {
+        // Mixes the typical colors of printed inks, the same as printedColor in Cmyk.kt.
+        float k = 1.0 - max(color.r, max(color.g, color.b));
+        vec3 ink = k < 1.0 ? (1.0 - color - k) / (1.0 - k) : vec3(0.0);
+        vec3 noYellow = mix(mix(vec3(1.0), vec3(0.0, 0.68, 0.94), ink.r),
+                            mix(vec3(0.93, 0.0, 0.55), vec3(0.18, 0.19, 0.57), ink.r), ink.g);
+        vec3 yellow = mix(mix(vec3(1.0, 0.95, 0.0), vec3(0.0, 0.65, 0.32), ink.r),
+                          mix(vec3(0.93, 0.11, 0.14), vec3(0.23, 0.21, 0.21), ink.r), ink.g);
+        fragColor = vec4(mix(noYellow, yellow, ink.b) * mix(1.0, 0.13, k), 1.0);
+        return;
+    }
     float value = dot(color, vec3(0.2126, 0.7152, 0.0722));
     if (uMode == 2) value = step(0.5, value);
     if (uMode == 3) value = floor(min(value, 0.999) * 3.0) / 2.0;

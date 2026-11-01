@@ -64,10 +64,15 @@ private const val THUMBNAIL_HEIGHT = 48
 private const val LAYER_ROW = 56
 private const val LAYER_GAP = 4
 private const val RETIRED_LAYERS = 6
-private val LEFT_PANELS = setOf("actions", "references", "view", "tools")
+private val LEFT_PANELS = setOf("actions", "references", "view", "tools", "sticker")
 private const val PICK_TIP = 45
 private const val PICK_FLASH_MS = 700L
 private const val QUICK_COLORS = 4
+private const val PRINT_VIEW = 4
+private const val STICKER_SIDE = 1024
+private const val STICKER_PREVIEW = 300
+private const val MAX_BORDER = 0.05f
+private const val SHADOW_ALPHA = 90
 private const val NEW_SITTING_MS = 6L * 60 * 60 * 1000
 private const val PEEK_SIZE = 60
 private const val PEEK_OVERLAP = 24
@@ -110,6 +115,16 @@ class MainActivity : Activity(), ReferenceHost {
     private var comparison: String? = null
     private val shapeHandles = ArrayList<PopupWindow>()
     private var recentStrip: LinearLayout? = null
+    private var pickerInks = false
+    private var inks: FloatArray? = null
+    private var stickerArt: Bitmap? = null
+    private var stickerAlpha: ByteArray? = null
+    private var stickerWidth = 0
+    private var stickerHeight = 0
+    private var stickerBorder = 0.35f
+    private var stickerColor = Color.WHITE
+    private var stickerShadow = true
+    private var stickerImage: ImageView? = null
     private var pickingReferences = false
     private val pickedReferences = LinkedHashSet<String>()
     private var pickingLayers = false
@@ -2174,12 +2189,54 @@ class MainActivity : Activity(), ReferenceHost {
                 )
                 val header = this
                 gapped(
-                    ColorPicker(context, canvas.brushColor) {
-                        setColor(it)
-                        header.findViewWithTag<View>("currentColor")?.background = swatchBackground(it)
-                        header.findViewWithTag<android.widget.TextView>("hex")?.text = hex(it)
-                    }.apply { minimumHeight = dp(230) },
+                    segmented(listOf("RGB", "CMYK"), if (pickerInks) 1 else 0) {
+                        pickerInks = it == 1
+                        rerender("color", ::colorPanel)
+                    },
                 )
+                fun show(color: Int) {
+                    header.findViewWithTag<View>("currentColor")?.background = swatchBackground(color)
+                    header.findViewWithTag<android.widget.TextView>("hex")?.text = hex(color)
+                    header.findViewWithTag<View>("printNote")?.visibility = if (printsDuller(color)) View.VISIBLE else View.INVISIBLE
+                    header.findViewWithTag<View>("printed")?.background = swatchBackground(printedColor(color))
+                }
+                if (pickerInks) {
+                    val amounts = inks?.takeIf { inkColor(it) == canvas.brushColor } ?: toCmyk(canvas.brushColor)
+                    inks = amounts
+                    listOf("Cyan", "Magenta", "Yellow", "Black").forEachIndexed { index, name ->
+                        addView(toolSlider(tr(name), (amounts[index] * 100).roundToInt()) {
+                            amounts[index] = it / 100f
+                            val color = inkColor(amounts)
+                            setColor(color)
+                            show(color)
+                        })
+                    }
+                } else {
+                    gapped(
+                        ColorPicker(context, canvas.brushColor) {
+                            setColor(it)
+                            show(it)
+                        }.apply { minimumHeight = dp(230) },
+                    )
+                    gapped(
+                        LinearLayout(context).apply {
+                            tag = "printNote"
+                            gravity = Gravity.CENTER_VERTICAL
+                            addView(View(context).apply { tag = "printed" }, LinearLayout.LayoutParams(dp(28), dp(22)))
+                            addView(
+                                label(tr("Prints duller"), 12f, MUTED_TEXT),
+                                LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) },
+                            )
+                            addView(
+                                smallChip(tr("Use this")) {
+                                    setColor(printedColor(canvas.brushColor))
+                                    rerender("color", ::colorPanel)
+                                },
+                            )
+                        },
+                    )
+                    show(canvas.brushColor)
+                }
                 gapped(label(tr("Values of this hue"), 13f, MUTED_TEXT))
                 addView(swatchRow(valueScale(canvas.brushColor)))
                 if (recentColors.isNotEmpty()) {
@@ -2266,10 +2323,12 @@ class MainActivity : Activity(), ReferenceHost {
     private fun viewPanel(): View = column().apply {
         addView(label(tr("Art direction"), 16f))
         gapped(label(tr("Check your image"), 12f, MUTED_TEXT))
-        addView(segmented(listOf(tr("Color"), tr("Gray"), tr("2 values"), tr("3 values")), viewMode) {
+        addView(segmented(listOf(tr("Color"), tr("Gray"), tr("2 values"), tr("3 values"), tr("Print")), viewMode) {
             viewMode = it
             applyViewOptions()
+            rerender("view", ::viewPanel)
         })
+        if (viewMode == PRINT_VIEW) gapped(label(tr("A close guide to CMYK print. Real results depend on the printer and paper."), 12f, MUTED_TEXT))
         gapped(label(tr("Composition"), 12f, MUTED_TEXT))
         gapped(
             wrapRow(
@@ -3080,6 +3139,9 @@ class MainActivity : Activity(), ReferenceHost {
             },
         )
         gapped(
+            actionRow(R.drawable.ic_copy, tr("Make a sticker"), tr("Add a die-cut border around your drawing")) { openStickerPanel() },
+        )
+        gapped(
             actionRow(R.drawable.ic_palette, tr("Color variants"), tr("Try this design in new colors")) {
                 closePanel()
                 showPanel("variants", variantsPanel())
@@ -3287,6 +3349,232 @@ class MainActivity : Activity(), ReferenceHost {
             document.activeLayer = id
         }
         startTransform()
+    }
+
+    private fun stickerLayers() = document.layers.filter { it.visible && !it.sticker && document.groups.none { group -> group.id == it.groupId && !group.visible } }
+
+    /** Reads a small copy of the drawing once, so the border slider can answer right away. */
+    private fun openStickerPanel() {
+        val longest = max(document.width, document.height)
+        val width = max(1, document.width * STICKER_SIDE / longest)
+        val height = max(1, document.height * STICKER_SIDE / longest)
+        val layers = stickerLayers().map { it.id to it.opacity }
+        canvas.snapshot { engine ->
+            val art = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val painter = android.graphics.Canvas(art)
+            val alpha = ByteArray(width * height)
+            layers.forEach { (id, opacity) ->
+                val pixels = ArtworkStore.pixelBuffer(width, height)
+                NativeEngine.readLayerThumbnail(engine, id, width, height, pixels)
+                pixels.rewind()
+                for (index in alpha.indices) {
+                    val value = (pixels.get(index * 4 + 3).toInt() and 0xFF) * opacity
+                    if (value > (alpha[index].toInt() and 0xFF)) alpha[index] = value.toInt().toByte()
+                }
+                pixels.rewind()
+                val layer = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                layer.copyPixelsFromBuffer(pixels)
+                painter.drawBitmap(layer, 0f, 0f, android.graphics.Paint().apply { this.alpha = (opacity * 255).toInt() })
+                layer.recycle()
+            }
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                stickerArt = art
+                stickerAlpha = alpha
+                stickerWidth = width
+                stickerHeight = height
+                closePanel()
+                showPanel("sticker", stickerPanel())
+            }
+        }
+    }
+
+    private fun stickerRadius() = (stickerBorder * MAX_BORDER * STICKER_SIDE).coerceAtLeast(1f)
+
+    /** The border, with its shadow behind it, ready to draw at any size. */
+    private fun paintSticker(target: android.graphics.Canvas, shape: ByteArray, outputWidth: Int, outputHeight: Int) {
+        val pixels = IntArray(shape.size) { ((shape[it].toInt() and 0xFF) shl 24) or 0xFFFFFF }
+        val small = Bitmap.createBitmap(pixels, stickerWidth, stickerHeight, Bitmap.Config.ARGB_8888)
+        val scale = outputWidth / stickerWidth.toFloat()
+        val box = android.graphics.RectF(0f, 0f, outputWidth.toFloat(), outputHeight.toFloat())
+        if (stickerShadow) {
+            val blur = 6f * scale
+            val outline = small.extractAlpha()
+            val paint = android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG or android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.BLACK
+                alpha = SHADOW_ALPHA
+                maskFilter = android.graphics.BlurMaskFilter(blur, android.graphics.BlurMaskFilter.Blur.NORMAL)
+            }
+            target.save()
+            target.translate(0f, blur * 0.6f)
+            target.drawBitmap(outline, null, box, paint)
+            target.restore()
+            outline.recycle()
+        }
+        val red = Color.red(stickerColor).toFloat()
+        val green = Color.green(stickerColor).toFloat()
+        val blue = Color.blue(stickerColor).toFloat()
+        // Sharpens an enlarged edge, so a small shape still cuts a clean line.
+        val enlarged = scale > 1f
+        val edge = android.graphics.ColorMatrix(
+            floatArrayOf(
+                0f, 0f, 0f, 0f, red, 0f, 0f, 0f, 0f, green, 0f, 0f, 0f, 0f, blue,
+                0f, 0f, 0f, if (enlarged) 5f else 1f, if (enlarged) -510f else 0f,
+            ),
+        )
+        target.drawBitmap(
+            small, null, box,
+            android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+                colorFilter = android.graphics.ColorMatrixColorFilter(edge)
+            },
+        )
+        small.recycle()
+    }
+
+    private fun refreshStickerPreview() {
+        val alpha = stickerAlpha ?: return
+        val art = stickerArt ?: return
+        val image = stickerImage ?: return
+        val radius = stickerRadius()
+        saver.execute {
+            val shape = stickerShape(alpha, stickerWidth, stickerHeight, radius) ?: return@execute
+            val height = STICKER_PREVIEW * stickerHeight / stickerWidth
+            val preview = Bitmap.createBitmap(STICKER_PREVIEW, height, Bitmap.Config.ARGB_8888)
+            val painter = android.graphics.Canvas(preview)
+            painter.drawColor(ROAST)
+            paintSticker(painter, shape, STICKER_PREVIEW, height)
+            painter.drawBitmap(art, null, android.graphics.RectF(0f, 0f, STICKER_PREVIEW.toFloat(), height.toFloat()), android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+            runOnUiThread { image.setImageBitmap(preview) }
+        }
+    }
+
+    private fun stickerPanel(): View = column().apply {
+        addView(label(tr("Make a sticker"), 16f))
+        val alpha = stickerAlpha
+        val filled = alpha?.count { (it.toInt() and 0xFF) > 24 }?.toFloat()?.div(alpha.size) ?: 0f
+        if (filled == 0f) {
+            gapped(label(tr("Draw something first."), 13f, MUTED_TEXT))
+            return@apply
+        }
+        val image = ImageView(context).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            background = rounded(ROAST, 10)
+            clipToOutline = true
+            contentDescription = tr("Sticker preview")
+        }
+        stickerImage = image
+        gapped(image)
+        image.layoutParams.height = dp(190)
+        if (filled >= FULL_CANVAS_SHARE) {
+            gapped(label(tr("Your drawing fills the canvas. Keep the background on its own hidden layer for a shaped sticker."), 12f, MUTED_TEXT))
+        }
+        addView(toolSlider(tr("Border size"), (stickerBorder * 100).roundToInt()) {
+            stickerBorder = it / 100f
+            refreshStickerPreview()
+        })
+        gapped(
+            wrapRow(
+                listOf(
+                    tr("White") to Color.WHITE,
+                    tr("Black") to Color.BLACK,
+                    tr("Your color") to canvas.brushColor,
+                ).map { (name, color) ->
+                    smallChip(name, stickerColor == color) {
+                        stickerColor = color
+                        rerender("sticker", ::stickerPanel)
+                    }
+                } + smallChip(tr("Shadow"), stickerShadow) {
+                    stickerShadow = !stickerShadow
+                    rerender("sticker", ::stickerPanel)
+                },
+            ),
+        )
+        gapped(
+            wrapRow(
+                listOf(
+                    smallChip(tr("Add sticker layer"), true) { makeSticker(export = false) },
+                    smallChip(tr("Save as PNG")) { makeSticker(export = true) },
+                ),
+            ),
+        )
+        refreshStickerPreview()
+    }
+
+    /** Adds the border as a layer under the drawing, replacing an older one. */
+    internal fun makeSticker(export: Boolean) {
+        val alpha = stickerAlpha ?: return
+        val old = document.layers.filter { it.sticker }
+        if (old.isEmpty() && layerSlots >= maxLayers) {
+            Toast.makeText(this, tr("This canvas can hold %1 layers", maxLayers), Toast.LENGTH_LONG).show()
+            return
+        }
+        val width = document.width
+        val height = document.height
+        val name = tr("%1 sticker", document.name)
+        val radius = stickerRadius()
+        closePanel()
+        Toast.makeText(this, tr("Making your sticker"), Toast.LENGTH_SHORT).show()
+        saver.execute {
+            val shape = stickerShape(alpha, stickerWidth, stickerHeight, radius) ?: return@execute
+            val page = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            paintSticker(android.graphics.Canvas(page), shape, width, height)
+            val pixels = ArtworkStore.pixelBuffer(width, height)
+            page.copyPixelsToBuffer(pixels)
+            page.recycle()
+            pixels.rewind()
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                setEditingMask(false)
+                val id = document.nextLayerId++
+                engineLayers.add(id)
+                canvas.act { engine ->
+                    NativeEngine.createLayer(engine, id)
+                    NativeEngine.writeLayer(engine, id, pixels)
+                    NativeEngine.markLayerDirty(engine, id)
+                }
+                editLayers {
+                    document.layers.removeAll(old.toSet())
+                    document.layers.add(0, LayerInfo(id, tr("Sticker"), sticker = true))
+                    if (document.activeLayer in old.map { it.id }) document.activeLayer = document.layers.last().id
+                }
+                if (export) exportSticker(shape, name)
+            }
+        }
+    }
+
+    private fun exportSticker(shape: ByteArray, name: String) {
+        val width = document.width
+        val height = document.height
+        val small = IntArray(shape.size) { (min(255, max(0, (shape[it].toInt() and 0xFF) * 5 - 510)) shl 24) or 0xFFFFFF }
+        val cutWidth = stickerWidth
+        val cutHeight = stickerHeight
+        canvas.snapshot { engine ->
+            val pixels = ArtworkStore.pixelBuffer(width, height)
+            NativeEngine.readComposite(engine, width, height, pixels)
+            saver.execute {
+                val saved = runCatching {
+                    pixels.rewind()
+                    val page = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    page.copyPixelsFromBuffer(pixels)
+                    val cut = Bitmap.createBitmap(small, cutWidth, cutHeight, Bitmap.Config.ARGB_8888)
+                    android.graphics.Canvas(page).drawBitmap(
+                        cut, null, android.graphics.RectF(0f, 0f, width.toFloat(), height.toFloat()),
+                        android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG).apply {
+                            xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN)
+                        },
+                    )
+                    cut.recycle()
+                    pixels.rewind()
+                    page.copyPixelsToBuffer(pixels)
+                    page.recycle()
+                    store.exportPng(name, width, height, pixels)
+                }.getOrDefault(false)
+                runOnUiThread {
+                    val message = if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG")
+                    Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
     }
 
     private fun variantsPanel(): View = column().apply {

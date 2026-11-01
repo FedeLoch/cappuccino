@@ -180,6 +180,7 @@ data class LayerInfo(
     var text: String? = null,
     var textSize: Float = 0f,
     var textColor: Int = 0,
+    var sticker: Boolean = false,
 )
 
 data class LayerGroup(
