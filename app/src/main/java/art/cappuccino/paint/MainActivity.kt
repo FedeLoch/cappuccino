@@ -57,6 +57,7 @@ private const val REFERENCE_SIZE = 2048
 private const val PREFERENCES = "studio"
 private const val PANEL_WIDTH = 340
 private const val BUBBLE_WIDTH = 308
+private const val HIDE_BUTTON_DP = 28
 private const val THUMBNAIL_WIDTH = 72
 private const val THUMBNAIL_HEIGHT = 48
 private const val LAYER_ROW = 56
@@ -1171,14 +1172,28 @@ class MainActivity : Activity(), ReferenceHost {
         },
     ) + report?.tips.orEmpty()
 
-    private fun companionPanel(): View = column().apply {
+    private fun companionPanel(): View = FrameLayout(this).apply {
+        addView(companionNote())
+        addView(
+            iconButton(R.drawable.ic_hidden, tr("Hide companion")) { setCompanionVisible(false) }.apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setPadding(dp(6), dp(6), dp(6), dp(6))
+                tooltipText = contentDescription
+            },
+            FrameLayout.LayoutParams(dp(HIDE_BUTTON_DP), dp(HIDE_BUTTON_DP), Gravity.TOP or Gravity.END),
+        )
+    }
+
+    private fun companionNote(): View = column().apply {
+        // Keeps the first lines clear of the hide button in the corner.
+        fun beside(view: View) = view.apply { setPaddingRelative(0, 0, dp(HIDE_BUTTON_DP), 0) }
         val tips = companionTips()
         val tip = tips.getOrNull(tipIndex.mod(max(tips.size, 1)))
         if (tip == null) {
-            addView(label(tr("Draw a little more, then pause. I'll have a note for you."), 14f))
+            addView(beside(label(tr("Draw a little more, then pause. I'll have a note for you."), 14f)))
         } else {
-            addView(label(tr(tip.topic), 13f, MUTED_TEXT))
-            addView(label(tip.text, 14f))
+            addView(beside(label(tr(tip.topic), 13f, MUTED_TEXT)))
+            addView(beside(label(tip.text, 14f)))
             noteChip(tip)?.let { gapped(wrapRow(listOf(it))) }
         }
         val actions = ArrayList<View>()
@@ -1330,7 +1345,6 @@ class MainActivity : Activity(), ReferenceHost {
                     listOfNotNull(
                         tip?.let { note -> smallChip(tr("Not useful")) { muteNote(note) } },
                         if (family.size > 1) smallChip(tr("Compare")) { compareVariations(family) } else null,
-                        smallChip(tr("Hide")) { setCompanionVisible(false) },
                     ) +
                         (
                             if (mutedNotes().isEmpty()) {

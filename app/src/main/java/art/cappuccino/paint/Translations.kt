@@ -266,7 +266,6 @@ val SPANISH = mapOf(
     "Harmony" to "Armonía",
     "Height in pixels" to "Alto en píxeles",
     "Hide companion" to "Ocultar compañero",
-    "Hide" to "Ocultar",
     "Highlights" to "Luces",
     "Hue" to "Tono",
     "Import PSD" to "Importar PSD",
