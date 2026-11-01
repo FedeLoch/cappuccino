@@ -29,11 +29,14 @@ See it in motion in the [short companion video](marketing/cappuccino-companion-r
 
 Choose a paint drop, ink blot, foam cup, coffee drop, or flat white:
 
-![The four companions, each shown idle, with a tip ready, thinking, and napping](docs/screenshots/companions.png)
+![The companions, each shown idle, with a tip ready, thinking, and napping](docs/screenshots/companions.png)
 
 Your companion rests in a corner of the canvas and never interrupts you. When it has a thought, a
 small dot appears beside it. Tap it to read the note, or keep drawing and ignore it. If you'd
-rather be alone, it tucks away behind the toolbar.
+rather be alone, tap the small button in the corner of its note and it tucks away behind the
+toolbar. The flat white keeps steaming while it hides.
+
+![Each companion hiding behind the toolbar, holding its edge with two small hands](docs/screenshots/companions-hidden.png)
 
 ![The companion's note about how the artwork compares with its references](docs/screenshots/companion-note.png)
 
@@ -100,7 +103,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 
 ### Draw
 
-- Sixteen brushes, including Sponge and Dry brush textures
+- Sixteen brushes, including Fine and Soft pencils for sketching and Sponge and Dry brush textures
 - Scatter brushes for leaves, grass, rocks, and particles
 - Smudge, fill, gradient, and lasso fill tools, plus a lasso eraser for blocking in silhouettes
 - Hold at the end of a stroke to snap it to a clean line, ellipse, or box. Lines lean toward your perspective guides
@@ -167,6 +170,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 
 - Sketchbooks, each with its own reference library
 - Star your best references, sort them into boards, filter by either, and move them between sketchbooks
+- A small tag on each thumbnail shows which block a reference belongs to
 - Floating references you can move, zoom, flip, gray out, or pin over your work for tracing
 - Pick colors from a reference, or turn it into a palette
 - Share images into Cappuccino from other apps
