@@ -134,9 +134,18 @@ private:
         int layer = 0;
         Rect rect;
         std::vector<uint8_t> pixels;
+        // Big entries stay on the GPU, so undoing them doesn't copy through the CPU.
+        GLuint texture = 0;
+        GLuint fbo = 0;
         bool chained = false;  // Undoes together with the entry below it.
+
+        size_t bytes() const {
+            return fbo != 0 ? static_cast<size_t>(rect.width()) * rect.height() * 4 : pixels.size();
+        }
     };
 
+    void captureHistory(HistoryEntry& entry, GLuint fromFbo);
+    void dropHistory(HistoryEntry& entry);
     void commitStroke();
     void drawStamps(const std::vector<Stamp>& stamps, const float* matrix);
     void drawCanvas(const float* matrix);
@@ -172,6 +181,10 @@ private:
     GLuint shadowTexture_ = 0;  // The artwork as it was before the current stroke.
     GLuint shadowFbo_ = 0;
     GLuint stampProgram_ = 0;
+    GLuint fillProgram_ = 0;
+    GLint fillMatrix_ = -1;
+    GLint fillSize_ = -1;
+    GLint fillColor_ = -1;
     GLuint canvasProgram_ = 0;
     GLint stampMatrix_ = -1;
     GLint stampColor_ = -1;

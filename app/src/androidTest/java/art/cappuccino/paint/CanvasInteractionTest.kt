@@ -161,7 +161,24 @@ class CanvasInteractionTest {
         assertTrue("fill didn't paint the empty layer", hasInk(x, y))
         tap(2)
         settle()
+        repeat(20) { if (hasInk(x, y)) SystemClock.sleep(500) }
         assertFalse("undo didn't remove the fill", hasInk(x, y))
+        tap(3)
+        repeat(20) { if (!hasInk(x, y)) SystemClock.sleep(500) }
+        assertTrue("redo didn't bring the fill back", hasInk(x, y))
+    }
+
+    @Test
+    fun aFingerTapFillsToo() {
+        val x = width * 0.3f
+        val y = height * 0.2f
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.selectTool(BrushKind.FILL)
+        }
+        tap(1)
+        repeat(20) { if (!hasInk(x, y)) SystemClock.sleep(500) }
+        assertTrue("a finger tap didn't fill", hasInk(x, y))
     }
 
     @Test

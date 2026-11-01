@@ -29,6 +29,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridLayout
 import android.widget.HorizontalScrollView
+import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
@@ -63,7 +64,7 @@ private const val THUMBNAIL_HEIGHT = 48
 private const val LAYER_ROW = 56
 private const val LAYER_GAP = 4
 private const val RETIRED_LAYERS = 6
-private val LEFT_PANELS = setOf("actions", "references", "view", "selection")
+private val LEFT_PANELS = setOf("actions", "references", "view", "tools")
 private const val PICK_TIP = 45
 private const val PEEK_SIZE = 60
 private const val PEEK_OVERLAP = 24
@@ -148,7 +149,9 @@ class MainActivity : Activity(), ReferenceHost {
     private var editingBrush: BrushKind? = null
     private var draftTip: ByteArray? = null
     private val figureHandles = ArrayList<PopupWindow>()
-    private var selectButton: View? = null
+    private var toolsButton: ImageButton? = null
+    private var brushTab: String? = null
+    private var brushFeelOpen = false
     private var sizeBar: SeekBar? = null
     private var opacityBar: SeekBar? = null
     private var brushButton: View? = null
@@ -159,6 +162,7 @@ class MainActivity : Activity(), ReferenceHost {
     private var viewMode = 0
     private var guide = 0
     private val layerThumbnails = HashMap<Int, ImageView>()
+    private val layerPreviews = HashMap<Int, Bitmap>()
     private val perspectiveHandles = ArrayList<PopupWindow>()
     private val perspectiveLog = PerspectiveLog()
     private val history = EditHistory()
@@ -536,13 +540,29 @@ class MainActivity : Activity(), ReferenceHost {
         if (kind.isEraser) {
             lastEraser = kind
             canvas.eraserKind = kind
-        } else {
+        } else if (!kind.isTool) {
             lastBrush = kind
         }
         sizeBar?.progress = sizeProgress()
         opacityBar?.progress = (settings.opacity * 1000f).roundToInt()
-        brushButton?.background = if (kind.isEraser) null else rounded(SURFACE_RAISED, 18)
+        brushButton?.background = if (kind.isEraser || kind.isTool) null else rounded(SURFACE_RAISED, 18)
         eraserButton?.background = if (kind.isEraser) rounded(SURFACE_RAISED, 18) else null
+        markTools()
+    }
+
+    private fun markTools() {
+        toolsButton?.background = if (hasSelection || canvas.brushKind.isTool) rounded(SURFACE_RAISED, 18) else null
+        toolsButton?.setImageResource(
+            when {
+                canvas.selectionTool == SelectionTool.WAND -> R.drawable.ic_wand
+                canvas.selectionTool == SelectionTool.LASSO -> R.drawable.ic_select
+                canvas.brushKind === BrushKind.SMUDGE -> R.drawable.ic_smudge
+                canvas.brushKind === BrushKind.FILL -> R.drawable.ic_fill
+                canvas.brushKind === BrushKind.GRADIENT -> R.drawable.ic_gradient
+                canvas.brushKind === BrushKind.LASSO_FILL -> R.drawable.ic_lasso_fill
+                else -> R.drawable.ic_select
+            },
+        )
     }
 
     private fun swatchBackground(color: Int) = rounded(color, 12).apply {
@@ -581,8 +601,8 @@ class MainActivity : Activity(), ReferenceHost {
             addView(iconButton(R.drawable.ic_actions, tr("Actions")) { togglePanel("actions", ::actionsPanel) })
             addView(iconButton(R.drawable.ic_references, tr("References")) { togglePanel("references", ::referencesPanel) })
             addView(iconButton(R.drawable.ic_view, tr("Art direction")) { togglePanel("view", ::viewPanel) })
-            selectButton = iconButton(R.drawable.ic_select, tr("Selection")) { togglePanel("selection", ::selectionPanel) }
-            addView(selectButton)
+            toolsButton = iconButton(R.drawable.ic_select, tr("Tools")) { togglePanel("tools", ::toolsPanel) }
+            addView(toolsButton)
         }
         left.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
         showPeek(
@@ -606,7 +626,7 @@ class MainActivity : Activity(), ReferenceHost {
         swatch = colorButton
         val right = pill().apply {
             brushButton = iconButton(R.drawable.ic_brush, tr("Brushes")) {
-                if (canvas.brushKind.isEraser) selectTool(lastBrush)
+                if (canvas.brushKind.isEraser || canvas.brushKind.isTool) selectTool(lastBrush)
                 togglePanel("brushes", ::brushPanel)
             }
             eraserButton = iconButton(R.drawable.ic_eraser, tr("Eraser")) {
@@ -882,13 +902,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
         val leftSide = key in LEFT_PANELS
         val side = if (leftSide) Gravity.START else Gravity.END
-        window.height = minOf(dp(520), canvas.height - dp(84)).let {
-            body.measure(
-                View.MeasureSpec.makeMeasureSpec(panelWidth, View.MeasureSpec.EXACTLY),
-                View.MeasureSpec.UNSPECIFIED,
-            )
-            minOf(it, body.measuredHeight)
-        }
+        window.height = panelHeight(body, panelWidth)
         if (key == "companion") {
             val spot = bubbleSpot(panelWidth, window.height)
             window.showAtLocation(canvas, Gravity.NO_GRAVITY, spot[0], spot[1])
@@ -897,11 +911,21 @@ class MainActivity : Activity(), ReferenceHost {
         }
         panel = window
         panelKey = key
-        if (key == "view") {
-            showHandles()
-            showFigureHandles()
-            showSymmetryHandle()
-        }
+        if (key == "view") showViewHandles()
+    }
+
+    private fun panelHeight(body: View, width: Int): Int {
+        body.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.UNSPECIFIED,
+        )
+        return minOf(dp(520), canvas.height - dp(84), body.measuredHeight)
+    }
+
+    private fun showViewHandles() {
+        showHandles()
+        showFigureHandles()
+        showSymmetryHandle()
     }
 
     /** Places the bubble beside the companion, on whichever side has room. */
@@ -1186,7 +1210,7 @@ class MainActivity : Activity(), ReferenceHost {
             addView(
                 LinearLayout(context).apply {
                     orientation = LinearLayout.VERTICAL
-                    background = rounded(if (selected) ACCENT else SURFACE_RAISED, 12)
+                    background = rounded(SURFACE_RAISED, 12).apply { if (selected) setStroke(dp(2), ACCENT) }
                     setPadding(dp(8), dp(4), dp(8), dp(8))
                     setOnClickListener {
                         selectTool(kind)
@@ -1202,7 +1226,7 @@ class MainActivity : Activity(), ReferenceHost {
                     addView(label(if (kind.id in favorites) "★ ${tr(kind.label)}" else tr(kind.label), 13f))
                 },
                 GridLayout.LayoutParams().apply {
-                    width = dp(144)
+                    width = dp(150)
                     setMargins(dp(3), dp(3), dp(3), dp(3))
                 },
             )
@@ -1218,60 +1242,84 @@ class MainActivity : Activity(), ReferenceHost {
         rerender("brushes", ::brushPanel)
     }
 
-    private fun brushPanel(): View = column().apply {
-        addView(label(tr("Brushes"), 16f))
-        val color = if (Color.luminance(canvas.brushColor) < 0.08f) TEXT_COLOR else canvas.brushColor
+    private fun brushFamilies(): List<Pair<String, List<BrushKind>>> {
         val favorites = favoriteIds()
-        val brushes = (BrushKind.PAINT_BRUSHES + BrushKind.TEXTURE_BRUSHES + BrushKind.SCATTER_BRUSHES + customBrushes).sortedBy { it.id !in favorites }
-        gapped(toolGrid(brushes, color, favorites))
-        gapped(label(tr("Tools"), 13f, MUTED_TEXT))
-        gapped(
-            LinearLayout(context).apply {
-                listOf(
-                    Triple(BrushKind.SMUDGE, R.drawable.ic_smudge, tr("Blend colors")),
-                    Triple(BrushKind.FILL, R.drawable.ic_fill, tr("Fill an area")),
-                ).forEachIndexed { index, (kind, icon, detail) -> addTool(kind, icon, detail, index) }
-            },
-        )
-        gapped(
-            LinearLayout(context).apply {
-                listOf(
-                    Triple(BrushKind.GRADIENT, R.drawable.ic_gradient, tr("Fade a color")),
-                    Triple(BrushKind.LASSO_FILL, R.drawable.ic_lasso_fill, tr("Fill a shape you draw")),
-                ).forEachIndexed { index, (kind, icon, detail) -> addTool(kind, icon, detail, index) }
-            },
-        )
-        gapped(label(tr("Snap shapes"), 12f, MUTED_TEXT))
+        val all = BrushKind.BRUSH_FAMILIES.flatMap { it.second } + customBrushes
+        return buildList {
+            if (favorites.isNotEmpty()) add("★" to all.filter { it.id in favorites })
+            BrushKind.BRUSH_FAMILIES.forEach { (name, kinds) -> add(tr(name) to kinds) }
+            if (customBrushes.isNotEmpty()) add(tr("Mine") to customBrushes.toList())
+        }
+    }
+
+    private fun brushPanel(): View = column().apply {
         addView(
-            segmented(listOf(tr("Off"), tr("On")), if (canvas.snapShapes) 1 else 0) {
-                canvas.snapShapes = it == 1
-                preferences.edit().putBoolean("snapShapes", canvas.snapShapes).apply()
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(label(tr("Brushes"), 16f), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(iconButton(R.drawable.ic_add, tr("New brush")) { openBrushEditor(null) })
+            },
+        )
+        val active = canvas.brushKind
+        val families = brushFamilies()
+        val family = families.firstOrNull { it.first == brushTab }
+            ?: families.firstOrNull { active in it.second }
+            ?: families.first()
+        addView(
+            segmented(families.map { it.first }, families.indexOf(family)) {
+                brushTab = families[it].first
                 rerender("brushes", ::brushPanel)
             },
         )
-        gapped(label(tr("Hold at the end of a stroke for a clean line, ellipse, or box."), 12f, MUTED_TEXT))
-        addView(toolSlider(tr("Stabilizer"), (toolFor(canvas.brushKind).stabilizer * 100).roundToInt()) {
-            toolFor(canvas.brushKind).stabilizer = it / 100f
-            canvas.stabilizerStrength = it / 100f
-        })
-        val gamma = ((canvas.pressureGamma - 0.4f) / 1.2f * 100).roundToInt()
-        addView(toolSlider(tr("Pressure: soft to firm"), gamma) {
-            canvas.pressureGamma = 0.4f + it / 100f * 1.2f
-            preferences.edit().putFloat("pressureGamma", canvas.pressureGamma).apply()
-        })
-        val active = canvas.brushKind
-        val actions = arrayListOf<View>(smallChip(tr("New brush")) { openBrushEditor(null) })
-        if (active.custom) {
-            actions += smallChip(tr("Edit")) { openBrushEditor(active) }
-            actions += smallChip(tr("Delete")) { deleteBrush(active) }
+        val color = if (Color.luminance(canvas.brushColor) < 0.08f) TEXT_COLOR else canvas.brushColor
+        gapped(toolGrid(family.second, color, favoriteIds()))
+        gapped(
+            label("${if (brushFeelOpen) "▾" else "▸"} ${tr("Brush feel")}", 13f, MUTED_TEXT).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                minHeight = dp(32)
+                setOnClickListener {
+                    brushFeelOpen = !brushFeelOpen
+                    rerender("brushes", ::brushPanel)
+                }
+            },
+        )
+        if (brushFeelOpen) {
+            addView(toolSlider(tr("Stabilizer"), (toolFor(active).stabilizer * 100).roundToInt()) {
+                toolFor(active).stabilizer = it / 100f
+                canvas.stabilizerStrength = it / 100f
+            })
+            val gamma = ((canvas.pressureGamma - 0.4f) / 1.2f * 100).roundToInt()
+            addView(toolSlider(tr("Pressure: soft to firm"), gamma) {
+                canvas.pressureGamma = 0.4f + it / 100f * 1.2f
+                preferences.edit().putFloat("pressureGamma", canvas.pressureGamma).apply()
+            })
+            gapped(label(tr("Snap shapes"), 12f, MUTED_TEXT))
+            addView(
+                segmented(listOf(tr("Off"), tr("On")), if (canvas.snapShapes) 1 else 0) {
+                    canvas.snapShapes = it == 1
+                    preferences.edit().putBoolean("snapShapes", canvas.snapShapes).apply()
+                    rerender("brushes", ::brushPanel)
+                },
+            )
+            gapped(label(tr("Hold at the end of a stroke for a clean line, ellipse, or box."), 12f, MUTED_TEXT))
+            if (active.custom) {
+                gapped(
+                    wrapRow(
+                        listOf(
+                            smallChip(tr("Edit")) { openBrushEditor(active) },
+                            smallChip(tr("Delete")) { deleteBrush(active) },
+                        ),
+                    ),
+                )
+            }
         }
-        gapped(wrapRow(actions))
-        gapped(label(tr("Hold a brush to keep it at the top."), 12f, MUTED_TEXT))
+        gapped(label(tr("Hold a brush to add it to ★."), 12f, MUTED_TEXT))
     }
 
     private fun LinearLayout.addTool(kind: BrushKind, icon: Int, detail: String, index: Int) {
         addView(
             toolCard(icon, tr(kind.label), detail, canvas.brushKind === kind) {
+                canvas.selectionTool = SelectionTool.NONE
                 selectTool(kind)
                 closePanel()
             },
@@ -1407,8 +1455,25 @@ class MainActivity : Activity(), ReferenceHost {
         pickView = null
     }
 
-    private fun selectionPanel(): View = column().apply {
-        addView(label(tr("Selection"), 16f))
+    private fun toolsPanel(): View = column().apply {
+        addView(label(tr("Tools"), 16f))
+        gapped(
+            LinearLayout(context).apply {
+                listOf(
+                    Triple(BrushKind.SMUDGE, R.drawable.ic_smudge, tr("Blend colors")),
+                    Triple(BrushKind.FILL, R.drawable.ic_fill, tr("Fill an area")),
+                ).forEachIndexed { index, (kind, icon, detail) -> addTool(kind, icon, detail, index) }
+            },
+        )
+        gapped(
+            LinearLayout(context).apply {
+                listOf(
+                    Triple(BrushKind.GRADIENT, R.drawable.ic_gradient, tr("Fade a color")),
+                    Triple(BrushKind.LASSO_FILL, R.drawable.ic_lasso_fill, tr("Fill a shape you draw")),
+                ).forEachIndexed { index, (kind, icon, detail) -> addTool(kind, icon, detail, index) }
+            },
+        )
+        gapped(label(tr("Selection"), 13f, MUTED_TEXT))
         gapped(
             LinearLayout(context).apply {
                 addView(
@@ -1443,13 +1508,14 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun startSelection(tool: SelectionTool, hint: String) {
         canvas.selectionTool = tool
+        markTools()
         closePanel()
         Toast.makeText(this, hint, Toast.LENGTH_SHORT).show()
     }
 
     private fun markSelection(active: Boolean) {
         hasSelection = active
-        selectButton?.background = if (active) rounded(SURFACE_RAISED, 18) else null
+        markTools()
     }
 
     internal fun clearSelection() {
@@ -1866,8 +1932,24 @@ class MainActivity : Activity(), ReferenceHost {
     private fun rerender(key: String, content: () -> View) {
         if (panelKey != key) return
         hideHandles()
-        panel?.dismiss()
-        showPanel(key, content())
+        val window = panel
+        val body = window?.contentView as? ScrollView
+        // The note's marks sit under its bubble, so that window still opens again above them.
+        if (window == null || body == null || !window.isShowing || key == "companion") {
+            window?.dismiss()
+            showPanel(key, content())
+            return
+        }
+        // Swaps the content inside the open window, so the panel doesn't blink or lose its scroll.
+        val scroll = body.scrollY
+        val next = content()
+        body.removeAllViews()
+        body.addView(next)
+        val height = panelHeight(body, window.width)
+        next.layout(body.paddingLeft, body.paddingTop, body.paddingLeft + next.measuredWidth, body.paddingTop + next.measuredHeight)
+        body.scrollTo(0, scroll)
+        window.update(window.width, height)
+        if (key == "view") showViewHandles()
     }
 
     private fun colorPanel(): View = column().apply {
@@ -2557,6 +2639,7 @@ class MainActivity : Activity(), ReferenceHost {
             scaleType = ImageView.ScaleType.CENTER_CROP
             contentDescription = tr("%1 preview", layer.name)
         }
+        layerPreviews[layer.id]?.let(thumbnail::setImageBitmap)
         layerThumbnails[layer.id] = thumbnail
         val handle = ImageView(this).apply {
             setImageResource(R.drawable.ic_handle)
@@ -2627,6 +2710,7 @@ class MainActivity : Activity(), ReferenceHost {
     private fun requestLayerThumbnails() {
         val width = THUMBNAIL_WIDTH * 2
         val height = THUMBNAIL_HEIGHT * 2
+        layerPreviews.keys.retainAll(document.layers.map { it.id }.toSet())
         document.layers.map { it.id }.forEach { id ->
             canvas.snapshot { engine ->
                 val pixels = ArtworkStore.pixelBuffer(width, height)
@@ -2634,7 +2718,10 @@ class MainActivity : Activity(), ReferenceHost {
                 val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                 pixels.rewind()
                 bitmap.copyPixelsFromBuffer(pixels)
-                runOnUiThread { layerThumbnails[id]?.setImageBitmap(bitmap) }
+                runOnUiThread {
+                    layerPreviews[id] = bitmap
+                    layerThumbnails[id]?.setImageBitmap(bitmap)
+                }
             }
         }
     }

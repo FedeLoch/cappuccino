@@ -10,6 +10,7 @@ namespace cappuccino {
 namespace {
 
 constexpr size_t kHistoryBudgetBytes = 512 * 1024 * 1024;
+constexpr int kGpuHistoryPixels = 1024 * 1024;
 constexpr int kCarrySize = 128;
 constexpr float kTint[4] = {0.17f, 0.07f, 0.04f, 0.3f};
 constexpr float kPaper[3] = {1.0f, 1.0f, 1.0f};
@@ -243,6 +244,16 @@ void main() {
     gl_Position = uMatrix * vec4(corner * uSize, 0.0, 1.0);
 })";
 
+constexpr char kFillFragment[] = R"(#version 300 es
+precision highp float;
+uniform sampler2D uCoverage;
+uniform vec3 uColor;
+out vec4 fragColor;
+void main() {
+    if (texelFetch(uCoverage, ivec2(gl_FragCoord.xy), 0).r < 0.5) discard;
+    fragColor = vec4(uColor, 1.0);
+})";
+
 constexpr char kMeshVertex[] = R"(#version 300 es
 layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aSource;
@@ -322,6 +333,22 @@ GLuint link(const char* vertexSource, const char* fragmentSource) {
     glDeleteShader(vertex);
     glDeleteShader(fragment);
     return program;
+}
+
+void blitToHistory(GLuint layerFbo, GLuint historyFbo, const Rect& rect) {
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, layerFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, historyFbo);
+    glBlitFramebuffer(rect.left, rect.top, rect.right, rect.bottom, 0, 0, rect.width(),
+                      rect.height(), GL_COLOR_BUFFER_BIT, GL_NEAREST);
+}
+
+void blitFromHistory(GLuint historyFbo, GLuint layerFbo, const Rect& rect) {
+    glDisable(GL_SCISSOR_TEST);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, historyFbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, layerFbo);
+    glBlitFramebuffer(0, 0, rect.width(), rect.height(), rect.left, rect.top, rect.right,
+                      rect.bottom, GL_COLOR_BUFFER_BIT, GL_NEAREST);
 }
 
 void createTarget(int width, int height, GLuint& texture, GLuint& fbo) {
@@ -467,6 +494,10 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     glUniform1f(adjustUseHide_, 0.0f);
 
     effectProgram_ = link(kCanvasVertex, kEffectFragment);
+    fillProgram_ = link(kCanvasVertex, kFillFragment);
+    fillMatrix_ = glGetUniformLocation(fillProgram_, "uMatrix");
+    fillSize_ = glGetUniformLocation(fillProgram_, "uSize");
+    fillColor_ = glGetUniformLocation(fillProgram_, "uColor");
     effectMatrix_ = glGetUniformLocation(effectProgram_, "uMatrix");
     effectSize_ = glGetUniformLocation(effectProgram_, "uSize");
     effectKind_ = glGetUniformLocation(effectProgram_, "uKind");
@@ -570,6 +601,9 @@ Renderer::~Renderer() {
     }
     glDeleteFramebuffers(1, &shadowFbo_);
     glDeleteTextures(1, &shadowTexture_);
+    for (auto* history : {&undo_, &redo_}) {
+        for (HistoryEntry& entry : *history) dropHistory(entry);
+    }
 }
 
 Renderer::Layer* Renderer::findLayer(int id) {
@@ -670,9 +704,10 @@ void Renderer::deleteLayer(int id) {
 
 void Renderer::clearLayerHistory(int id) {
     for (auto* history : {&undo_, &redo_}) {
-        std::erase_if(*history, [&](const HistoryEntry& entry) {
+        std::erase_if(*history, [&](HistoryEntry& entry) {
             if (entry.layer != id) return false;
-            historyBytes_ -= entry.pixels.size();
+            historyBytes_ -= entry.bytes();
+            dropHistory(entry);
             return true;
         });
     }
@@ -762,14 +797,40 @@ void Renderer::readLayerThumbnail(int id, int width, int height, void* pixels) {
 }
 
 void Renderer::pushHistory(HistoryEntry entry) {
-    historyBytes_ += entry.pixels.size();
+    historyBytes_ += entry.bytes();
     undo_.push_back(std::move(entry));
-    for (const HistoryEntry& stale : redo_) historyBytes_ -= stale.pixels.size();
+    for (HistoryEntry& stale : redo_) {
+        historyBytes_ -= stale.bytes();
+        dropHistory(stale);
+    }
     redo_.clear();
     while (historyBytes_ > kHistoryBudgetBytes && undo_.size() > 1) {
-        historyBytes_ -= undo_.front().pixels.size();
+        historyBytes_ -= undo_.front().bytes();
+        dropHistory(undo_.front());
         undo_.erase(undo_.begin());
     }
+}
+
+void Renderer::captureHistory(HistoryEntry& entry, GLuint fromFbo) {
+    const Rect& rect = entry.rect;
+    if (static_cast<int64_t>(rect.width()) * rect.height() >= kGpuHistoryPixels) {
+        createTarget(rect.width(), rect.height(), entry.texture, entry.fbo);
+        blitToHistory(fromFbo, entry.fbo, rect);
+        return;
+    }
+    entry.pixels.resize(static_cast<size_t>(rect.width()) * rect.height() * 4);
+    glBindFramebuffer(GL_FRAMEBUFFER, fromFbo);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(rect.left, rect.top, rect.width(), rect.height(), GL_RGBA, GL_UNSIGNED_BYTE,
+                 entry.pixels.data());
+}
+
+void Renderer::dropHistory(HistoryEntry& entry) {
+    if (entry.fbo == 0) return;
+    glDeleteFramebuffers(1, &entry.fbo);
+    glDeleteTextures(1, &entry.texture);
+    entry.fbo = 0;
+    entry.texture = 0;
 }
 
 bool Renderer::fillAt(int x, int y, const float* color) {
@@ -786,45 +847,60 @@ bool Renderer::fillAt(int x, int y, const float* color) {
     if (!floodMask(reference.data(), width_, height_, x, y, 40, mask, &box)) return false;
     reference = {};
 
-    std::vector<uint8_t> pixels(size * 4);
-    readLayer(layer->id, pixels.data());
     box.left = std::max(0, box.left - 1);
     box.top = std::max(0, box.top - 1);
     box.right = std::min(width_, box.right + 1);
     box.bottom = std::min(height_, box.bottom + 1);
-    const int boxWidth = box.right - box.left;
+
+    // Grows one pixel so the fill reaches under a line's soft edge.
+    for (int row = box.top; row < box.bottom; ++row) {
+        for (int column = box.left; column < box.right; ++column) {
+            const size_t index = static_cast<size_t>(row) * width_ + column;
+            if (mask[index] != 0) continue;
+            if ((column > 0 && mask[index - 1] == 1) || (column + 1 < width_ && mask[index + 1] == 1) ||
+                (row > 0 && mask[index - width_] == 1) || (row + 1 < height_ && mask[index + width_] == 1)) {
+                mask[index] = 2;
+            }
+        }
+    }
+    for (size_t index = 0; index < size; ++index) {
+        mask[index] = mask[index] != 0 && (!selectionActive_ || selection_[index] != 0) ? 255 : 0;
+    }
 
     HistoryEntry entry;
     entry.layer = layer->id;
     entry.rect = {box.left, box.top, box.right, box.bottom};
-    entry.pixels.resize(static_cast<size_t>(boxWidth) * entry.rect.height() * 4);
-    const uint8_t fill[4] = {static_cast<uint8_t>(color[0] * 255.0f + 0.5f),
-                             static_cast<uint8_t>(color[1] * 255.0f + 0.5f),
-                             static_cast<uint8_t>(color[2] * 255.0f + 0.5f), 255};
-    for (int row = box.top; row < box.bottom; ++row) {
-        const size_t start = (static_cast<size_t>(row) * width_ + box.left) * 4;
-        std::memcpy(entry.pixels.data() + static_cast<size_t>(row - box.top) * boxWidth * 4,
-                    pixels.data() + start, static_cast<size_t>(boxWidth) * 4);
-        for (int column = box.left; column < box.right; ++column) {
-            const size_t index = static_cast<size_t>(row) * width_ + column;
-            bool covered = mask[index] != 0;
-            if (!covered && column > 0) covered = mask[index - 1] == 1;
-            if (!covered && column + 1 < width_) covered = mask[index + 1] == 1;
-            if (!covered && row > 0) covered = mask[index - width_] == 1;
-            if (!covered && row + 1 < height_) covered = mask[index + width_] == 1;
-            if (covered && (!selectionActive_ || selection_[index] != 0)) {
-                std::memcpy(pixels.data() + index * 4, fill, 4);
-            }
-        }
-    }
+    captureHistory(entry, layer->fbo);
     const Rect filled = entry.rect;
     pushHistory(std::move(entry));
 
+    GLuint coverage = 0;
+    glGenTextures(1, &coverage);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, coverage);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glBindTexture(GL_TEXTURE_2D, layer->texture);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, GL_RGBA, GL_UNSIGNED_BYTE,
-                    pixels.data());
-    copyRegion(layer->fbo, shadowFbo_, {box.left, box.top, box.right, box.bottom});
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, width_, height_, 0, GL_RED, GL_UNSIGNED_BYTE, mask.data());
+
+    resetState();
+    const float toCanvas[16] = {2.0f / width_, 0, 0, 0, 0, 2.0f / height_, 0, 0,
+                                0,             0, 1, 0, -1, -1,            0, 1};
+    glBindFramebuffer(GL_FRAMEBUFFER, layer->fbo);
+    glViewport(0, 0, width_, height_);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor(filled.left, filled.top, filled.width(), filled.height());
+    glUseProgram(fillProgram_);
+    glUniformMatrix4fv(fillMatrix_, 1, GL_FALSE, toCanvas);
+    glUniform2f(fillSize_, static_cast<float>(width_), static_cast<float>(height_));
+    glUniform3fv(fillColor_, 1, color);
+    glBindVertexArray(canvasVao_);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glDisable(GL_SCISSOR_TEST);
+    glDeleteTextures(1, &coverage);
+
+    copyRegion(layer->fbo, shadowFbo_, filled);
     layer->dirtyArea = unite(layer->dirtyArea, filled);
     glBindFramebuffer(GL_FRAMEBUFFER, target);
     return true;
@@ -874,8 +950,7 @@ void Renderer::pushFullHistory(const Layer& layer, bool chained) {
     entry.layer = layer.id;
     entry.chained = chained;
     entry.rect = {0, 0, width_, height_};
-    entry.pixels.resize(static_cast<size_t>(width_) * height_ * 4);
-    readLayer(layer.id, entry.pixels.data());
+    captureHistory(entry, layer.fbo);
     pushHistory(std::move(entry));
 }
 
@@ -1793,11 +1868,7 @@ void Renderer::commitStroke() {
         HistoryEntry entry;
         entry.layer = layer->id;
         entry.rect = strokeDirty_;
-        entry.pixels.resize(static_cast<size_t>(strokeDirty_.width()) * strokeDirty_.height() * 4);
-        glBindFramebuffer(GL_FRAMEBUFFER, shadowFbo_);
-        glPixelStorei(GL_PACK_ALIGNMENT, 1);
-        glReadPixels(strokeDirty_.left, strokeDirty_.top, strokeDirty_.width(),
-                     strokeDirty_.height(), GL_RGBA, GL_UNSIGNED_BYTE, entry.pixels.data());
+        captureHistory(entry, shadowFbo_);
         copyRegion(layer->fbo, shadowFbo_, strokeDirty_);
 
         pushHistory(std::move(entry));
@@ -1829,6 +1900,21 @@ bool Renderer::swapHistory(std::vector<HistoryEntry>& from, std::vector<HistoryE
     from.pop_back();
 
     Layer* layer = findLayer(entry.layer);
+    if (entry.fbo != 0) {
+        GLuint texture = 0;
+        GLuint fbo = 0;
+        createTarget(entry.rect.width(), entry.rect.height(), texture, fbo);
+        blitToHistory(layer->fbo, fbo, entry.rect);
+        blitFromHistory(entry.fbo, layer->fbo, entry.rect);
+        if (layer->id == activeLayer_) blitFromHistory(entry.fbo, shadowFbo_, entry.rect);
+        layer->dirtyArea = unite(layer->dirtyArea, entry.rect);
+        dropHistory(entry);
+        entry.texture = texture;
+        entry.fbo = fbo;
+        to.push_back(std::move(entry));
+        glBindFramebuffer(GL_FRAMEBUFFER, target);
+        return true;
+    }
     std::vector<uint8_t> current(entry.pixels.size());
     glBindFramebuffer(GL_FRAMEBUFFER, layer->fbo);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);

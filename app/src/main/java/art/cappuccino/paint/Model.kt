@@ -36,6 +36,8 @@ class BrushKind(
     val angleJitter: Float = 0f,
     val shadeJitter: Float = 0f,
 ) {
+    val isTool get() = !isEraser && mode != BrushMode.PAINT
+
     /** Stamp alpha that builds up to about [opacity] across one stamp width. */
     fun stampFlow(opacity: Float): Float =
         if (opacity >= 1f) flow else flow * (1f - (1f - opacity).pow(spacing))
@@ -149,6 +151,11 @@ class BrushKind(
             BrushKind("erase-lasso", "Lasso", 1f, 1f, 1f, 0f, 1f, 0f, 40f, true, BrushMode.LASSO),
         )
         val PAINT_BRUSHES = listOf(INK, LINER, PENCIL, CHARCOAL, CHALK, MARKER, SOFT, WASH)
+        val BRUSH_FAMILIES = listOf(
+            "Sketch" to PAINT_BRUSHES.take(5),
+            "Paint" to PAINT_BRUSHES.drop(5) + TEXTURE_BRUSHES,
+            "Scatter" to SCATTER_BRUSHES,
+        )
         val entries = PAINT_BRUSHES + TEXTURE_BRUSHES + SCATTER_BRUSHES + listOf(SMUDGE, FILL, GRADIENT, LASSO_FILL) + ERASERS
     }
 }

@@ -203,23 +203,25 @@ class BrushPreview(
 
     override fun onDraw(canvas: Canvas) {
         random.setSeed(kind.id.hashCode().toLong())
-        val maxRadius = height * 0.22f
+        val scattered = kind.scatter > 0f
+        val maxRadius = height * if (scattered) 0.1f else 0.22f
         val softness = (1f - kind.hardness) * maxRadius
         paint.maskFilter = if (softness > 0.5f) BlurMaskFilter(softness, BlurMaskFilter.Blur.NORMAL) else null
-        val steps = 90
+        val steps = if (scattered) 36 else 90
+        val spread = minOf(kind.scatter, 0.5f) * height
         for (step in 0..steps) {
             val t = step / steps.toFloat()
             val pressure = sin(t * PI.toFloat())
             val scale = kind.minScale + (1f - kind.minScale) * pressure
-            val x = width * (0.1f + 0.8f * t) + kind.scatter * height * (random.nextFloat() - 0.5f)
+            val x = width * (0.1f + 0.8f * t) + spread * (random.nextFloat() - 0.5f)
             val y = height * (0.5f + 0.26f * sin(t * 2f * PI.toFloat())) +
-                kind.scatter * height * (random.nextFloat() - 0.5f)
+                spread * (random.nextFloat() - 0.5f)
             val grainHole = kind.grain * 0.55f > random.nextFloat()
             if (grainHole) continue
             val flow = kind.flow * (1f - kind.pressureFlow * (1f - pressure))
             paint.color = color
             paint.alpha = (255 * minOf(1f, flow * 1.6f + 0.05f)).toInt()
-            val radius = maxOf(1.5f, maxRadius * scale)
+            val radius = maxOf(1.5f, maxRadius * scale * (1f - kind.sizeJitter * 0.5f * random.nextFloat()))
             val stamp = tipBitmap
             if (stamp != null) {
                 canvas.drawBitmap(stamp, null, RectF(x - radius, y - radius, x + radius, y + radius), paint)

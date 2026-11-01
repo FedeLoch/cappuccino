@@ -783,6 +783,12 @@ class CanvasView(
                 removeCallbacks(pickAtPress)
                 endPick()
                 val isTap = travel < tapTravel && event.eventTime - gestureStart < TAP_TIMEOUT_MS
+                if (isTap && maxFingers == 1 && acceptsInput && brushKind.mode == BrushMode.FILL &&
+                    selectionTool == SelectionTool.NONE
+                ) {
+                    val spot = screenToCanvas(event.x, event.y)
+                    onFillTap(spot[0].toInt(), spot[1].toInt())
+                }
                 if (isTap && maxFingers == 2) onUndoGesture()
                 if (isTap && maxFingers == 3) onRedoGesture()
                 if (isTap && maxFingers == 4) onToggleInterface()

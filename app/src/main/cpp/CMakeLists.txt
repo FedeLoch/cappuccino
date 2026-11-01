@@ -11,5 +11,5 @@ add_library(cappuccino SHARED
     ${ENGINE_DIR}/stroke.cpp)
 
 target_include_directories(cappuccino PRIVATE ${ENGINE_DIR})
-target_compile_options(cappuccino PRIVATE -Wall -Wextra)
+target_compile_options(cappuccino PRIVATE -Wall -Wextra -O2)
 target_link_libraries(cappuccino PRIVATE GLESv3 log)
