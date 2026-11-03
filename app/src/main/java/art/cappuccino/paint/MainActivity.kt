@@ -19,6 +19,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -39,6 +40,7 @@ import java.io.File
 import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.abs
 import kotlin.math.PI
 import kotlin.math.max
@@ -48,6 +50,12 @@ import kotlin.math.sin
 
 private const val MIN_BRUSH = 4
 private const val MAX_BRUSH = 300
+private const val KEY_SIZE_STEP = 1.2f
+private const val FINISH_NOTE_DELAY_MS = 3500L
+private const val WARMUP_MS = 5 * 60_000L
+private const val WARMUP_NOTE_DELAY_MS = 1200L
+private const val ANIMATION_SIDE = 1280
+private const val ANIMATION_SECONDS = 6
 private const val AUTOSAVE_DELAY_MS = 2500L
 private const val STROKE_SAVE_DELAY_MS = 8000L
 private const val PEN_NEAR_LIMIT_MS = 30000L
@@ -58,6 +66,9 @@ private const val PREFERENCES = "studio"
 private const val PANEL_WIDTH = 340
 private const val BUBBLE_WIDTH = 308
 private const val HIDE_BUTTON_DP = 28
+
+// At full strength, a selection's edge fades over a twentieth of the canvas's longer side.
+private const val FEATHER_SHARE = 4000
 private const val THUMBNAIL_WIDTH = 72
 private const val THUMBNAIL_HEIGHT = 48
 private const val LAYER_ROW = 56
@@ -113,12 +124,28 @@ class MainActivity : Activity(), ReferenceHost {
     private var report: AnalysisReport? = null
     private var progress: String? = null
     private var earlier: ArtSnapshot? = null
+    private var onionSkin = true
+    private var playingFrame = -1
+    private var animationBar: PopupWindow? = null
+    private var animationContent: FrameLayout? = null
+    private val nextFrame = object : Runnable {
+        override fun run() {
+            if (playingFrame < 0 || isDestroyed) return
+            playingFrame = (playingFrame + 1) % max(1, document.layers.size)
+            syncLayers(structural = false)
+            handler.postDelayed(this, 1000L / document.fps)
+        }
+    }
+    @Volatile private var latestSnapshot: ArtSnapshot? = null
     private var earlierLoaded = false
     private var comparison: String? = null
     private val shapeHandles = ArrayList<PopupWindow>()
     private var recentStrip: LinearLayout? = null
     private var selectionMode = 0
+    private var selectionFeather = 0
+    private val featherRadius = AtomicInteger()
     private val transformHandles = ArrayList<PopupWindow>()
+    private var distorting = false
     private var transformCorners: FloatArray? = null
     private var pickerInks = false
     private var inks: FloatArray? = null
@@ -276,6 +303,11 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.onPenNear = { holdSaveForPen() }
         canvas.onUndoGesture = { undoEdit() }
         canvas.onRedoGesture = { redoEdit() }
+        canvas.penButtonAction = preferences.getInt("penButton", 0)
+        intent.getStringExtra(EXTRA_WARMUP)?.takeIf { savedInstanceState == null }?.let { steps ->
+            handler.postDelayed({ if (!isDestroyed) say(steps, long = true) }, WARMUP_NOTE_DELAY_MS)
+            handler.postDelayed({ if (!isDestroyed) say(tr("Five minutes! Nice warm-up. Keep going or start your real piece."), long = true) }, WARMUP_MS)
+        }
         canvas.onStrokePath = { checkPerspective(it) }
                 canvas.onToggleInterface = {
             interfaceHidden = !interfaceHidden
@@ -322,6 +354,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
         document = loaded
         everSaved = true
+        if (loaded.animation) canvas.post { if (!isDestroyed) showAnimationBar() }
         engineLayers.addAll(loaded.layers.map { it.id })
         engineLayers.addAll(loaded.layers.map { it.maskId }.filter { it != 0 })
         pushPerspective()
@@ -347,8 +380,9 @@ class MainActivity : Activity(), ReferenceHost {
                 }
             }
             if (loaded.layers.any { it.id !in loaded.tiles }) runOnUiThread { markUnsaved() }
+            val shares = animationShares()
             canvas.act { engine ->
-                loaded.layers.forEach { applyLayerProperties(engine, it) }
+                loaded.layers.forEach { applyLayerProperties(engine, it, shares[it.id] ?: 1f) }
                 NativeEngine.setActiveLayer(engine, loaded.activeLayer)
             }
             val journal = store.journal(id)
@@ -396,19 +430,40 @@ class MainActivity : Activity(), ReferenceHost {
                         )
                         NativeEngine.drawFront(engine, identity, view, 16, 16, entry.samples, FloatArray(0), true)
                     }
+                    is JournalEntry.Fill -> if (entry.target in known) {
+                        NativeEngine.setActiveLayer(engine, entry.target)
+                        NativeEngine.fillAt(
+                            engine, entry.x, entry.y,
+                            Color.red(entry.color) / 255f, Color.green(entry.color) / 255f, Color.blue(entry.color) / 255f,
+                        )
+                    }
+                    is JournalEntry.ShapeFill -> if (entry.target in known) {
+                        NativeEngine.setActiveLayer(engine, entry.target)
+                        NativeEngine.fillPolygon(
+                            engine, entry.path,
+                            Color.red(entry.color) / 255f, Color.green(entry.color) / 255f, Color.blue(entry.color) / 255f,
+                            entry.opacity, entry.erase, entry.alphaLock,
+                        )
+                    }
                     JournalEntry.Undo -> NativeEngine.undo(engine)
                     JournalEntry.Redo -> NativeEngine.redo(engine)
                 }
             }
             NativeEngine.setActiveLayer(engine, active)
         }
-        val strokes = entries.filterIsInstance<JournalEntry.Stroke>().filter { it.target in known }
+        fun target(entry: JournalEntry) = when (entry) {
+            is JournalEntry.Stroke -> entry.target
+            is JournalEntry.Fill -> entry.target
+            is JournalEntry.ShapeFill -> entry.target
+            else -> null
+        }
+        val strokes = entries.filter { target(it) in known }
         runOnUiThread {
             entries.forEach { entry ->
                 when (entry) {
-                    is JournalEntry.Stroke -> if (entry.target in known) history.record(Edit.Stroke)
                     JournalEntry.Undo -> history.undo()
                     JournalEntry.Redo -> history.redo()
+                    else -> if (target(entry) in known) history.record(Edit.Stroke)
                 }
             }
             markUnsaved()
@@ -426,12 +481,13 @@ class MainActivity : Activity(), ReferenceHost {
         handler.postDelayed(saveLater, AUTOSAVE_DELAY_MS)
     }
 
-    private fun applyLayerProperties(engine: Long, layer: LayerInfo) {
+    /** [share] fades a layer that's an animation frame other than the current one. */
+    private fun applyLayerProperties(engine: Long, layer: LayerInfo, share: Float = 1f) {
         val group = document.groups.firstOrNull { it.id == layer.groupId }
         NativeEngine.setLayerProperties(
             engine, layer.id,
-            layer.opacity * (group?.opacity ?: 1f),
-            layer.visible && group?.visible != false,
+            layer.opacity * (group?.opacity ?: 1f) * share,
+            layer.visible && group?.visible != false && share > 0f,
             layer.blend, layer.clip,
         )
         NativeEngine.setLayerMask(engine, layer.id, layer.maskId, layer.maskEnabled)
@@ -558,8 +614,10 @@ class MainActivity : Activity(), ReferenceHost {
             pixels, ArtworkStore.THUMBNAIL_WIDTH, document.thumbnailHeight, document.light.takeIf { it != Light.OFF }?.degrees,
         )
         val now = ArtSnapshot(System.currentTimeMillis(), result.contrast, result.coverage, result.colored)
+        latestSnapshot = now
         if (!earlierLoaded) {
             earlierLoaded = true
+            store.saveFirstSnapshot(document.id, now)
             val saved = store.snapshot(document.id)
             if (saved == null || now.time - saved.time >= NEW_SITTING_MS) {
                 store.saveSnapshot(document.id, now)
@@ -581,6 +639,9 @@ class MainActivity : Activity(), ReferenceHost {
             matchedScope = choice.scope
             matchedBoards = choice.boards
             if (changed && result.tips.isNotEmpty()) unreadTips = true
+            result.tips.firstOrNull { it.topic in WARMUP_TOPICS }?.let {
+                preferences.edit().putString("warmupTopic", it.topic).apply()
+            }
             if (unreadTips) peek?.mood = Mood.TIP
             companion.mood = if (unreadTips) Mood.TIP else Mood.IDLE
         }
@@ -755,6 +816,37 @@ class MainActivity : Activity(), ReferenceHost {
         selectTool(canvas.brushKind)
         markMaskEditing()
         if (preferences.getBoolean("companion", true)) showCompanion()
+    }
+
+    /** Shortcuts for a keyboard paired with the tablet. Text fields keep their keys. */
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (currentFocus is EditText || canvas.transformMode) return super.onKeyDown(keyCode, event)
+        val command = event.isCtrlPressed || event.isMetaPressed
+        when {
+            command && keyCode == KeyEvent.KEYCODE_Z && event.isShiftPressed -> redoEdit()
+            command && keyCode == KeyEvent.KEYCODE_Z -> undoEdit()
+            command && keyCode == KeyEvent.KEYCODE_Y -> redoEdit()
+            command -> return super.onKeyDown(keyCode, event)
+            keyCode == KeyEvent.KEYCODE_B -> {
+                closePanel()
+                selectTool(lastBrush)
+            }
+            keyCode == KeyEvent.KEYCODE_E -> {
+                closePanel()
+                selectTool(lastEraser)
+            }
+            keyCode == KeyEvent.KEYCODE_LEFT_BRACKET -> resizeBrush(1f / KEY_SIZE_STEP)
+            keyCode == KeyEvent.KEYCODE_RIGHT_BRACKET -> resizeBrush(KEY_SIZE_STEP)
+            keyCode == KeyEvent.KEYCODE_TAB -> canvas.onToggleInterface()
+            else -> return super.onKeyDown(keyCode, event)
+        }
+        return true
+    }
+
+    private fun resizeBrush(factor: Float) {
+        canvas.brushDiameter = (canvas.brushDiameter * factor).coerceIn(MIN_BRUSH.toFloat(), MAX_BRUSH.toFloat())
+        toolFor(canvas.brushKind).diameter = canvas.brushDiameter
+        sizeBar?.progress = sizeProgress()
     }
 
     private fun sizeProgress(): Int {
@@ -1612,6 +1704,7 @@ class MainActivity : Activity(), ReferenceHost {
         tip = draftTip, custom = true,
         scatter = shape.getOrElse(6) { 0f }, sizeJitter = shape.getOrElse(7) { 0f },
         angleJitter = shape.getOrElse(8) { 0f }, shadeJitter = shape.getOrElse(9) { 0f },
+        hueJitter = shape.getOrElse(10) { 0f }, strokeJitter = shape.getOrElse(11) { 0f },
     )
 
     private fun brushEditor(source: BrushKind, editing: Boolean): View = column().apply {
@@ -1619,6 +1712,7 @@ class MainActivity : Activity(), ReferenceHost {
         val shape = floatArrayOf(
             source.minScale, source.spacing, source.flow, source.pressureFlow, source.hardness, source.grain,
             source.scatter, source.sizeJitter, source.angleJitter, source.shadeJitter,
+            source.hueJitter, source.strokeJitter,
         )
         val name = EditText(context).apply {
             setText(if (editing) source.label else "")
@@ -1647,6 +1741,8 @@ class MainActivity : Activity(), ReferenceHost {
             Triple(tr("Size variation"), 7, 1f),
             Triple(tr("Angle variation"), 8, 1f),
             Triple(tr("Shade variation"), 9, 1f),
+            Triple(tr("Hue variation"), 10, 1f),
+            Triple(tr("Color per stroke"), 11, 1f),
         ).forEach { (title, index, range) ->
             addView(toolSlider(title, (shape[index] / range * 100).roundToInt()) {
                 shape[index] = maxOf(if (index >= 6) 0f else 0.02f, it / 100f * range)
@@ -1774,6 +1870,12 @@ class MainActivity : Activity(), ReferenceHost {
                 rerender("tools", ::toolsPanel)
             },
         )
+        gapped(
+            toolSlider(tr("Soft edge"), selectionFeather) { value ->
+                selectionFeather = value
+                featherSelection(value * max(document.width, document.height) / FEATHER_SHARE)
+            },
+        )
         gapped(actionRow(R.drawable.ic_transform, tr("Transform"), tr("Move, scale, or rotate the selection")) { selectionToLayer(cut = true, transform = true) })
         gapped(actionRow(R.drawable.ic_copy, tr("Copy to layer")) { selectionToLayer(cut = false, transform = false) })
         gapped(actionRow(R.drawable.ic_cut, tr("Cut to layer")) { selectionToLayer(cut = true, transform = false) })
@@ -1784,6 +1886,12 @@ class MainActivity : Activity(), ReferenceHost {
             },
         )
         gapped(actionRow(R.drawable.ic_close, tr("Clear selection")) { clearSelection() })
+    }
+
+    /** Fades the selection's edge over about twice [radius] canvas pixels. */
+    internal fun featherSelection(radius: Int) {
+        featherRadius.set(radius)
+        canvas.act { NativeEngine.setSelectionFeather(it, featherRadius.get()) }
     }
 
     private fun startSelection(tool: SelectionTool, hint: String) {
@@ -1816,6 +1924,7 @@ class MainActivity : Activity(), ReferenceHost {
         val color = canvas.brushColor
         val opacity = canvas.brushOpacity
         val lock = canvas.alphaLock
+        val target = paintTarget()
         canvas.act { engine ->
             val changed = NativeEngine.fillPolygon(
                 engine, path, Color.red(color) / 255f, Color.green(color) / 255f, Color.blue(color) / 255f,
@@ -1824,6 +1933,7 @@ class MainActivity : Activity(), ReferenceHost {
             if (changed) {
                 runOnUiThread {
                     history.record(Edit.Stroke)
+                    writeJournal(JournalEntry.ShapeFill(target, color, opacity, erase, lock, path))
                     markUnsaved()
                 }
             }
@@ -2064,11 +2174,17 @@ class MainActivity : Activity(), ReferenceHost {
         val width = ArtworkStore.THUMBNAIL_WIDTH * 2
         val height = document.thumbnailHeight * 2
         say(tr("Exporting time-lapse"))
+        val outro = CompanionView(this).apply {
+            look = companion.look
+            bodyColor = canvas.brushColor
+            still = true
+        }
+        val signature = tr("Made with Cappuccino")
         saver.execute {
             val saved = runCatching {
                 val target = store.exportTimelapseTarget(name)!!
                 contentResolver.openFileDescriptor(target, "w")!!.use {
-                    TimelapseEncoder.encode(frames, width, height, seconds, it.fileDescriptor)
+                    TimelapseEncoder.encode(frames, width, height, seconds, it.fileDescriptor, outro, signature)
                 }
             }.isSuccess
             runOnUiThread {
@@ -2080,6 +2196,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun fillAt(x: Int, y: Int) {
         val color = canvas.brushColor
+        val target = paintTarget()
         canvas.act { engine ->
             val changed = NativeEngine.fillAt(
                 engine, x, y, Color.red(color) / 255f, Color.green(color) / 255f, Color.blue(color) / 255f,
@@ -2087,6 +2204,7 @@ class MainActivity : Activity(), ReferenceHost {
             if (changed) {
                 runOnUiThread {
                     history.record(Edit.Stroke)
+                    writeJournal(JournalEntry.Fill(target, x, y, color))
                     markUnsaved()
                 }
             }
@@ -2179,8 +2297,17 @@ class MainActivity : Activity(), ReferenceHost {
         closePanel()
         setEditingMask(false)
         canvas.beginTransform(layer.id)
+        distorting = false
         val controls = pill().apply {
-            addView(chip(tr("Cancel")) { finishTransform(keep = false) })
+            lateinit var distort: View
+            distort = chip(tr("Distort")) {
+                distorting = !distorting
+                distort.isSelected = distorting
+                distort.background = rounded(if (distorting) ACCENT else SURFACE_RAISED, 20)
+                say(if (distorting) tr("Drag a corner to bend the layer into perspective.") else tr("Drag a corner to resize."))
+            }
+            addView(distort)
+            addView(chip(tr("Cancel")) { finishTransform(keep = false) }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
             addView(
                 chip(tr("Done"), true) { finishTransform(keep = true) },
                 LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
@@ -2235,7 +2362,23 @@ class MainActivity : Activity(), ReferenceHost {
             }
             val window = PopupWindow(handle, size, size).apply { isClippingEnabled = false }
             var lastDistance = 0f
+            var startX = 0f
+            var startY = 0f
+            var startSpot = floatArrayOf(0f, 0f)
             handle.setOnTouchListener { _, event ->
+                if (distorting) {
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            startX = event.rawX
+                            startY = event.rawY
+                            startSpot = canvas.transformedToScreen(corners[corner * 2], corners[corner * 2 + 1])
+                        }
+                        MotionEvent.ACTION_MOVE -> canvas.moveTransformCorner(
+                            corners, corner, startSpot[0] + event.rawX - startX, startSpot[1] + event.rawY - startY,
+                        )
+                    }
+                    return@setOnTouchListener true
+                }
                 val across = (corner + 2) % 4
                 val anchor = canvas.transformedToScreen(corners[across * 2], corners[across * 2 + 1])
                 val distance = kotlin.math.hypot(event.rawX - anchor[0], event.rawY - anchor[1])
@@ -2252,6 +2395,13 @@ class MainActivity : Activity(), ReferenceHost {
             window.showAtLocation(canvas, Gravity.NO_GRAVITY, spot[0].toInt() - size / 2, spot[1].toInt() - size / 2)
             transformHandles.add(window)
         }
+    }
+
+    /** Moves one corner of the transform by a distance on screen, as dragging it in Distort does. */
+    internal fun bendTransform(corner: Int, dx: Float, dy: Float) {
+        val corners = transformCorners ?: return
+        val spot = canvas.transformedToScreen(corners[corner * 2], corners[corner * 2 + 1])
+        canvas.moveTransformCorner(corners, corner, spot[0] + dx, spot[1] + dy)
     }
 
     private fun moveTransformHandles() {
@@ -2754,9 +2904,11 @@ class MainActivity : Activity(), ReferenceHost {
     private fun syncLayers(structural: Boolean) {
         val layers = document.layers.map { it.copy() }
         val active = paintTarget()
+        val shares = animationShares()
+        if (document.animation) refreshAnimationBar()
         canvas.act { engine ->
             if (structural) NativeEngine.setLayerOrder(engine, layers.map { it.id }.toIntArray())
-            layers.forEach { applyLayerProperties(engine, it) }
+            layers.forEach { applyLayerProperties(engine, it, shares[it.id] ?: 1f) }
             if (structural) NativeEngine.setActiveLayer(engine, active)
         }
         syncAlphaLock()
@@ -2850,6 +3002,7 @@ class MainActivity : Activity(), ReferenceHost {
     internal fun setBrushSize(diameter: Float) {
         canvas.brushDiameter = diameter
     }
+    internal fun canvasToScreen(x: Float, y: Float) = canvas.canvasToScreen(x, y)
     internal fun symmetryScreenX() = symmetrySpot()[0] + dp(18).toFloat()
     internal val currentColor get() = canvas.brushColor
 
@@ -2861,7 +3014,170 @@ class MainActivity : Activity(), ReferenceHost {
         document.activeLayer = layer.id
         syncAlphaLock()
         canvas.act { NativeEngine.setActiveLayer(it, layer.id) }
+        if (document.animation) syncLayers(structural = false)
         markUnsaved()
+    }
+
+    /** How much each layer shows while animating, by id. Empty when the artwork isn't animated. */
+    private fun animationShares(): Map<Int, Float> {
+        if (!document.animation) return emptyMap()
+        val current = if (playingFrame >= 0) playingFrame else document.layers.indexOfFirst { it.id == document.activeLayer }
+        val shares = frameShares(document.layers.size, current, onionSkin && playingFrame < 0)
+        return document.layers.withIndex().associate { (index, layer) -> layer.id to shares[index] }
+    }
+
+    internal fun setAnimation(on: Boolean) {
+        stopPlaying()
+        document.animation = on
+        markUnsaved()
+        syncLayers(structural = false)
+        if (on) {
+            showAnimationBar()
+            say(tr("Each layer is a frame now. Add frames with +, and the frames beside this one show faintly."), long = true)
+        } else {
+            hideAnimationBar()
+        }
+    }
+
+    private fun hideAnimationBar() {
+        animationBar?.let {
+            chrome.remove(it)
+            it.dismiss()
+        }
+        animationBar = null
+        animationContent = null
+    }
+
+    private fun showAnimationBar() {
+        hideAnimationBar()
+        val holder = FrameLayout(this)
+        animationContent = holder
+        animationBar = PopupWindow(holder, -2, -2).apply {
+            showAtLocation(canvas, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, dp(24))
+            chrome.add(this)
+        }
+        refreshAnimationBar()
+    }
+
+    private fun refreshAnimationBar() {
+        val holder = animationContent ?: return
+        val window = animationBar ?: return
+        val current = if (playingFrame >= 0) playingFrame else document.layers.indexOfFirst { it.id == document.activeLayer }
+        holder.removeAllViews()
+        val bar = pill().apply {
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                addView(chip(if (playingFrame >= 0) tr("Stop") else tr("Play"), playingFrame >= 0) { togglePlaying() })
+                val frames = LinearLayout(context).apply { gravity = Gravity.CENTER_VERTICAL }
+                document.layers.forEachIndexed { index, layer ->
+                    frames.addView(
+                        smallChip("${index + 1}", index == current) {
+                            stopPlaying()
+                            selectLayer(layer)
+                            refreshLayers()
+                        },
+                        LinearLayout.LayoutParams(dp(32), -2).apply { marginStart = dp(4) },
+                    )
+                }
+                frames.addView(smallChip("+") { addLayer() }, LinearLayout.LayoutParams(dp(32), -2).apply { marginStart = dp(4) })
+                addView(frames, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(4) })
+                fun gap() = LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) }
+                addView(
+                    chip(tr("Onion skin"), onionSkin) {
+                        onionSkin = !onionSkin
+                        syncLayers(structural = false)
+                    },
+                    gap(),
+                )
+                addView(
+                    chip(tr("%1 fps", document.fps)) {
+                        document.fps = ANIMATION_SPEEDS[(ANIMATION_SPEEDS.indexOf(document.fps) + 1).mod(ANIMATION_SPEEDS.size)]
+                        markUnsaved()
+                        refreshAnimationBar()
+                    },
+                    gap(),
+                )
+                addView(chip(tr("Export")) { exportAnimation() }, gap())
+            }
+        // On a narrow screen the bar scrolls sideways instead of squeezing its buttons.
+        holder.addView(
+            HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(bar)
+            },
+        )
+        holder.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        window.update(min(holder.measuredWidth, canvas.width - dp(32)), holder.measuredHeight)
+    }
+
+    private fun togglePlaying() {
+        if (playingFrame >= 0) {
+            stopPlaying()
+            syncLayers(structural = false)
+            return
+        }
+        if (document.layers.size < 2) {
+            say(tr("Add a second frame to make an animation"))
+            return
+        }
+        playingFrame = document.layers.indexOfFirst { it.id == document.activeLayer }.coerceAtLeast(0)
+        handler.post(nextFrame)
+    }
+
+    private fun stopPlaying() {
+        playingFrame = -1
+        handler.removeCallbacks(nextFrame)
+    }
+
+    /** Renders each frame alone and plays them a few times in a video. */
+    private fun exportAnimation() {
+        stopPlaying()
+        val layers = document.layers.map { it.copy() }
+        if (layers.size < 2) {
+            say(tr("Add a second frame to make an animation"))
+            return
+        }
+        val scale = min(1f, ANIMATION_SIDE / max(document.width, document.height).toFloat())
+        val width = (document.width * scale).toInt() and 1.inv()
+        val height = (document.height * scale).toInt() and 1.inv()
+        val fps = document.fps
+        val name = document.name
+        val restore = animationShares()
+        val dir = File(cacheDir, "animation").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        say(tr("Exporting animation"))
+        canvas.snapshot { engine ->
+            val pixels = ArtworkStore.pixelBuffer(width, height)
+            val files = layers.indices.map { frame ->
+                val shares = frameShares(layers.size, frame, onion = false)
+                layers.forEachIndexed { index, layer -> applyLayerProperties(engine, layer, shares[index]) }
+                pixels.rewind()
+                NativeEngine.readComposite(engine, width, height, pixels)
+                pixels.rewind()
+                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                bitmap.copyPixelsFromBuffer(pixels)
+                File(dir, "frame-%04d.png".format(frame)).also { file ->
+                    file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    bitmap.recycle()
+                }
+            }
+            layers.forEach { applyLayerProperties(engine, it, restore[it.id] ?: 1f) }
+            saver.execute {
+                val loops = max(1, (ANIMATION_SECONDS * fps + files.size - 1) / files.size)
+                val saved = runCatching {
+                    val target = store.exportVideoTarget(tr("%1 animation", name))!!
+                    contentResolver.openFileDescriptor(target, "w")!!.use {
+                        TimelapseEncoder.encodeFrames(files, width, height, animationTimeline(files.size, loops), fps, it.fileDescriptor)
+                    }
+                }.isSuccess
+                dir.deleteRecursively()
+                runOnUiThread {
+                    syncLayers(structural = false)
+                    say(if (saved) tr("Saved to Movies/Cappuccino") else tr("Couldn't export this animation"), long = true)
+                }
+            }
+        }
     }
 
     private fun layersPanel(): View = column().apply {
@@ -3318,7 +3634,7 @@ class MainActivity : Activity(), ReferenceHost {
         refreshLayers()
     }
 
-    private fun actionsPanel() = column().apply {
+    private fun actionsPanel(): View = column().apply {
         addView(label(document.name, 16f))
         addView(label(tr("%1 x %2 pixels · %3 of %4 layers", document.width, document.height, layerSlots, maxLayers), 12f, MUTED_TEXT))
         gapped(
@@ -3378,6 +3694,12 @@ class MainActivity : Activity(), ReferenceHost {
                 },
             )
         }
+        gapped(
+            actionRow(R.drawable.ic_video, if (document.animation) tr("Stop animating") else tr("Animate"), tr("Each layer becomes a frame")) {
+                closePanel()
+                setAnimation(!document.animation)
+            },
+        )
         gapped(label(tr("Export"), 13f, MUTED_TEXT))
         gapped(
             actionRow(R.drawable.ic_layers, tr("Design sheet"), tr("All variations on one page")) {
@@ -3413,6 +3735,14 @@ class MainActivity : Activity(), ReferenceHost {
         gapped(
             segmented(Language.entries.map { it.label }, I18n.language.ordinal) { index ->
                 setLanguage(Language.entries[index])
+            },
+        )
+        gapped(label(tr("Pen button"), 13f, MUTED_TEXT))
+        gapped(
+            segmented(listOf(tr("Pick color"), tr("Eraser"), tr("Undo")), canvas.penButtonAction) { action ->
+                canvas.penButtonAction = action
+                preferences.edit().putInt("penButton", action).apply()
+                rerender("actions", ::actionsPanel)
             },
         )
         gapped(label(tr("Companion"), 13f, MUTED_TEXT))
@@ -4050,8 +4380,19 @@ class MainActivity : Activity(), ReferenceHost {
                 runOnUiThread {
                     val message = if (saved) tr("Saved to Pictures/Cappuccino") else tr("Couldn't export this PNG")
                     say(message, long = true)
+                    if (saved) celebrateFinish()
                 }
             }
+        }
+    }
+
+    /** After an export, the companion looks back at how far the piece came. */
+    private fun celebrateFinish() {
+        val now = latestSnapshot ?: return
+        saver.execute {
+            val first = store.firstSnapshot(document.id) ?: return@execute
+            val note = finishNote(first, now)
+            handler.postDelayed({ if (!isDestroyed) say(note, long = true) }, FINISH_NOTE_DELAY_MS)
         }
     }
 
@@ -4362,6 +4703,9 @@ class MainActivity : Activity(), ReferenceHost {
             val source = BrushKind(
                 editingBrush?.id ?: "draft", pendingBrushName, shape[0], shape[1], shape[2], shape[3],
                 shape[4], shape[5], canvas.brushDiameter,
+                scatter = shape.getOrElse(6) { 0f }, sizeJitter = shape.getOrElse(7) { 0f },
+                angleJitter = shape.getOrElse(8) { 0f }, shadeJitter = shape.getOrElse(9) { 0f },
+                hueJitter = shape.getOrElse(10) { 0f }, strokeJitter = shape.getOrElse(11) { 0f },
             )
             closePanel()
             showPanel("brushEditor", brushEditor(source, editingBrush != null))
@@ -4549,5 +4893,6 @@ class MainActivity : Activity(), ReferenceHost {
         const val EXTRA_WIDTH = "width"
         const val EXTRA_HEIGHT = "height"
         const val EXTRA_NAME = "name"
+        const val EXTRA_WARMUP = "warmup"
     }
 }

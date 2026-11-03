@@ -89,6 +89,8 @@ public:
     void selectColorAt(int x, int y, int tolerance, int mode);
     void clearSelection();
     void invertSelection();
+    // Fades the selection's edge over about twice this many pixels. Zero keeps it hard.
+    void setSelectionFeather(int radius);
     bool hasSelection() const { return selectionActive_; }
     void copySelectionToLayer(int newId, bool cut);
 
@@ -166,6 +168,7 @@ private:
     void drawSelectionTint(const float* matrix);
     void drawGradient(const float* matrix);
     void uploadSelection();
+    void refreshSelection();
     void pushFullHistory(const Layer& layer, bool chained = false);
     void bakeMask(Layer& layer);
     void useHide(const Layer* layer, int unit, GLint useLocation);
@@ -173,7 +176,8 @@ private:
     void drawLiquify(const float* matrix, float opacity, bool clipped, const Layer& layer);
     void warpLayer(Layer& layer, bool chained);
     void replaceLayerFromShadow(Layer& layer);
-    void drawSmudge(const std::vector<Stamp>& stamps, const float* matrix, GLuint layerFbo);
+    // Smudges with one symmetry copy's stamps, each copy carrying its own paint.
+    void drawSmudge(const Stamp* stamps, size_t count, const float* matrix, GLuint layerFbo, int copy);
     void drawPerspective(const float* matrix);
     void appendLine(float x1, float y1, float x2, float y2);
     void fillCanvasRect(const float* matrix, float x, float y, float width, float height);
@@ -228,10 +232,12 @@ private:
     GLuint stampMaskTexture_ = 0;
     GLint stampUseMask_ = -1;
     GLint stampUseTip_ = -1;
+    GLint stampSpacing_ = -1;
     GLuint tipTexture_ = 0;
-    GLuint carryTexture_ = 0;
-    GLuint carryFbo_ = 0;
-    bool carryReady_ = false;
+    static constexpr int kSmudgeCopies = 8;  // The most copies symmetry makes, radial included.
+    GLuint carryTexture_[kSmudgeCopies] = {};
+    GLuint carryFbo_[kSmudgeCopies] = {};
+    bool carryReady_[kSmudgeCopies] = {};
     GLuint smudgeProgram_ = 0;
     GLint smudgeMatrix_ = -1;
     GLuint gradientProgram_ = 0;
@@ -267,6 +273,8 @@ private:
     bool selectionActive_ = false;
     bool showSelectionTint_ = true;
     std::vector<uint8_t> selection_;
+    std::vector<uint8_t> hardSelection_;
+    int selectionFeather_ = 0;
     GLint canvasUseClip_ = -1;
     std::vector<float> perspective_;  // x and y of each vanishing point.
     std::vector<float> frames_;

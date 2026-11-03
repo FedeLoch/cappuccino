@@ -158,3 +158,8 @@ local.properties
 *.apk
 *.aab
 captures/
+
+# Upload key for Google Play
+keystore.properties
+*.jks
+*.keystore

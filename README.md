@@ -93,6 +93,10 @@ long way. Its notes follow your stage: shapes while you sketch, values while you
 as you finish. **Not useful** hides a note you don't want, and a topic you keep turning away goes
 quiet. **Compare** tells you which variation reads clearest at a small size.
 
+When you export a finished piece, it looks back at how far the piece came since you started it.
+**Warm up** on the home screen offers a five-minute exercise aimed at what its notes have been
+asking for lately, such as three values or silhouettes only.
+
 ### It leaves your art to you
 
 The companion runs entirely on your device with image analysis, not generative AI. Nothing is
@@ -107,12 +111,14 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Scatter brushes for leaves, grass, rocks, and particles
 - Smudge, fill, gradient, and lasso fill tools, plus a lasso eraser for blocking in silhouettes
 - Hold at the end of a stroke to snap it to a clean line, ellipse, or box. Lines lean toward your perspective guides
-- Live symmetry: left-right, top-bottom, four-way, or radial, with a center you can move
+- Live symmetry: left-right, top-bottom, four-way, or radial, with a center you can move. Smudge follows it too
 - Custom brushes with imported texture tips and scatter settings, favorites, a stabilizer, and a pressure curve for each brush
+- Color dynamics: hue variation for each stamp and a slightly different color for each stroke, already on for Leaves, Grass, and Rocks
 - Hold at the end of a stroke to snap a clean shape, then drag its handles to adjust it
 - Every brush shape also works as an eraser
 - Low-latency stylus drawing with pressure, and tilt on pens that support it
-- Hold the pen, or press its side button, to pick a color
+- Hold the pen, or press its side button, to pick a color. The side button can erase or undo instead
+- Keyboard shortcuts: B brush, E eraser, [ and ] for size, Tab to hide the interface, Ctrl+Z to undo, Ctrl+Shift+Z or Ctrl+Y to redo
 
 | Brushes | Tools and snapping |
 |---|---|
@@ -127,7 +133,9 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Filters: blur, motion blur, sharpen, noise, gradient map, levels, and depth fade
 - Import images as new layers, then move, scale, and rotate them into place
 - Make a sticker from your drawing: a new top layer with a die-cut border and soft shadow, or a transparent PNG
-- Lasso and magic wand selections you can add to or remove from, transform with corner handles, and hue, saturation, and tone adjustments
+- Lasso and magic wand selections you can add to or remove from, with a soft edge, plus hue, saturation, and tone adjustments
+- Transform with corner handles, or switch to **Distort** and drag each corner on its own to fit a layer into perspective
+- Animation: every layer becomes a frame, with onion skin, playback at 4 to 24 frames a second, and video export
 - One undo history for strokes and layer changes
 - Canvases up to 8192 pixels on a side
 
@@ -195,7 +203,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Automatic saving that writes only the tiles you changed, with the previous version kept
 - Finished strokes are written to disk as you draw, and return after a crash
 - CMYK sliders and a print preview that show how colors may change on paper, as a close guide without a printer profile
-- Export to PNG, layered PSD, and time-lapse video in the length you choose
+- Export to PNG, layered PSD, animation video, and time-lapse video in the length you choose. Time-lapses end with your companion
 - Design sheets that put all variations on one page, and a PNG for each thumbnail frame
 - PSD import for 8-bit RGB files
 - Backup and restore of your whole library in one file
@@ -209,11 +217,10 @@ language, add a table to `Translations.kt` and an entry to `Language`.
 
 ## Current limits
 
-- After a crash, recovery brings back finished strokes. Layer changes, fills, and filters made in the last few seconds can be lost, and so can a new artwork before its first save.
+- After a crash, recovery brings back finished strokes, fills, and lasso fills. Layer changes and filters made in the last few seconds can be lost.
 - Layers use their full size in memory, so very large canvases hold fewer layers.
 - PSD files keep layer groups, but layer masks are baked into their layers. Nested groups from other apps become one group.
-- Symmetry doesn't apply to smudge.
-- Testing has mostly used one device, the XPPen Magic Drawing Pad.
+- Testing has mostly used one device, the XPPen Magic Drawing Pad. Small tablets work, but phone screens are too narrow for the studio's toolbars.
 
 The illustration in these screenshots is original demo art, made for this README.
 

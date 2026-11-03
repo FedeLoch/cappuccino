@@ -72,6 +72,7 @@ object NativeEngine {
     external fun selectColorAt(handle: Long, x: Int, y: Int, tolerance: Int, mode: Int)
     external fun clearSelection(handle: Long)
     external fun invertSelection(handle: Long)
+    external fun setSelectionFeather(handle: Long, radius: Int)
     external fun copySelectionToLayer(handle: Long, newId: Int, cut: Boolean)
     external fun setGradientPreview(handle: Long, active: Boolean, points: FloatArray, color: FloatArray)
     external fun commitGradient(handle: Long)
@@ -107,6 +108,7 @@ object NativeEngine {
         sizeJitter: Float,
         angleJitter: Float,
         shadeJitter: Float,
+        hueJitter: Float,
         tip: ByteArray?,
     )
     external fun drawFront(

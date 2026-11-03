@@ -42,6 +42,9 @@ class ArtworkDocument(
     @Volatile var tiles: Map<Int, Map<Int, TileRef>> = emptyMap(),
     /** The reference boards this artwork follows. Empty means all of them. */
     var followedBoards: List<String> = emptyList(),
+    /** Every layer is a frame of an animation, played at [fps] frames a second. */
+    var animation: Boolean = false,
+    var fps: Int = DEFAULT_FPS,
 ) {
     val thumbnailHeight get() = ArtworkStore.thumbnailHeight(width, height)
 }
@@ -74,8 +77,9 @@ class ArtworkStore(context: Context) {
 
     fun thumbnail(id: String) = File(artworkDir(id), THUMBNAIL)
 
-    fun snapshot(id: String): ArtSnapshot? {
-        val file = File(artworkDir(id), SNAPSHOT)
+    fun snapshot(id: String): ArtSnapshot? = readSnapshot(File(artworkDir(id), SNAPSHOT))
+
+    private fun readSnapshot(file: File): ArtSnapshot? {
         if (!file.exists()) return null
         return runCatching {
             val item = JSONObject(file.readText())
@@ -86,8 +90,18 @@ class ArtworkStore(context: Context) {
         }.getOrNull()
     }
 
-    fun saveSnapshot(id: String, snapshot: ArtSnapshot) {
-        File(artworkDir(id), SNAPSHOT).writeText(
+    /** Where an artwork stood the first time the companion looked at it. */
+    fun firstSnapshot(id: String): ArtSnapshot? = readSnapshot(File(artworkDir(id), FIRST_SNAPSHOT))
+
+    fun saveFirstSnapshot(id: String, snapshot: ArtSnapshot) {
+        val file = File(artworkDir(id), FIRST_SNAPSHOT)
+        if (!file.exists()) writeSnapshot(file, snapshot)
+    }
+
+    fun saveSnapshot(id: String, snapshot: ArtSnapshot) = writeSnapshot(File(artworkDir(id), SNAPSHOT), snapshot)
+
+    private fun writeSnapshot(file: File, snapshot: ArtSnapshot) {
+        file.writeText(
             JSONObject()
                 .put("time", snapshot.time)
                 .put("contrast", snapshot.contrast.toDouble())
@@ -192,6 +206,8 @@ class ArtworkStore(context: Context) {
                 sizeJitter = item.optDouble("sizeJitter", 0.0).toFloat(),
                 angleJitter = item.optDouble("angleJitter", 0.0).toFloat(),
                 shadeJitter = item.optDouble("shadeJitter", 0.0).toFloat(),
+                hueJitter = item.optDouble("hueJitter", 0.0).toFloat(),
+                strokeJitter = item.optDouble("strokeJitter", 0.0).toFloat(),
             )
         }
     }
@@ -214,7 +230,9 @@ class ArtworkStore(context: Context) {
                     .put("scatter", it.scatter.toDouble())
                     .put("sizeJitter", it.sizeJitter.toDouble())
                     .put("angleJitter", it.angleJitter.toDouble())
-                    .put("shadeJitter", it.shadeJitter.toDouble()),
+                    .put("shadeJitter", it.shadeJitter.toDouble())
+                    .put("hueJitter", it.hueJitter.toDouble())
+                    .put("strokeJitter", it.strokeJitter.toDouble()),
             )
         }
         writeAtomically(brushesFile, array.toString().toByteArray())
@@ -245,9 +263,11 @@ class ArtworkStore(context: Context) {
     fun timelapseFrames(id: String): List<File> =
         timelapseDir(id).listFiles().orEmpty().sortedBy { it.name }
 
-    fun exportTimelapseTarget(name: String): android.net.Uri? {
+    fun exportTimelapseTarget(name: String) = exportVideoTarget("$name time-lapse")
+
+    fun exportVideoTarget(title: String): android.net.Uri? {
         val values = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, "$name time-lapse.mp4")
+            put(MediaStore.Video.Media.DISPLAY_NAME, "$title.mp4")
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
             put(MediaStore.Video.Media.RELATIVE_PATH, "Movies/Cappuccino")
         }
@@ -410,6 +430,8 @@ class ArtworkStore(context: Context) {
             manifest.optJSONArray("followedBoards")?.let { boards ->
                 (0 until boards.length()).map(boards::getString)
             }.orEmpty(),
+            manifest.optBoolean("animation"),
+            manifest.optInt("fps", DEFAULT_FPS),
         )
     }
 
@@ -559,6 +581,8 @@ class ArtworkStore(context: Context) {
             .put("journalSequence", snapshot.journalSequence)
             .put("symmetry", document.symmetry)
             .put("followedBoards", JSONArray(document.followedBoards))
+            .put("animation", document.animation)
+            .put("fps", document.fps)
             .put("symmetryCenter", JSONArray(document.symmetryCenter.map { it.toDouble() }))
             .put("activeLayer", snapshot.activeLayer)
             .put("nextLayerId", snapshot.nextLayerId)
@@ -811,6 +835,7 @@ class ArtworkStore(context: Context) {
         private const val PREVIOUS_MANIFEST = "manifest.prev.json"
         private const val THUMBNAIL = "thumbnail.png"
         private const val SNAPSHOT = "snapshot.json"
+        private const val FIRST_SNAPSHOT = "first-snapshot.json"
         private const val REFERENCE_NOTES = "library.json"
         private const val BOARD_PURPOSES = "boards.json"
         private const val PREVIEW = "preview.jpg"

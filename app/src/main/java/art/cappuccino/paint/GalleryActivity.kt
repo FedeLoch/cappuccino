@@ -24,6 +24,9 @@ import java.util.concurrent.Executors
 import kotlin.math.max
 
 private const val ALL = "all"
+private const val DAY_MS = 24 * 60 * 60 * 1000L
+private const val WARMUP_SIZE = 2048
+private const val NARROW_DP = 600
 private const val PICK_REFERENCES = 42
 private const val TOUR_SEEN = "tourSeen"
 private const val SEARCH_FROM = 6
@@ -97,19 +100,31 @@ class GalleryActivity : Activity() {
         root.removeAllViews()
         val projects = store.projects()
         if (selected != ALL && selected.isNotEmpty() && projects.none { it.id == selected }) selected = ALL
+        // On a phone the buttons sit under the name, so neither has to squeeze.
+        val narrow = resources.configuration.screenWidthDp < NARROW_DP
+        val buttons = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            addView(quietChip(tr("Backup")) { backupOptions() })
+            addView(
+                quietChip(tr("Import PSD")) { pickPsd() },
+                LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
+            )
+            addView(
+                chip(tr("New artwork"), true) { showNewArtwork() },
+                LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
+            )
+        }
         root.addView(
             LinearLayout(this).apply {
                 gravity = Gravity.CENTER_VERTICAL
-                addView(wordmark("Cappuccino", 34f), LinearLayout.LayoutParams(0, -2, 1f))
-                addView(quietChip(tr("Backup")) { backupOptions() })
-                addView(
-                    quietChip(tr("Import PSD")) { pickPsd() },
-                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
-                )
-                addView(
-                    chip(tr("New artwork"), true) { showNewArtwork() },
-                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
-                )
+                orientation = if (narrow) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+                if (narrow) {
+                    addView(wordmark("Cappuccino", 34f), LinearLayout.LayoutParams(-1, -2))
+                    addView(buttons, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10) })
+                } else {
+                    addView(wordmark("Cappuccino", 34f), LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(buttons)
+                }
             },
         )
         if (selected == ALL) renderHome(projects) else renderSketchbook(projects)
@@ -225,8 +240,29 @@ class GalleryActivity : Activity() {
         }
         addView(
             label(tr("%1 Ready for another layer?", greeting), 14f, COCOA),
-            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
+            (if (resources.configuration.screenWidthDp < NARROW_DP) LinearLayout.LayoutParams(0, -2, 1f) else LinearLayout.LayoutParams(-2, -2))
+                .apply { marginStart = dp(8) },
         )
+        addView(
+            creamChip(tr("Warm up")) { offerWarmup() }.apply { isSingleLine = true },
+            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) },
+        )
+    }
+
+    private fun offerWarmup() {
+        val preferences = getSharedPreferences("studio", MODE_PRIVATE)
+        val look = CompanionLook.valueOf(preferences.getString("mascot", null) ?: CompanionLook.COFFEE_DROP.name)
+        val day = (System.currentTimeMillis() / DAY_MS).toInt()
+        val warmup = warmupFor(preferences.getString("warmupTopic", null), day)
+        warmupSheet(look, warmup) {
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .putExtra(MainActivity.EXTRA_NAME, tr("Warm-up"))
+                    .putExtra(MainActivity.EXTRA_WIDTH, WARMUP_SIZE)
+                    .putExtra(MainActivity.EXTRA_HEIGHT, WARMUP_SIZE)
+                    .putExtra(MainActivity.EXTRA_WARMUP, "${tr(warmup.title)}. ${tr(warmup.steps)}"),
+            )
+        }
     }
 
     private fun sketchbook(name: String, count: Int, color: Int?, onClick: () -> Unit) = FrameLayout(this).apply {

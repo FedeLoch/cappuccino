@@ -95,6 +95,36 @@ void combineSelection(std::vector<uint8_t>& selection, const std::vector<uint8_t
     }
 }
 
+namespace {
+
+// Averages each run of 2r + 1 values along one line, with the edges clamped.
+void blurLine(uint8_t* values, int count, int stride, int radius, std::vector<int>& line) {
+    for (int i = 0; i < count; ++i) line[i] = values[static_cast<size_t>(i) * stride];
+    int sum = line[0] * (radius + 1);
+    for (int i = 1; i <= radius; ++i) sum += line[std::min(i, count - 1)];
+    const int span = radius * 2 + 1;
+    for (int i = 0; i < count; ++i) {
+        values[static_cast<size_t>(i) * stride] = static_cast<uint8_t>((sum + span / 2) / span);
+        sum += line[std::min(i + radius + 1, count - 1)] - line[std::max(i - radius, 0)];
+    }
+}
+
+}  // namespace
+
+void featherMask(std::vector<uint8_t>& mask, int width, int height, int radius) {
+    if (radius <= 0 || mask.size() != static_cast<size_t>(width) * height) return;
+    const int box = std::max(1, radius / 2);
+    std::vector<int> line(std::max(width, height));
+    for (int pass = 0; pass < 3; ++pass) {
+        for (int row = 0; row < height; ++row) {
+            blurLine(mask.data() + static_cast<size_t>(row) * width, width, 1, box, line);
+        }
+        for (int column = 0; column < width; ++column) {
+            blurLine(mask.data() + column, height, width, box, line);
+        }
+    }
+}
+
 void polygonCoverage(const float* points, int count, int width, int height,
                      std::vector<uint8_t>& coverage, FillBounds& bounds) {
     constexpr int kSteps = 4;

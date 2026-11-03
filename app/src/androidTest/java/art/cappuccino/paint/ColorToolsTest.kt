@@ -36,4 +36,15 @@ class ColorToolsTest {
         val colors = extractPalette(pixels, 2)
         assertEquals(setOf(Color.RED, Color.BLUE), colors.toSet())
     }
+
+    @Test
+    fun colorPerStrokeVariesALittleAndPlainBrushesKeepTheColor() {
+        val base = Color.rgb(60, 140, 70)
+        val random = java.util.Random(3)
+        val leaves = BrushKind.entries.first { it.id == "leaves" }
+        val colors = List(20) { leaves.strokeColor(base, random) }
+        assertTrue(colors.toSet().size > 10)
+        colors.forEach { assertTrue(abs(((hue(it) - hue(base) + 540f) % 360f) - 180f) <= 24.5f) }
+        assertEquals(base, BrushKind.INK.strokeColor(base, random))
+    }
 }

@@ -107,6 +107,7 @@ void StrokeBuilder::place(const Sample& sample, std::vector<Stamp>& out) {
         sample.azimuth + kPi * shape_.angleJitter * nextRandom(),
         alpha,
         1.0f + shape_.shadeJitter * nextRandom(),
+        shape_.hueJitter * kMaxHueTurn * nextRandom(),
     });
 }
 

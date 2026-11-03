@@ -1,0 +1,304 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cappuccino, draw with a little companion</title>
+<meta name="description" content="A free, ad-free illustration app for Android tablets, with a cute companion that gives you art feedback. No accounts, no tracking.">
+<meta property="og:title" content="Cappuccino">
+<meta property="og:description" content="Draw with a little companion. Free, no ads, no tracking.">
+<meta property="og:image" content="screenshots/companion-note.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 200'%3E%3Cpath fill='%233b3a37' d='M100 28C140 24 168 52 170 88C186 110 182 150 150 162C130 182 80 186 62 166C30 160 18 128 26 100C24 64 60 30 100 28Z'/%3E%3Ccircle cx='84' cy='104' r='9' fill='%23f1efe8'/%3E%3Ccircle cx='116' cy='104' r='9' fill='%23f1efe8'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif:wght@400;500&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --cream: #f6efe3;
+    --oat: #e9ddcb;
+    --foam: #f4e9d8;
+    --espresso: #2a1d16;
+    --cocoa: #6b4226;
+    --accent: #d85a30;
+    --ink: #3b3a37;
+    --studio: #2c2c2a;
+    --studio-text: #f1efe8;
+    --muted: #8a6a52;
+    --serif: "Noto Serif", Georgia, serif;
+    --sans: "Inter", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--cream);
+    color: var(--espresso);
+    font: 17px/1.6 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  img, video { display: block; max-width: 100%; }
+  a { color: inherit; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  nav { display: flex; align-items: center; justify-content: space-between; padding: 24px 0; }
+  .wordmark { font: 500 26px/1 var(--serif); text-decoration: none; letter-spacing: -0.01em; }
+  nav .links { display: flex; gap: 22px; font-size: 15px; }
+  nav .links a { text-decoration: none; color: var(--cocoa); }
+  nav .links a:hover { color: var(--espresso); }
+
+  .hero { display: grid; grid-template-columns: 1.1fr 0.9fr; align-items: center; gap: 40px; padding: 48px 0 88px; }
+  h1, h2, h3 { font-family: var(--serif); font-weight: 400; letter-spacing: -0.015em; margin: 0; }
+  h1 { font-size: clamp(42px, 6vw, 72px); line-height: 1.05; }
+  .lede { font-size: 20px; color: var(--cocoa); margin: 22px 0 32px; max-width: 30em; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 12px; }
+  .button {
+    display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px; border-radius: 999px;
+    background: var(--oat); color: var(--espresso); text-decoration: none; font-weight: 500; font-size: 16px;
+  }
+  .button.primary { background: var(--accent); color: #fff; }
+  .button.soon { cursor: default; }
+  .tags { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 28px; color: var(--muted); font-size: 14px; }
+  .tags span::before { content: "·"; margin-right: 18px; }
+  .tags span:first-child::before { content: none; }
+
+  .blot { width: min(380px, 80vw); margin: 0 auto; }
+  .blot svg { width: 100%; height: auto; overflow: visible; }
+  .bob { animation: bob 4.5s ease-in-out infinite; transform-origin: 100px 170px; }
+  .eyes { animation: blink 4.2s infinite; transform-box: fill-box; transform-origin: center; }
+  .moon { animation: drift 6s ease-in-out infinite; }
+  .moon.two { animation-delay: -3s; }
+  .tip { animation: tip 4.2s ease-in-out infinite; transform-origin: 172px 34px; }
+  @keyframes bob { 0%, 100% { transform: translateY(0) scale(1, 1); } 50% { transform: translateY(-8px) scale(1.01, 0.99); } }
+  @keyframes blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.1); } }
+  @keyframes drift { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(4px, -6px); } }
+  @keyframes tip { 0%, 40%, 100% { transform: scale(0); opacity: 0; } 50%, 85% { transform: scale(1); opacity: 1; } }
+
+  section { padding: 88px 0; }
+  .eyebrow { font-size: 13px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); font-weight: 500; margin-bottom: 14px; }
+  h2 { font-size: clamp(32px, 4.2vw, 48px); line-height: 1.12; }
+  .intro { max-width: 36em; color: var(--cocoa); font-size: 18px; margin: 16px 0 0; }
+
+  .meet { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: 56px; align-items: center; }
+  .reel { width: 100%; max-width: 340px; border-radius: 28px; box-shadow: 0 30px 60px -30px rgba(42, 29, 22, 0.45); margin: 0 auto; }
+  .points { list-style: none; padding: 0; margin: 28px 0 0; display: grid; gap: 22px; }
+  .points li { padding-left: 34px; position: relative; }
+  .points li::before { content: ""; position: absolute; left: 4px; top: 9px; width: 12px; height: 12px; border-radius: 50%; background: var(--accent); }
+  .points b { font-weight: 500; display: block; }
+  .points span { color: var(--cocoa); }
+
+  .shot { border-radius: 18px; overflow: hidden; box-shadow: 0 30px 70px -40px rgba(42, 29, 22, 0.55); background: var(--studio); }
+  .wide { margin-top: 44px; }
+  .caption { text-align: center; color: var(--muted); font-size: 14px; margin-top: 14px; }
+
+  .studio { background: var(--studio); color: var(--studio-text); }
+  .studio .intro { color: #b4b2a9; }
+  .studio .eyebrow { color: #f0997b; }
+  .companions { margin-top: 44px; border-radius: 18px; overflow: hidden; }
+  .companions + .companions { margin-top: 16px; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; margin-top: 44px; }
+  .card { background: var(--foam); border-radius: 18px; overflow: hidden; display: flex; flex-direction: column; }
+  .card img { aspect-ratio: 3 / 2; object-fit: cover; width: 100%; }
+  .card div { padding: 18px 20px 22px; }
+  .card h3 { font-size: 21px; margin-bottom: 6px; }
+  .card p { margin: 0; color: var(--cocoa); font-size: 15px; }
+
+  .promise { background: var(--oat); border-radius: 28px; padding: 56px; display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+  .promise ul { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; font-size: 18px; }
+  .promise li::before { content: "✓"; color: var(--accent); margin-right: 12px; font-weight: 500; }
+
+  .coffee { display: grid; grid-template-columns: auto 1fr; gap: 48px; align-items: center; max-width: 900px; margin: 0 auto; }
+  .coffee .cup { width: 180px; overflow: visible; }
+  .coffee .buttons { margin-top: 26px; }
+  .steam { animation: steam 3s ease-in-out infinite; }
+  @keyframes steam { 0%, 100% { opacity: 0.35; transform: translateY(2px); } 50% { opacity: 1; transform: translateY(-4px); } }
+
+  .download { text-align: center; }
+  .download .buttons { justify-content: center; margin-top: 28px; }
+  .download .blot { width: 120px; margin-bottom: 18px; }
+
+  footer { border-top: 1px solid var(--oat); padding: 32px 0 48px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
+
+  @media (max-width: 860px) {
+    .hero, .meet, .promise { grid-template-columns: 1fr; }
+    .hero { padding-top: 16px; text-align: left; }
+    .hero .blot { order: -1; width: 220px; margin: 0; }
+    .grid { grid-template-columns: 1fr 1fr; }
+    .promise { padding: 36px 28px; }
+    .coffee { grid-template-columns: 1fr; gap: 20px; }
+    .coffee .cup { width: 120px; }
+    section { padding: 64px 0; }
+  }
+  @media (max-width: 560px) {
+    .grid { grid-template-columns: 1fr; }
+    nav .links a.optional { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .bob, .eyes, .moon, .tip, .steam { animation: none; }
+    .tip { opacity: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <nav>
+    <a class="wordmark" href="#">Cappuccino</a>
+    <div class="links">
+      <a class="optional" href="#companion">Companion</a>
+      <a class="optional" href="#features">Features</a>
+      <a href="https://github.com/FedeLoch/cappuccino">GitHub</a>
+      <a href="https://buymeacoffee.com/fedelochbaum">Support</a>
+    </div>
+  </nav>
+
+  <div class="hero">
+    <div>
+      <h1>Draw with a little companion.</h1>
+      <p class="lede">Cappuccino is a free illustration app for Android tablets. A tiny friend keeps you company while you paint, and leaves a note when it has an idea.</p>
+      <div class="buttons">
+        <a class="button primary" href="#download">Get Cappuccino</a>
+        <a class="button" href="#companion">Meet the companion</a>
+      </div>
+      <div class="tags"><span>Free</span><span>No ads</span><span>No accounts</span><span>No tracking</span></div>
+    </div>
+    <div class="blot" aria-hidden="true">
+      <svg viewBox="0 0 200 200">
+        <g class="bob">
+          <path fill="#3b3a37" d="M100 28C140 24 168 52 170 88C186 110 182 150 150 162C130 182 80 186 62 166C30 160 18 128 26 100C24 64 60 30 100 28Z"/>
+          <g class="eyes">
+            <circle cx="84" cy="104" r="8" fill="#f1efe8"/>
+            <circle cx="116" cy="104" r="8" fill="#f1efe8"/>
+          </g>
+          <path d="M87 125Q100 137 113 125" fill="none" stroke="#f1efe8" stroke-width="6" stroke-linecap="round"/>
+        </g>
+        <circle class="moon" cx="172" cy="56" r="8" fill="#3b3a37"/>
+        <circle class="moon two" cx="30" cy="170" r="6" fill="#3b3a37"/>
+        <circle class="tip" cx="172" cy="34" r="7" fill="#fac775"/>
+      </svg>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="companion">
+    <div class="wrap meet">
+      <video class="reel" src="assets/companion-reel.mp4" autoplay muted loop playsinline preload="metadata" aria-label="The ink blot companion waking up, watching you draw, and hiding behind the toolbar"></video>
+      <div>
+        <p class="eyebrow">Your companion</p>
+        <h2>A friend looking over your shoulder, only when you want one.</h2>
+        <p class="intro">It rests in a corner of your canvas and never interrupts. When it has a thought, a small dot appears. Tap it, or keep drawing.</p>
+        <ul class="points">
+          <li><b>It looks at your drawing</b><span>Values, palette, composition, silhouette, and light, with a next step that fits where you are.</span></li>
+          <li><b>It compares with your references</b><span>Sort references into blocks like palettes or lighting, and it knows what to look at in each.</span></li>
+          <li><b>It shows its reasoning</b><span>Every note can explain itself, and it marks the exact spot it's talking about on your canvas.</span></li>
+          <li><b>It helps you practice</b><span>Five-minute warm-ups aimed at what its notes keep asking for, and a look back when you finish.</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="wrap">
+      <div class="shot wide"><img src="screenshots/companion-note.png" alt="A companion note comparing an evening landscape with its references" loading="lazy"></div>
+      <p class="caption">Notes come from image analysis on your tablet, never from generative AI.</p>
+    </div>
+  </section>
+
+  <section class="studio">
+    <div class="wrap">
+      <p class="eyebrow">Five companions</p>
+      <h2>Pick the one that feels like you.</h2>
+      <p class="intro">A paint drop, an ink blot, a foam cup, a coffee drop, or a flat white that keeps steaming. When you'd rather be alone, they hide behind the toolbar and peek.</p>
+      <img class="companions" src="screenshots/companions.png" alt="The five companions, each shown idle, with a tip ready, thinking, and napping" loading="lazy">
+      <img class="companions" src="screenshots/companions-hidden.png" alt="Each companion hiding behind the toolbar, holding its edge with two small hands" loading="lazy">
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="wrap">
+      <p class="eyebrow">The studio</p>
+      <h2>Everything you need to paint, nothing in your way.</h2>
+      <p class="intro">Low-latency pen drawing with pressure and tilt, in an interface that fades while you work.</p>
+      <div class="grid">
+        <article class="card"><img src="screenshots/brushes.png" alt="The brush picker" loading="lazy"><div><h3>Sixteen brushes</h3><p>Pencils for sketching, paints and textures, scatter brushes for leaves and rocks, and your own custom tips.</p></div></article>
+        <article class="card"><img src="screenshots/layers.png" alt="The layers panel" loading="lazy"><div><h3>Layers that keep up</h3><p>Masks, clipping, blend modes, groups, and one undo history for everything.</p></div></article>
+        <article class="card"><img src="screenshots/references.png" alt="A floating reference over the canvas" loading="lazy"><div><h3>References beside you</h3><p>Float, zoom, gray out, or pin a reference for tracing, and pick colors straight from it.</p></div></article>
+        <article class="card"><img src="screenshots/art-direction.png" alt="Composition and perspective guides" loading="lazy"><div><h3>Art direction</h3><p>Perspective guides, value views, composition thirds, light direction, and live symmetry.</p></div></article>
+        <article class="card"><img src="screenshots/variations.png" alt="Lettered variations side by side" loading="lazy"><div><h3>Explore options</h3><p>Lettered variations, six color variants at once, and design sheets ready for a client.</p></div></article>
+        <article class="card"><img src="screenshots/tools.png" alt="Smudge, fill, gradient and lasso tools" loading="lazy"><div><h3>Animate and export</h3><p>Frames with onion skin, time-lapses, layered PSD, PNG, and stickers with a die-cut border.</p></div></article>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="promise">
+        <div>
+          <p class="eyebrow">Your art stays yours</p>
+          <h2>No ads. No accounts. No internet.</h2>
+          <p class="intro">Cappuccino doesn't connect to the internet at all. Your drawings, references, and the companion's thoughts all stay on your tablet. <a href="privacy.html">Privacy policy</a></p>
+        </div>
+        <ul>
+          <li>Free, with no ads, kept going by coffees</li>
+          <li>Runs entirely on your device</li>
+          <li>Open source under the MIT license</li>
+          <li>English and Spanish</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="support">
+    <div class="wrap">
+      <div class="coffee">
+        <svg class="cup" viewBox="0 0 150 140" aria-hidden="true">
+          <path class="steam" d="M58 30c-7-7 7-11 0-20M82 30c-7-7 7-11 0-20" fill="none" stroke="#c69a6b" stroke-width="5" stroke-linecap="round"/>
+          <path d="M112 62c20-3 24 32 0 35" fill="none" stroke="#6b4226" stroke-width="8" stroke-linecap="round"/>
+          <path d="M24 48h96l-7 58c-2 14-12 22-26 22H57c-14 0-24-8-26-22z" fill="#f4e9d8" stroke="#6b4226" stroke-width="6" stroke-linejoin="round"/>
+          <ellipse cx="72" cy="48" rx="48" ry="11" fill="#a87448" stroke="#6b4226" stroke-width="6"/>
+          <ellipse cx="72" cy="48" rx="37" ry="6.5" fill="#c69a6b"/>
+          <path d="M72 53c-9-5-11-9-7-11 3-1 6 1 7 3 1-2 4-4 7-3 4 2 2 6-7 11z" fill="#f4e9d8"/>
+          <circle cx="49" cy="96" r="6" fill="#d85a30" opacity="0.18"/>
+          <circle cx="95" cy="96" r="6" fill="#d85a30" opacity="0.18"/>
+          <g class="eyes"><circle cx="60" cy="84" r="5" fill="#2a1d16"/><circle cx="84" cy="84" r="5" fill="#2a1d16"/></g>
+          <path d="M64 97q8 7 16 0" fill="none" stroke="#2a1d16" stroke-width="4.5" stroke-linecap="round"/>
+        </svg>
+        <div>
+          <p class="eyebrow">Keep it free</p>
+          <h2>Like Cappuccino? Buy me a coffee.</h2>
+          <p class="intro">Cappuccino has no ads and never will. If it makes your drawing time a little nicer, a coffee helps me keep building it, one companion at a time.</p>
+          <div class="buttons"><a class="button primary" href="https://buymeacoffee.com/fedelochbaum">Buy me a coffee</a></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="download" class="download">
+    <div class="wrap">
+      <div class="blot" aria-hidden="true">
+        <svg viewBox="0 0 200 200">
+          <g class="bob">
+            <path fill="#3b3a37" d="M100 28C140 24 168 52 170 88C186 110 182 150 150 162C130 182 80 186 62 166C30 160 18 128 26 100C24 64 60 30 100 28Z"/>
+            <g class="eyes"><circle cx="84" cy="104" r="8" fill="#f1efe8"/><circle cx="116" cy="104" r="8" fill="#f1efe8"/></g>
+            <path d="M87 125Q100 137 113 125" fill="none" stroke="#f1efe8" stroke-width="6" stroke-linecap="round"/>
+          </g>
+        </svg>
+      </div>
+      <h2>Coming soon to Google Play.</h2>
+      <p class="intro" style="margin-left:auto;margin-right:auto">Built for Android tablets with a pen. Until then, you can build it yourself from the source.</p>
+      <div class="buttons">
+        <span class="button primary soon">Google Play, soon</span>
+        <a class="button" href="https://github.com/FedeLoch/cappuccino">Source on GitHub</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Cappuccino · Made with care for people who draw</span>
+    <span><a href="privacy.html">Privacy</a> · <a href="https://github.com/FedeLoch/cappuccino">GitHub</a> · <a href="https://buymeacoffee.com/fedelochbaum">Buy me a coffee</a></span>
+  </div>
+</footer>
+
+</body>
+</html>

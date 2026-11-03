@@ -246,8 +246,8 @@ Each milestone must pass its gate on the real device before the next one starts.
 
 ## First version non-goals
 
-Cloud sync, accounts, social features, generative AI tools, phone-first layouts,
-CMYK, and animation.
+Cloud sync, accounts, social features, generative AI tools, and phone-first layouts.
+CMYK previews and simple frame-by-frame animation, where each layer is a frame, arrived later.
 
 ## Measures
 

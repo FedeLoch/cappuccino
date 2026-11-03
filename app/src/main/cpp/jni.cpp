@@ -208,6 +208,11 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_invertSelection(JN
     renderer(handle)->invertSelection();
 }
 
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_setSelectionFeather(
+    JNIEnv*, jobject, jlong handle, jint radius) {
+    renderer(handle)->setSelectionFeather(radius);
+}
+
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_copySelectionToLayer(
     JNIEnv*, jobject, jlong handle, jint newId, jboolean cut) {
     renderer(handle)->copySelectionToLayer(newId, cut);
@@ -308,7 +313,7 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_beginStroke(
     JNIEnv* env, jobject, jlong handle, jfloat diameter, jfloat red, jfloat green, jfloat blue,
     jfloat flow, jfloat minScale, jfloat spacingRatio, jfloat pressureFlow, jfloat hardness,
     jfloat grain, jboolean eraser, jboolean alphaLock, jboolean smudge, jfloat pressureGamma,
-    jfloat scatter, jfloat sizeJitter, jfloat angleJitter, jfloat shadeJitter, jbyteArray tip) {
+    jfloat scatter, jfloat sizeJitter, jfloat angleJitter, jfloat shadeJitter, jfloat hueJitter, jbyteArray tip) {
     cappuccino::BrushParams brush;
     brush.diameter = diameter;
     brush.color[0] = red;
@@ -328,6 +333,7 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_beginStroke(
     brush.shape.sizeJitter = sizeJitter;
     brush.shape.angleJitter = angleJitter;
     brush.shape.shadeJitter = shadeJitter;
+    brush.shape.hueJitter = hueJitter;
     if (tip != nullptr) {
         brush.tip.resize(env->GetArrayLength(tip));
         env->GetByteArrayRegion(tip, 0, static_cast<jsize>(brush.tip.size()),

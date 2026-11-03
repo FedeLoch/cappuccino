@@ -368,6 +368,128 @@ class CanvasInteractionTest {
         assertFalse("paint leaked outside", hasInk(width * 0.7f, y))
     }
 
+    private fun darkestRed(x: Float, y: Float): Int {
+        val shot = screenshot()
+        return (-8..8).minOf { dy -> Color.red(shot.getPixel(x.toInt(), y.toInt() + dy)) }
+    }
+
+    @Test
+    fun aSoftEdgeFadesPaintAcrossTheSelectionBorder() {
+        var border = 0f
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.setBrushSize(120f)
+            it.finishLasso(leftHalf)
+            it.featherSelection(160)
+            border = it.canvasToScreen(DEFAULT_CANVAS_WIDTH / 2f, 0f)[0]
+        }
+        val y = height / 2f
+        stroke(width * 0.15f, y, width * 0.85f, y)
+        settle()
+        assertTrue("paint well inside should be solid", darkestRed(border - width * 0.2f, y) < 60)
+        val edge = darkestRed(border, y)
+        assertTrue("the border should be half painted, not $edge", edge in 60..230)
+        // The area outside a selection is tinted, so it's compared with an unpainted spot beside it.
+        val outside = darkestRed(border + width * 0.2f, y)
+        val unpainted = darkestRed(border + width * 0.2f, y - height * 0.15f)
+        assertTrue("paint well outside should stay clear, not $outside against $unpainted", outside >= unpainted - 6)
+    }
+
+    @Test
+    fun distortBendsOneSideOfALayer() {
+        val y = height * 0.45f
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.setBrushSize(40f)
+        }
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        onStudio { it.startTransform() }
+        settle()
+        onStudio {
+            it.bendTransform(1, 0f, 160f)
+            it.bendTransform(2, 0f, 160f)
+        }
+        onStudio { it.finishTransform(keep = true) }
+        assertTrue("the left end should stay put", hasInk(width * 0.22f, y))
+        assertFalse("the right end should have moved", hasInk(width * 0.78f, y))
+        assertTrue("the right end should sit lower", hasInk(width * 0.78f, y + 150f))
+    }
+
+    @Test
+    fun smudgeFollowsSymmetry() {
+        val y = height * 0.45f
+        var centerX = 0f
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.setSymmetry(1)
+            centerX = it.symmetryScreenX()
+        }
+        stroke(centerX - 260f, y, centerX - 60f, y)
+        settle()
+        val spot = y + 30f
+        assertFalse("the mirrored spot should start clean", isTinted(centerX + 160f, spot))
+        onStudio { it.selectTool(BrushKind.SMUDGE) }
+        stroke(centerX - 160f, y - 40f, centerX - 160f, y + 80f)
+        settle()
+        assertTrue("smudge should pull color on the mirrored side too", isTinted(centerX + 160f, spot))
+    }
+
+    @Test
+    fun animationShowsOneFrameWithItsNeighborFaint() {
+        var first = 0f
+        var second = 0f
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.setAnimation(true)
+            first = it.canvasToScreen(0f, DEFAULT_CANVAS_HEIGHT * 0.3f)[1]
+            second = it.canvasToScreen(0f, DEFAULT_CANVAS_HEIGHT * 0.7f)[1]
+        }
+        stroke(width * 0.2f, first, width * 0.8f, first)
+        settle()
+        onStudio { it.addLayer() }
+        stroke(width * 0.2f, second, width * 0.8f, second)
+        settle()
+        assertTrue("the current frame should show", hasInk(width / 2f, second))
+        assertFalse("the frame before should only show faintly", hasInk(width / 2f, first))
+        assertTrue("onion skin should show the frame before", isTinted(width / 2f, first))
+        onStudio { it.setAnimation(false) }
+        assertTrue("both layers show again when animation is off", hasInk(width / 2f, first))
+    }
+
+    @Test
+    fun erasingTheTopLayerLeavesTheLayerBelowWhileThePenIsDown() {
+        var x = 0f
+        var y = 0f
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.setBrushSize(120f)
+            x = width / 2f
+            y = it.canvasToScreen(0f, DEFAULT_CANVAS_HEIGHT / 2f)[1]
+        }
+        stroke(x - width * 0.3f, y, x + width * 0.3f, y)
+        settle()
+        onStudio {
+            it.addLayer()
+            it.setColor(Color.RED)
+        }
+        stroke(x, y - 150f, x, y + 150f)
+        settle()
+        onStudio { it.selectTool(BrushKind.entries.first { kind -> kind.id == "erase-ink" }) }
+        val down = SystemClock.uptimeMillis()
+        val startX = x - 90f
+        inject(MotionEvent.ACTION_DOWN, down, 0, listOf(Pointer(0, startX, y)), stylus = true)
+        for (step in 1..30) {
+            inject(MotionEvent.ACTION_MOVE, down, step * 8L, listOf(Pointer(0, startX + step * 6f, y)), stylus = true)
+        }
+        SystemClock.sleep(300)
+        val during = hasInk(x, y)
+        inject(MotionEvent.ACTION_UP, down, 31 * 8L, listOf(Pointer(0, startX + 180f, y)), stylus = true)
+        settle()
+        assertTrue("the bottom layer should show while erasing above it", during)
+        assertTrue("the bottom layer should show after erasing above it", hasInk(x, y))
+    }
+
     @Test
     fun cutToLayerMovesPixelsAndUndoRestoresThem() {
         val y = height / 2f

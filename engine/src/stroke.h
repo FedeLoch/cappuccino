@@ -21,7 +21,10 @@ struct Stamp {
     float angle;
     float alpha;
     float shade = 1.0f;  // Below 1 darkens the brush color, above 1 lightens it.
+    float hue = 0.0f;    // Turns the brush color around the color wheel, in whole turns.
 };
+
+constexpr float kMaxHueTurn = 0.08f;
 
 struct BrushShape {
     float minScale = 0.12f;      // Stamp size at zero pressure, as a share of the diameter.
@@ -33,6 +36,7 @@ struct BrushShape {
     float sizeJitter = 0.0f;     // Random size change, from 0 to 1.
     float angleJitter = 0.0f;    // Random turn, where 1 covers the full circle.
     float shadeJitter = 0.0f;    // Random lightness change, from 0 to 1.
+    float hueJitter = 0.0f;      // Random hue change, where 1 turns up to kMaxHueTurn either way.
 };
 
 // Where symmetry copies a mark: x' = a x + b y + c and y' = d x + e y + f.

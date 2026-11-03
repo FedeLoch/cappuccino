@@ -78,7 +78,7 @@ internal fun beginEngineStroke(engine: Long, brush: BrushState) {
         kind.stampFlow(brush.opacity), kind.minScale, kind.spacing,
         kind.pressureFlow, kind.hardness, kind.grain, kind.isEraser, brush.alphaLock,
         kind.mode == BrushMode.SMUDGE, brush.pressureGamma,
-        kind.scatter, kind.sizeJitter, kind.angleJitter, kind.shadeJitter, kind.tip,
+        kind.scatter, kind.sizeJitter, kind.angleJitter, kind.shadeJitter, kind.hueJitter, kind.tip,
     )
 }
 
@@ -133,6 +133,9 @@ class CanvasView(
     var onStrokeRecord: (BrushState, FloatArray) -> Unit = { _, _ -> }
     var onPenNear: () -> Unit = {}
 
+    /** What the pen's side button does: 0 picks a color, 1 erases while held, 2 undoes. */
+    var penButtonAction = 0
+
     private val viewMatrix = Matrix()
     private val inverseMatrix = Matrix()
     private val predictor = MotionEventPredictor.newInstance(this)
@@ -176,6 +179,8 @@ class CanvasView(
     private val stabilizer = LineStabilizer()
     private val layerMatrix = Matrix()
     private var transformLayer = 0
+    private var strokeColor = 0
+    private val colorRandom = java.util.Random()
 
     private var maxFingers = 0
     private var gestureStart = 0L
@@ -436,6 +441,26 @@ class CanvasView(
         applyTransform(Matrix().apply { postScale(factor, factor, screenX, screenY) })
     }
 
+    /**
+     * Pins one corner of [corners], given in layer space, to a point on screen while the other three
+     * stay put, so the layer bends into perspective.
+     */
+    fun moveTransformCorner(corners: FloatArray, corner: Int, screenX: Float, screenY: Float) {
+        val target = FloatArray(8)
+        for (index in 0 until 4) {
+            val spot = if (index == corner) floatArrayOf(screenX, screenY) else transformedToScreen(corners[index * 2], corners[index * 2 + 1])
+            target[index * 2] = spot[0]
+            target[index * 2 + 1] = spot[1]
+        }
+        viewMatrix.invert(inverseMatrix)
+        inverseMatrix.mapPoints(target)
+        val bent = Matrix()
+        if (!bent.setPolyToPoly(corners, 0, target, 0, 4)) return
+        layerMatrix.set(bent)
+        publishTransform()
+        onTransformMoved()
+    }
+
     /** Where a point of the layer sits on screen right now, with its transform applied. */
     fun transformedToScreen(x: Float, y: Float): FloatArray {
         val point = floatArrayOf(x, y)
@@ -530,16 +555,23 @@ class CanvasView(
                 pressureSamples = 0
                 snapAnchorX = event.x
                 snapAnchorY = event.y
-                stabilizer.reset(if (event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER) 0f else stabilizerStrength)
-                strokeKind = if (tool == MotionEvent.TOOL_TYPE_ERASER) eraserKind else brushKind
+                val buttonPressed = event.buttonState and
+                    (MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_STYLUS_SECONDARY) != 0
+                if (buttonPressed && penButtonAction == 2) {
+                    penPointerId = MotionEvent.INVALID_POINTER_ID
+                    ignorePen = true
+                    onUndoGesture()
+                    return true
+                }
+                val erasing = tool == MotionEvent.TOOL_TYPE_ERASER || (buttonPressed && penButtonAction == 1)
+                stabilizer.reset(if (erasing) 0f else stabilizerStrength)
+                strokeKind = if (erasing) eraserKind else brushKind
                 onStrokeStart()
                 predictor.record(event)
                 sendStroke(event, begin = true, end = false)
                 pressX = event.x
                 pressY = event.y
-                val buttonPressed = event.buttonState and
-                    (MotionEvent.BUTTON_STYLUS_PRIMARY or MotionEvent.BUTTON_STYLUS_SECONDARY) != 0
-                if (buttonPressed) {
+                if (buttonPressed && penButtonAction == 0) {
                     startPenPick()
                 } else if (!strokeKind.isEraser && strokeKind.mode == BrushMode.PAINT) {
                     postDelayed(penHold, PEN_HOLD_MS)
@@ -640,6 +672,7 @@ class CanvasView(
     }
 
     private fun drawShape(kind: BrushKind, shape: FloatArray, pressure: Float) {
+        val color = kind.strokeColor(brushColor, colorRandom)
         val count = shape.size / 2
         val samples = FloatArray(count * NativeEngine.SAMPLE_STRIDE)
         for (index in 0 until count) {
@@ -651,14 +684,14 @@ class CanvasView(
             RenderOp.Stroke(
                 begin = true,
                 end = true,
-                brush = BrushState(kind, brushDiameter, brushColor, brushOpacity, alphaLock, pressureGamma),
+                brush = BrushState(kind, brushDiameter, color, brushOpacity, alphaLock, pressureGamma),
                 view = viewValues(),
                 samples = samples,
                 predicted = FloatArray(0),
             ),
         )
         renderer.commit()
-        onStrokeRecord(BrushState(kind, brushDiameter, brushColor, brushOpacity, alphaLock, pressureGamma), samples)
+        onStrokeRecord(BrushState(kind, brushDiameter, color, brushOpacity, alphaLock, pressureGamma), samples)
         onStrokeCommitted()
         onStrokeEnd()
         if (!kind.isEraser) onStrokePath(shape)
@@ -706,7 +739,7 @@ class CanvasView(
             filled += it.size
         }
         strokeSamples.clear()
-        onStrokeRecord(BrushState(strokeKind, brushDiameter, brushColor, brushOpacity, alphaLock, pressureGamma), recorded)
+        onStrokeRecord(BrushState(strokeKind, brushDiameter, strokeColor, brushOpacity, alphaLock, pressureGamma), recorded)
         onStrokeCommitted()
         onStrokeEnd()
         if (!strokeKind.isEraser) onStrokePath(strokePath.copyOf(strokePathSize))
@@ -716,12 +749,15 @@ class CanvasView(
         val predicted = if (end || stabilizer.isActive) null else predictor.predict()
         val samples = readSamples(event, stabilize = true)
         rememberPath(samples)
-        if (begin) strokeSamples.clear()
+        if (begin) {
+            strokeSamples.clear()
+            strokeColor = strokeKind.strokeColor(brushColor, colorRandom)
+        }
         strokeSamples.add(samples)
         val op = RenderOp.Stroke(
             begin = begin,
             end = end,
-            brush = BrushState(strokeKind, brushDiameter, brushColor, brushOpacity, alphaLock, pressureGamma),
+            brush = BrushState(strokeKind, brushDiameter, strokeColor, brushOpacity, alphaLock, pressureGamma),
             view = viewValues(),
             samples = samples,
             predicted = predicted?.let { readSamples(it, stabilize = false) } ?: FloatArray(0),

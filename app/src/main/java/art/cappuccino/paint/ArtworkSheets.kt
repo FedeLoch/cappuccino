@@ -517,6 +517,45 @@ fun Activity.tourSheet(look: CompanionLook, finished: () -> Unit) {
     dialog.show()
 }
 
+/** Offers today's warm-up. Starting it opens a fresh canvas for five minutes of practice. */
+fun Activity.warmupSheet(look: CompanionLook, warmup: Warmup, start: () -> Unit) {
+    lateinit var dialog: Dialog
+    val content = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        gravity = Gravity.CENTER_HORIZONTAL
+        setPadding(dp(28), dp(24), dp(28), dp(22))
+        addView(
+            CompanionView(context).apply {
+                this.look = look
+                contentDescription = tr("Your companion")
+            },
+            LinearLayout.LayoutParams(dp(64), dp(64)),
+        )
+        addView(label(tr("Five-minute warm-up"), 13f, COCOA), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10) })
+        addView(serif(tr(warmup.title), 24f), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(2) })
+        addView(
+            label(tr(warmup.steps), 15f, COCOA).apply { gravity = Gravity.CENTER },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
+        )
+        addView(
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER
+                addView(creamChip(tr("Not now")) { dialog.dismiss() })
+                addView(
+                    sheetButton(tr("Start"), ACCENT) {
+                        dialog.dismiss()
+                        start()
+                    },
+                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(10) },
+                )
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(18) },
+        )
+    }
+    dialog = smallSheet(content)
+    dialog.show()
+}
+
 /** Names a new sketchbook beside a cover that follows along as you choose. */
 fun Activity.newSketchbookSheet(firstColor: Int, create: (String, Int) -> Unit) {
     lateinit var dialog: Dialog

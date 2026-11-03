@@ -60,6 +60,15 @@ int main() {
     std::vector<uint8_t> none;
     combineSelection(none, {255}, 2);
     assert(none.empty());
+    std::vector<uint8_t> edge(kSize * kSize, 0);
+    for (int y = 0; y < kSize; ++y) {
+        for (int x = 0; x < kSize / 2; ++x) edge[y * kSize + x] = 255;
+    }
+    featherMask(edge, kSize, kSize, 4);
+    assert(edge[10 * kSize + 1] == 255);
+    assert(edge[10 * kSize + 18] == 0);
+    assert(edge[10 * kSize + 9] > 100 && edge[10 * kSize + 9] < 220);
+    assert(edge[10 * kSize + 8] > edge[10 * kSize + 10]);
     std::puts("fill tests passed");
     return 0;
 }

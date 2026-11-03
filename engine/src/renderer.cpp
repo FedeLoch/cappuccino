@@ -15,7 +15,7 @@ constexpr int kCarrySize = 128;
 constexpr float kTint[4] = {0.17f, 0.07f, 0.04f, 0.3f};
 constexpr float kPaper[3] = {1.0f, 1.0f, 1.0f};
 constexpr float kBackground[3] = {0.16f, 0.15f, 0.15f};
-constexpr int kStampFloats = 6;  // x, y, local x, local y, alpha, and shade per vertex.
+constexpr int kStampFloats = 7;  // x, y, local x, local y, alpha, shade, and hue per vertex.
 constexpr int kLiquifyCells = 256;  // Grid cells along the canvas's longer side.
 constexpr int kIsometricGuide = 4;
 constexpr int kViewsGuide = 5;
@@ -28,14 +28,17 @@ layout(location = 0) in vec2 aPosition;
 layout(location = 1) in vec2 aLocal;
 layout(location = 2) in float aAlpha;
 layout(location = 3) in float aShade;
+layout(location = 4) in float aHue;
 uniform mat4 uMatrix;
 out vec2 vLocal;
 out float vAlpha;
 out float vShade;
+out float vHue;
 void main() {
     vLocal = aLocal;
     vAlpha = aAlpha;
     vShade = aShade;
+    vHue = aHue;
     gl_Position = uMatrix * vec4(aPosition, 0.0, 1.0);
 })";
 
@@ -44,6 +47,7 @@ precision highp float;
 in vec2 vLocal;
 in float vAlpha;
 in float vShade;
+in float vHue;
 uniform vec3 uColor;
 uniform float uHardness;
 uniform float uGrain;
@@ -51,6 +55,7 @@ uniform sampler2D uMask;
 uniform float uUseMask;
 uniform sampler2D uTip;
 uniform float uUseTip;
+uniform float uSpacing;
 out vec4 fragColor;
 float noise(vec2 cell) {
     return fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
@@ -64,8 +69,20 @@ void main() {
     if (uUseTip > 0.5) {
         alpha = vAlpha * grain * texture(uTip, vLocal * 0.42 + 0.5).r * step(distance, 1.2);
     }
-    if (uUseMask > 0.5) alpha *= texelFetch(uMask, ivec2(gl_FragCoord.xy), 0).r;
-    vec3 color = vShade < 1.0 ? uColor * vShade : mix(uColor, vec3(1.0), vShade - 1.0);
+    if (uUseMask > 0.5) {
+        // About 1 / uSpacing stamps overlap each spot, so each one takes a share that adds up to
+        // the selection's strength there instead of building up to solid paint.
+        float selected = texelFetch(uMask, ivec2(gl_FragCoord.xy), 0).r;
+        alpha *= selected >= 1.0 ? 1.0 : 1.0 - pow(1.0 - selected, uSpacing);
+    }
+    vec3 base = uColor;
+    if (vHue != 0.0) {
+        // Turns the color around the gray axis, which keeps its lightness close.
+        const vec3 gray = vec3(0.57735);
+        float turn = vHue * 6.2831853;
+        base = clamp(base * cos(turn) + cross(gray, base) * sin(turn) + gray * dot(gray, base) * (1.0 - cos(turn)), 0.0, 1.0);
+    }
+    vec3 color = vShade < 1.0 ? base * vShade : mix(base, vec3(1.0), vShade - 1.0);
     fragColor = vec4(color * alpha, alpha);
 })";
 
@@ -477,6 +494,7 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
 
     stampUseMask_ = glGetUniformLocation(stampProgram_, "uUseMask");
     stampUseTip_ = glGetUniformLocation(stampProgram_, "uUseTip");
+    stampSpacing_ = glGetUniformLocation(stampProgram_, "uSpacing");
     glUseProgram(stampProgram_);
     glUniform1i(glGetUniformLocation(stampProgram_, "uMask"), 2);
     glUniform1i(glGetUniformLocation(stampProgram_, "uTip"), 3);
@@ -551,7 +569,9 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_R8, kTipSize, kTipSize);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    createTarget(kCarrySize, kCarrySize, carryTexture_, carryFbo_);
+    for (int copy = 0; copy < kSmudgeCopies; ++copy) {
+        createTarget(kCarrySize, kCarrySize, carryTexture_[copy], carryFbo_[copy]);
+    }
 
     filterProgram_ = link(kFilterVertex, kFilterFragment);
     filterMode_ = glGetUniformLocation(filterProgram_, "uMode");
@@ -564,6 +584,7 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     glEnableVertexAttribArray(1);
     glEnableVertexAttribArray(2);
     glEnableVertexAttribArray(3);
+    glEnableVertexAttribArray(4);
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, kStampFloats * sizeof(float), nullptr);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, kStampFloats * sizeof(float),
                           reinterpret_cast<const void*>(2 * sizeof(float)));
@@ -571,6 +592,8 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
                           reinterpret_cast<const void*>(4 * sizeof(float)));
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, kStampFloats * sizeof(float),
                           reinterpret_cast<const void*>(5 * sizeof(float)));
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, kStampFloats * sizeof(float),
+                          reinterpret_cast<const void*>(6 * sizeof(float)));
     glGenVertexArrays(1, &canvasVao_);
     glGenVertexArrays(1, &liquifyVao_);
     glGenBuffers(1, &liquifyVertices_);
@@ -605,8 +628,8 @@ Renderer::~Renderer() {
     glDeleteProgram(adjustProgram_);
     glDeleteTextures(1, &stampMaskTexture_);
     glDeleteTextures(1, &tipTexture_);
-    glDeleteFramebuffers(1, &carryFbo_);
-    glDeleteTextures(1, &carryTexture_);
+    glDeleteFramebuffers(kSmudgeCopies, carryFbo_);
+    glDeleteTextures(kSmudgeCopies, carryTexture_);
     if (viewFbo_ != 0) {
         glDeleteFramebuffers(1, &viewFbo_);
         glDeleteTextures(1, &viewTexture_);
@@ -880,7 +903,7 @@ bool Renderer::fillAt(int x, int y, const float* color) {
         }
     }
     for (size_t index = 0; index < size; ++index) {
-        mask[index] = mask[index] != 0 && (!selectionActive_ || selection_[index] != 0) ? 255 : 0;
+        mask[index] = mask[index] == 0 ? 0 : selectionActive_ ? selection_[index] : 255;
     }
 
     HistoryEntry entry;
@@ -940,9 +963,9 @@ void Renderer::setSelectionPolygon(const float* points, int count, int mode) {
     }
     std::vector<uint8_t> shape;
     rasterizePolygon(points, count, width_, height_, shape);
-    if (!selectionActive_) selection_.clear();
-    combineSelection(selection_, shape, mode);
-    if (!selection_.empty()) uploadSelection();
+    if (!selectionActive_) hardSelection_.clear();
+    combineSelection(hardSelection_, shape, mode);
+    refreshSelection();
 }
 
 void Renderer::selectColorAt(int x, int y, int tolerance, int mode) {
@@ -951,20 +974,35 @@ void Renderer::selectColorAt(int x, int y, int tolerance, int mode) {
     std::vector<uint8_t> shape;
     if (!floodMask(reference.data(), width_, height_, x, y, tolerance, shape, nullptr)) return;
     for (uint8_t& value : shape) value = value != 0 ? 255 : 0;
-    if (!selectionActive_) selection_.clear();
-    combineSelection(selection_, shape, mode);
-    if (!selection_.empty()) uploadSelection();
+    if (!selectionActive_) hardSelection_.clear();
+    combineSelection(hardSelection_, shape, mode);
+    refreshSelection();
+}
+
+void Renderer::refreshSelection() {
+    if (hardSelection_.empty()) return;
+    selection_ = hardSelection_;
+    featherMask(selection_, width_, height_, selectionFeather_);
+    uploadSelection();
 }
 
 void Renderer::clearSelection() {
     selectionActive_ = false;
     selection_.clear();
+    hardSelection_.clear();
 }
 
 void Renderer::invertSelection() {
     if (!selectionActive_) return;
-    for (uint8_t& value : selection_) value = 255 - value;
-    uploadSelection();
+    for (uint8_t& value : hardSelection_) value = 255 - value;
+    refreshSelection();
+}
+
+void Renderer::setSelectionFeather(int radius) {
+    radius = std::clamp(radius, 0, 256);
+    if (radius == selectionFeather_) return;
+    selectionFeather_ = radius;
+    if (selectionActive_) refreshSelection();
 }
 
 void Renderer::pushFullHistory(const Layer& layer, bool chained) {
@@ -996,10 +1034,15 @@ void Renderer::copySelectionToLayer(int newId, bool cut) {
     if (cut) pushFullHistory(*source);
 
     std::vector<uint8_t> copy(pixels.size());
+    // Colors are premultiplied, so a soft edge scales all four channels.
     for (size_t index = 0; index < selection_.size(); ++index) {
-        if (selection_[index] == 0) continue;
-        std::memcpy(copy.data() + index * 4, pixels.data() + index * 4, 4);
-        if (cut) std::memset(pixels.data() + index * 4, 0, 4);
+        const int share = selection_[index];
+        if (share == 0) continue;
+        for (size_t channel = index * 4; channel < index * 4 + 4; ++channel) {
+            const int value = pixels[channel];
+            copy[channel] = static_cast<uint8_t>((value * share + 127) / 255);
+            if (cut) pixels[channel] = static_cast<uint8_t>(value - copy[channel]);
+        }
     }
     if (cut) {
         writeLayer(sourceId, pixels.data());
@@ -1353,7 +1396,7 @@ void Renderer::appendLine(float x1, float y1, float x2, float y2) {
     const float corners[6][2] = {{x1 - nx, y1 - ny}, {x2 - nx, y2 - ny}, {x2 + nx, y2 + ny},
                                  {x1 - nx, y1 - ny}, {x2 + nx, y2 + ny}, {x1 + nx, y1 + ny}};
     for (const auto& corner : corners) {
-        vertices_.insert(vertices_.end(), {corner[0], corner[1], 0.0f, 0.0f, 0.55f, 1.0f});
+        vertices_.insert(vertices_.end(), {corner[0], corner[1], 0.0f, 0.0f, 0.55f, 1.0f, 0.0f});
     }
 }
 
@@ -1649,6 +1692,7 @@ void Renderer::drawStamps(const std::vector<Stamp>& stamps, const float* matrix)
             vertices_.push_back(localY);
             vertices_.push_back(stamp.alpha);
             vertices_.push_back(stamp.shade);
+            vertices_.push_back(stamp.hue);
         }
     }
     glUseProgram(stampProgram_);
@@ -1658,6 +1702,7 @@ void Renderer::drawStamps(const std::vector<Stamp>& stamps, const float* matrix)
     glUniform1f(stampGrain_, brush_.grain);
     glUniform1f(stampUseMask_, maskStamps_ ? 1.0f : 0.0f);
     glUniform1f(stampUseTip_, brush_.tip.empty() ? 0.0f : 1.0f);
+    glUniform1f(stampSpacing_, std::clamp(brush_.shape.spacingRatio, 0.01f, 1.0f));
     glEnable(GL_BLEND);
     if (brush_.eraser) {
         glBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
@@ -1681,7 +1726,8 @@ void Renderer::drawQuad(const float* matrix) {
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
-void Renderer::drawSmudge(const std::vector<Stamp>& stamps, const float* matrix, GLuint layerFbo) {
+void Renderer::drawSmudge(const Stamp* stamps, size_t count, const float* matrix, GLuint layerFbo,
+                          int copy) {
     glUseProgram(smudgeProgram_);
     glUniformMatrix4fv(smudgeMatrix_, 1, GL_FALSE, matrix);
     const GLint erase = glGetUniformLocation(smudgeProgram_, "uErase");
@@ -1689,11 +1735,12 @@ void Renderer::drawSmudge(const std::vector<Stamp>& stamps, const float* matrix,
     glBindVertexArray(vao_);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, carryTexture_);
+    glBindTexture(GL_TEXTURE_2D, carryTexture_[copy]);
     glEnable(GL_BLEND);
-    for (const Stamp& stamp : stamps) {
+    for (size_t index = 0; index < count; ++index) {
+        const Stamp& stamp = stamps[index];
         const float r = std::max(stamp.radiusX, 1.0f);
-        if (carryReady_) {
+        if (carryReady_[copy]) {
             const float corners[6][2] = {{-1, -1}, {1, -1}, {1, 1}, {-1, -1}, {1, 1}, {-1, 1}};
             float vertices[6 * kStampFloats];
             for (int i = 0; i < 6; ++i) {
@@ -1704,6 +1751,7 @@ void Renderer::drawSmudge(const std::vector<Stamp>& stamps, const float* matrix,
                 vertex[3] = corners[i][1];
                 vertex[4] = stamp.alpha;
                 vertex[5] = 1.0f;
+                vertex[6] = 0.0f;
             }
             glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
             glUniform1f(erase, 1.0f);
@@ -1715,7 +1763,7 @@ void Renderer::drawSmudge(const std::vector<Stamp>& stamps, const float* matrix,
         }
         glDisable(GL_BLEND);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, layerFbo);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, carryFbo_);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, carryFbo_[copy]);
         glBlitFramebuffer(std::max(0, static_cast<int>(stamp.x - r)),
                           std::max(0, static_cast<int>(stamp.y - r)),
                           std::min(width_, static_cast<int>(stamp.x + r)),
@@ -1723,7 +1771,7 @@ void Renderer::drawSmudge(const std::vector<Stamp>& stamps, const float* matrix,
                           kCarrySize, GL_COLOR_BUFFER_BIT, GL_LINEAR);
         glBindFramebuffer(GL_FRAMEBUFFER, layerFbo);
         glEnable(GL_BLEND);
-        carryReady_ = true;
+        carryReady_[copy] = true;
     }
     glDisable(GL_BLEND);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -1825,7 +1873,7 @@ void Renderer::drawCanvas(const float* matrix) {
 void Renderer::beginStroke(const BrushParams& brush) {
     if (!findLayer(activeLayer_)) return;
     brush_ = brush;
-    carryReady_ = false;
+    std::fill(std::begin(carryReady_), std::end(carryReady_), false);
     if (!brush.tip.empty()) {
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         glActiveTexture(GL_TEXTURE3);
@@ -1858,7 +1906,7 @@ void Renderer::drawFront(const float* projection, const float* view, int bufferW
         prediction.finish(predictedStamps_);
     }
 
-    if (!brush_.smudge && !mirrors_.empty()) {
+    if (!mirrors_.empty()) {
         mirrorStamps(stamps_, mirrors_);
         mirrorStamps(predictedStamps_, mirrors_);
     }
@@ -1869,7 +1917,12 @@ void Renderer::drawFront(const float* projection, const float* view, int bufferW
         glBindFramebuffer(GL_FRAMEBUFFER, layer->fbo);
         glViewport(0, 0, width_, height_);
         if (brush_.smudge) {
-            drawSmudge(stamps_, toCanvas, layer->fbo);
+            const size_t copies = std::min<size_t>(mirrors_.size() + 1, kSmudgeCopies);
+            const size_t perCopy = stamps_.size() / (mirrors_.size() + 1);
+            for (size_t copy = 0; copy < copies; ++copy) {
+                drawSmudge(stamps_.data() + copy * perCopy, perCopy, toCanvas, layer->fbo,
+                           static_cast<int>(copy));
+            }
         } else {
             maskStamps_ = selectionActive_;
             drawStamps(stamps_, toCanvas);

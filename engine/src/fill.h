@@ -28,6 +28,9 @@ void rasterizePolygon(const float* points, int count, int width, int height,
 void polygonCoverage(const float* points, int count, int width, int height,
                      std::vector<uint8_t>& coverage, FillBounds& bounds);
 
+// Softens a one-byte mask's edges with three box blurs, so a radius of r fades over about 2r pixels.
+void featherMask(std::vector<uint8_t>& mask, int width, int height, int radius);
+
 // Fills the connected area around (x, y) in an RGBA image, growing one pixel past its edge so
 // anti-aliased lines don't leave a pale halo. Returns false when nothing changed.
 bool floodFill(uint8_t* pixels, int width, int height, int x, int y, const uint8_t color[4],

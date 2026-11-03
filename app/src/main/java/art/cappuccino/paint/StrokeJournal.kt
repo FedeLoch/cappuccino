@@ -11,6 +11,8 @@ import java.util.concurrent.Executors
 private const val STROKE = 1
 private const val UNDO = 2
 private const val REDO = 3
+private const val FILL = 4
+private const val SHAPE_FILL = 5
 private const val KEPT_SLOW_BYTES = 64 * 1024L
 
 sealed interface JournalEntry {
@@ -23,6 +25,19 @@ sealed interface JournalEntry {
         val alphaLock: Boolean,
         val pressureGamma: Float,
         val samples: FloatArray,
+    ) : JournalEntry
+
+    /** A bucket fill at a canvas pixel. */
+    class Fill(val target: Int, val x: Int, val y: Int, val color: Int) : JournalEntry
+
+    /** A lasso fill, or a lasso erase, of a closed path in canvas pixels. */
+    class ShapeFill(
+        val target: Int,
+        val color: Int,
+        val opacity: Float,
+        val erase: Boolean,
+        val alphaLock: Boolean,
+        val path: FloatArray,
     ) : JournalEntry
 
     data object Undo : JournalEntry
@@ -59,6 +74,23 @@ class StrokeJournal(private val dir: File) {
                     out.writeInt(entry.samples.size)
                     entry.samples.forEach(out::writeFloat)
                 }
+                is JournalEntry.Fill -> {
+                    out.writeByte(FILL)
+                    out.writeInt(entry.target)
+                    out.writeInt(entry.x)
+                    out.writeInt(entry.y)
+                    out.writeInt(entry.color)
+                }
+                is JournalEntry.ShapeFill -> {
+                    out.writeByte(SHAPE_FILL)
+                    out.writeInt(entry.target)
+                    out.writeInt(entry.color)
+                    out.writeFloat(entry.opacity)
+                    out.writeBoolean(entry.erase)
+                    out.writeBoolean(entry.alphaLock)
+                    out.writeInt(entry.path.size)
+                    entry.path.forEach(out::writeFloat)
+                }
                 JournalEntry.Undo -> out.writeByte(UNDO)
                 JournalEntry.Redo -> out.writeByte(REDO)
             }
@@ -81,13 +113,20 @@ class StrokeJournal(private val dir: File) {
                                 for (index in samples.indices) samples[index] = input.readFloat()
                             },
                         )
+                        FILL -> entries += JournalEntry.Fill(input.readInt(), input.readInt(), input.readInt(), input.readInt())
+                        SHAPE_FILL -> entries += JournalEntry.ShapeFill(
+                            input.readInt(), input.readInt(), input.readFloat(), input.readBoolean(), input.readBoolean(),
+                            FloatArray(input.readInt()).also { path ->
+                                for (index in path.indices) path[index] = input.readFloat()
+                            },
+                        )
                         UNDO -> entries += JournalEntry.Undo
                         REDO -> entries += JournalEntry.Redo
                         else -> break
                     }
                 }
             } catch (_: EOFException) {
-                // The last record never finished writing, so it wasn't a finished stroke.
+                // The last record never finished writing, so it wasn't a finished mark.
             }
         }
         entries

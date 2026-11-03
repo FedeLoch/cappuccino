@@ -49,4 +49,18 @@ class StrokeJournalTest {
         file.writeBytes(file.readBytes().dropLast(6).toByteArray())
         assertEquals(1, journal.read(0).size)
     }
+
+    @Test
+    fun fillsComeBackWithTheirSettings() {
+        val journal = StrokeJournal(folder.root)
+        journal.append(1, JournalEntry.Fill(2, 40, 50, -16776961))
+        journal.append(1, JournalEntry.ShapeFill(3, -65536, 0.5f, true, false, floatArrayOf(1f, 2f, 3f, 4f, 5f, 6f)))
+        val entries = journal.read(0)
+        val fill = entries[0] as JournalEntry.Fill
+        assertEquals(40, fill.x)
+        assertEquals(-16776961, fill.color)
+        val shape = entries[1] as JournalEntry.ShapeFill
+        assertTrue(shape.erase)
+        assertArrayEquals(floatArrayOf(1f, 2f, 3f, 4f, 5f, 6f), shape.path, 0f)
+    }
 }

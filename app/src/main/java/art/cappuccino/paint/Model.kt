@@ -35,6 +35,8 @@ class BrushKind(
     val sizeJitter: Float = 0f,
     val angleJitter: Float = 0f,
     val shadeJitter: Float = 0f,
+    val hueJitter: Float = 0f,
+    val strokeJitter: Float = 0f,
 ) {
     val isTool get() = !isEraser && mode != BrushMode.PAINT
 
@@ -42,7 +44,24 @@ class BrushKind(
     fun stampFlow(opacity: Float): Float =
         if (opacity >= 1f) flow else flow * (1f - (1f - opacity).pow(spacing))
 
+    /**
+     * The color one stroke paints with. [strokeJitter] moves the hue, saturation, and value a little
+     * for each stroke, so repeated marks such as leaves don't all match.
+     */
+    fun strokeColor(base: Int, random: java.util.Random): Int {
+        if (strokeJitter <= 0f || isEraser) return base
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(base, hsv)
+        fun spread() = random.nextFloat() * 2f - 1f
+        hsv[0] = (hsv[0] + spread() * STROKE_HUE_DEGREES * strokeJitter + 360f) % 360f
+        hsv[1] = (hsv[1] + spread() * STROKE_SPREAD * strokeJitter).coerceIn(0f, 1f)
+        hsv[2] = (hsv[2] + spread() * STROKE_SPREAD * strokeJitter).coerceIn(0f, 1f)
+        return android.graphics.Color.HSVToColor(android.graphics.Color.alpha(base), hsv)
+    }
+
     companion object {
+        private const val STROKE_HUE_DEGREES = 24f
+        private const val STROKE_SPREAD = 0.14f
         val INK = BrushKind("ink", "Ink", 0.12f, 0.08f, 1f, 0f, 1f, 0f, 24f)
         private val LINER = BrushKind("liner", "Liner", 0.85f, 0.06f, 1f, 0f, 1f, 0f, 12f)
         private val PENCIL = BrushKind("pencil", "Pencil", 0.5f, 0.1f, 0.35f, 0.8f, 0.7f, 0.8f, 16f)
@@ -112,17 +131,17 @@ class BrushKind(
         private val LEAVES = BrushKind(
             "leaves", "Leaves", 0.5f, 0.55f, 0.9f, 0.2f, 0.8f, 0f, 90f,
             tip = blobTip { x, y -> x * x * 7f + y * y < 0.95f },
-            scatter = 0.7f, sizeJitter = 0.5f, angleJitter = 1f, shadeJitter = 0.25f,
+            scatter = 0.7f, sizeJitter = 0.5f, angleJitter = 1f, shadeJitter = 0.25f, hueJitter = 0.3f, strokeJitter = 0.4f,
         )
         private val GRASS = BrushKind(
             "grass", "Grass", 0.6f, 0.2f, 0.9f, 0.2f, 0.8f, 0f, 120f,
             tip = blobTip { x, y -> kotlin.math.abs(x) < 0.09f * (1f - y) && y > -0.95f },
-            scatter = 0.45f, sizeJitter = 0.5f, angleJitter = 0.09f, shadeJitter = 0.2f,
+            scatter = 0.45f, sizeJitter = 0.5f, angleJitter = 0.09f, shadeJitter = 0.2f, hueJitter = 0.25f, strokeJitter = 0.3f,
         )
         private val ROCKS = BrushKind(
             "rocks", "Rocks", 0.6f, 0.6f, 1f, 0.1f, 0.9f, 0.25f, 110f,
             tip = blobTip { x, y -> kotlin.math.abs(x) + kotlin.math.abs(y) * 1.3f + kotlin.math.abs(x + y) * 0.35f < 1f },
-            scatter = 0.6f, sizeJitter = 0.7f, angleJitter = 1f, shadeJitter = 0.3f,
+            scatter = 0.6f, sizeJitter = 0.7f, angleJitter = 1f, shadeJitter = 0.3f, strokeJitter = 0.2f,
         )
         private val PARTICLES = BrushKind(
             "particles", "Particles", 0.4f, 0.5f, 1f, 0.4f, 0.5f, 0f, 90f,
