@@ -94,13 +94,14 @@ as you finish. **Not useful** hides a note you don't want, and a topic you keep 
 quiet. **Compare** tells you which variation reads clearest at a small size.
 
 When you export a finished piece, it looks back at how far the piece came since you started it.
-**Warm up** on the home screen opens twelve short exercises: dot-to-dot lines, hatching,
-ellipses, and tracing for precision; silhouettes; lighting a sphere and shading a cube; three
-values and a value scale; and color studies for one main hue, warm light with cool shadows, and
-hue shifts. Each one starts with its own guide on the canvas. Ask for **Feedback** and the
-companion reads only what that exercise practices, such as how straight your lines are or whether
-the shadow side of the sphere is really darker. The one your notes keep raising is suggested first.
-Warm-ups are just practice, so nothing from them is saved.
+**Warm up** on the home screen opens fifteen short exercises, each starting from a guide: dots to
+join, boxes to hatch and fit ellipses in, a leaf, a cup, and a ribbon to trace; posed mannequins to
+fill as silhouettes; spheres, a cube, and a cylinder, each lit by its own sun that moves every
+session; an eye, a nose, and lips over construction lines; a landscape and a value scale for value
+studies; and color studies for one main hue, warm light with cool shadows, and hue shifts. Ask
+**How did I do?** and the companion tells you, reading only what that exercise practices, and marks
+the spot to work on, such as the wobbliest line or the face of the cube that should be lighter.
+The one your notes keep raising is suggested first. Warm-ups are just practice, so nothing from them is saved.
 
 ### It leaves your art to you
 

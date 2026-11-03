@@ -132,7 +132,11 @@ class MainActivity : Activity(), ReferenceHost {
     private var checkingWarmup = false
     private var warmupBar: PopupWindow? = null
     private var warmupBarContent: FrameLayout? = null
-    private var warmupSun = SUN_SPOTS[0]
+    private var warmupSuns = listOf(SUN_SPOTS[0])
+
+    /** A line naming where the sun is, when one sun lights the whole exercise. */
+    private fun sunLine(exercise: Warmup) =
+        if (exercise.kind.usesSun && sunCount(exercise.kind) == 1) tr("The sun is at the %1.", tr(warmupSuns.first().name)) else null
     private var onionSkin = true
     private var playingFrame = -1
     private var animationBar: PopupWindow? = null
@@ -254,7 +258,7 @@ class MainActivity : Activity(), ReferenceHost {
         super.onCreate(savedInstanceState)
         store = ArtworkStore(this)
         warmup = intent.getStringExtra(EXTRA_WARMUP)?.let { name -> WARMUPS.firstOrNull { it.kind.name == name } }
-        warmupSun = SUN_SPOTS.getOrElse(intent.getIntExtra(EXTRA_SUN, 0)) { SUN_SPOTS[0] }
+        warmupSuns = warmup?.let { sunsFor(it.kind, intent.getIntExtra(EXTRA_SEED, 0)) }.orEmpty().ifEmpty { listOf(SUN_SPOTS[0]) }
         val artworkId = intent.getStringExtra(EXTRA_ARTWORK)
         PendingSaves.await()
         val loaded = artworkId?.let(store::load)
@@ -317,7 +321,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.penButtonAction = preferences.getInt("penButton", 0)
         warmup?.let { exercise ->
             canvas.post { if (!isDestroyed) showWarmupBar(exercise) }
-            val steps = if (exercise.kind.usesSun) "${tr("The sun is at the %1.", tr(warmupSun.name))} ${tr(exercise.steps)}" else tr(exercise.steps)
+            val steps = listOfNotNull(sunLine(exercise), tr(exercise.steps)).joinToString(" ")
             handler.postDelayed({ if (!isDestroyed) say(steps, long = true) }, WARMUP_NOTE_DELAY_MS)
         }
         canvas.onStrokePath = {
@@ -1165,7 +1169,13 @@ class MainActivity : Activity(), ReferenceHost {
             setPadding(padding, padding, padding, padding)
             addView(content)
         }
-        showNoteMarks(if (key == "companion") currentTip()?.marks.orEmpty() else emptyList())
+        showNoteMarks(
+            when {
+                key != "companion" -> emptyList()
+                warmup != null && lastWarmupNote != null -> lastWarmupMarks
+                else -> currentTip()?.marks.orEmpty()
+            },
+        )
         val window = PopupWindow(body, panelWidth, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             isClippingEnabled = true
         }
@@ -1301,7 +1311,7 @@ class MainActivity : Activity(), ReferenceHost {
         )
     }
 
-    private fun companionNote(): View = column().apply {
+    private fun companionNote(): View = warmupFeedbackNote() ?: column().apply {
         // Keeps the first lines clear of the hide button in the corner.
         fun beside(view: View) = view.apply { setPaddingRelative(0, 0, dp(HIDE_BUTTON_DP), 0) }
         val tips = companionTips()
@@ -3047,7 +3057,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     /** Puts the exercise's guide on the bottom layer and a clear practice layer above it. */
     private fun setUpWarmupLayers(kind: WarmupKind) {
-        val guide = drawWarmupGuide(kind, document.width, document.height, warmupSun)
+        val guide = drawWarmupGuide(kind, document.width, document.height, warmupSuns)
         val pixels = ArtworkStore.pixelBuffer(document.width, document.height)
         guide.copyPixelsToBuffer(pixels)
         guide.recycle()
@@ -3066,12 +3076,23 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
+    /** In a warm-up, the companion's bubble tells you how the exercise went. */
+    private fun warmupFeedbackNote(): View? {
+        val exercise = warmup ?: return null
+        val note = lastWarmupNote ?: return null
+        return column().apply {
+            addView(label(tr(exercise.title), 13f, MUTED_TEXT).apply { setPaddingRelative(0, 0, dp(HIDE_BUTTON_DP), 0) })
+            addView(label(note, 14f).apply { setPaddingRelative(0, 0, dp(HIDE_BUTTON_DP), 0) })
+        }
+    }
+
     /** A slim bar under the canvas with the exercise, its feedback, and where to go next. */
     private fun showWarmupBar(exercise: Warmup) {
         val holder = warmupBarContent ?: FrameLayout(this).also { content ->
             warmupBarContent = content
             warmupBar = PopupWindow(content, -2, -2).apply {
-                showAtLocation(canvas, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, dp(20))
+                // The companion and its bubble live at the bottom left, so the bar keeps to the right.
+                showAtLocation(canvas, Gravity.BOTTOM or Gravity.END, dp(20), dp(20))
                 chrome.add(this)
             }
         }
@@ -3085,7 +3106,7 @@ class MainActivity : Activity(), ReferenceHost {
                     addView(
                         column().apply {
                             addView(label(tr(exercise.title), 14f).apply { isSingleLine = true })
-                            if (exercise.kind.usesSun) addView(label(tr("The sun is at the %1.", tr(warmupSun.name)), 12f, MUTED_TEXT).apply { isSingleLine = true })
+                            sunLine(exercise)?.let { addView(label(it, 12f, MUTED_TEXT).apply { isSingleLine = true }) }
                         },
                     )
                     fun gap() = LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) }
@@ -3113,13 +3134,6 @@ class MainActivity : Activity(), ReferenceHost {
                     for (index in 0 until childCount) (getChildAt(index) as? android.widget.TextView)?.isSingleLine = true
                 },
             )
-            val note = if (checkingWarmup) tr("Looking at your practice...") else lastWarmupNote
-            if (note != null) {
-                addView(
-                    label(note, 14f, TEXT_COLOR),
-                    LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8); marginEnd = dp(6) },
-                )
-            }
         }
         holder.addView(card)
         holder.measure(View.MeasureSpec.makeMeasureSpec(min(canvas.width - dp(32), dp(WARMUP_BAR_DP)), View.MeasureSpec.AT_MOST), View.MeasureSpec.UNSPECIFIED)
@@ -3129,31 +3143,36 @@ class MainActivity : Activity(), ReferenceHost {
     /** Reads what you drew and lets the companion comment on just what the exercise practices. */
     internal fun warmupFeedbackNow(exercise: Warmup) {
         checkingWarmup = true
-        showWarmupBar(exercise)
+        closePanel()
+        companion.mood = Mood.THINKING
         val strokes = warmupStrokes.map { path ->
             FloatArray(path.size) { index -> if (index % 2 == 0) path[index] / document.width else path[index] / document.height }
         }
         val width = WARMUP_READ_WIDTH
         val height = max(1, width * document.height / document.width)
-        val sun = warmupSun
+        val suns = warmupSuns
         canvas.snapshot { engine ->
             val pixels = ArtworkStore.pixelBuffer(width, height)
             NativeEngine.readComposite(engine, width, height, pixels)
             val colors = rgbaToColors(pixels, width * height)
             saver.execute {
-                val review = warmupReview(exercise.kind, WarmupWork(strokes, colors, width, height, sun))
+                val review = warmupReview(exercise.kind, WarmupWork(strokes, colors, width, height, suns))
                 lastWarmupNote = review.text
                 runOnUiThread {
                     if (isDestroyed) return@runOnUiThread
                     checkingWarmup = false
+                    lastWarmupMarks = review.marks
+                    companion.mood = Mood.IDLE
                     showWarmupBar(exercise)
-                    showNoteMarks(review.marks)
+                    closePanel()
+                    showPanel("companion", companionPanel())
                 }
             }
         }
     }
 
     @Volatile internal var lastWarmupNote: String? = null
+    private var lastWarmupMarks: List<NoteMark> = emptyList()
 
     /** How much each layer shows while animating, by id. Empty when the artwork isn't animated. */
     private fun animationShares(): Map<Int, Float> {
@@ -5031,7 +5050,7 @@ class MainActivity : Activity(), ReferenceHost {
         const val EXTRA_HEIGHT = "height"
         const val EXTRA_NAME = "name"
         const val EXTRA_WARMUP = "warmup"
-        const val EXTRA_SUN = "sun"
+        const val EXTRA_SEED = "seed"
 
         /** Opens a fresh canvas for one warm-up exercise. Nothing drawn there is saved. */
         fun warmupIntent(context: android.content.Context, warmup: Warmup): Intent =
@@ -5040,6 +5059,6 @@ class MainActivity : Activity(), ReferenceHost {
                 .putExtra(EXTRA_WIDTH, WARMUP_SIZE)
                 .putExtra(EXTRA_HEIGHT, WARMUP_SIZE)
                 .putExtra(EXTRA_WARMUP, warmup.kind.name)
-                .putExtra(EXTRA_SUN, SUN_SPOTS.indices.random())
+                .putExtra(EXTRA_SEED, kotlin.random.Random.nextInt())
     }
 }

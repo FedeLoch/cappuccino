@@ -21,7 +21,7 @@ private const val MORE_COLOR_SINCE_START = 0.15f
 /** The kind of practice an exercise is, which decides its guide and how the companion reads it. */
 enum class WarmupKind {
     STRAIGHT_LINES, HATCHING, ELLIPSES, TRACING, SILHOUETTES, SPHERE_LIGHT, CUBE_SHADOW,
-    THREE_VALUES, VALUE_SCALE, ONE_HUE, WARM_COOL, HUE_SHIFT,
+    THREE_VALUES, VALUE_SCALE, ONE_HUE, WARM_COOL, HUE_SHIFT, FACE_EYE, FACE_NOSE, FACE_LIPS,
 }
 
 /**
@@ -36,8 +36,11 @@ internal val WARMUPS = listOf(
     Warmup(WarmupKind.ELLIPSES, "Lines and precision", "Next step", "Ellipses", "Draw an ellipse in each box, in one stroke, touching all four sides."),
     Warmup(WarmupKind.TRACING, "Lines and precision", "Next step", "Steady tracing", "Trace each gray path as closely as you can, slowly and in one stroke."),
     Warmup(WarmupKind.SILHOUETTES, "Shapes", "Silhouette", "Silhouettes", "Turn each stick figure into a solid black silhouette. Keep the pose easy to read."),
-    Warmup(WarmupKind.SPHERE_LIGHT, "Light and shadow", "Light", "Light a sphere", "Paint the side facing the sun, a core shadow, and a cast shadow on the ground."),
-    Warmup(WarmupKind.CUBE_SHADOW, "Light and shadow", "Light", "Shade a cube", "Make the face toward the sun the lightest, and the one facing away the darkest."),
+    Warmup(WarmupKind.SPHERE_LIGHT, "Light and shadow", "Light", "Spheres in the sun", "Each sphere has its own sun. Paint the side facing it, a core shadow, and a cast shadow on the ground."),
+    Warmup(WarmupKind.CUBE_SHADOW, "Light and shadow", "Light", "Forms in the sun", "Each form has its own sun. Make the planes facing it lightest and the ones facing away darkest."),
+    Warmup(WarmupKind.FACE_EYE, "Faces", "Light", "An eye", "Draw the eye over the construction lines, then shade it with light from the sun."),
+    Warmup(WarmupKind.FACE_NOSE, "Faces", "Light", "A nose", "Draw the nose over the construction, then shade the side away from the sun."),
+    Warmup(WarmupKind.FACE_LIPS, "Faces", "Light", "Lips", "Draw the lips over the guide. Shade the upper lip darker, since it faces down."),
     Warmup(WarmupKind.THREE_VALUES, "Values", "Values", "Three values", "Fill this little landscape with only three values: one dark, one middle, and one light."),
     Warmup(WarmupKind.VALUE_SCALE, "Values", "Values", "Value scale", "Fill the five boxes from lightest to darkest, in even steps."),
     Warmup(WarmupKind.ONE_HUE, "Color", "Palette", "One main hue", "Color this little landscape so one hue leads, with two quiet ones supporting it."),
@@ -60,7 +63,8 @@ val SUN_SPOTS = listOf(
 
 /** Whether the exercise lights an object from a sun on the canvas. */
 val WarmupKind.usesSun get() = this == WarmupKind.SPHERE_LIGHT || this == WarmupKind.CUBE_SHADOW ||
-    this == WarmupKind.WARM_COOL || this == WarmupKind.HUE_SHIFT
+    this == WarmupKind.WARM_COOL || this == WarmupKind.HUE_SHIFT || this == WarmupKind.FACE_EYE ||
+    this == WarmupKind.FACE_NOSE || this == WarmupKind.FACE_LIPS
 
 /** What the companion suggests first, from the topic your notes raised most recently. */
 fun warmupFor(topic: String?, day: Int): Warmup {
@@ -87,7 +91,7 @@ private val HATCH_BOXES = listOf(floatArrayOf(0.08f, 0.22f, 0.32f, 0.78f), float
 
 private val VALUE_BOXES = List(5) { index -> floatArrayOf(0.06f + index * 0.18f, 0.38f, 0.22f + index * 0.18f, 0.62f) }
 
-private val SPHERE = floatArrayOf(0.5f, 0.46f, 0.24f)
+private val SPHERE = floatArrayOf(0.5f, 0.48f, 0.24f)
 
 /** Boxes to draw ellipses in, as left, top, right, and bottom. */
 internal val ELLIPSE_BOXES = listOf(
@@ -99,70 +103,95 @@ internal val ELLIPSE_BOXES = listOf(
     floatArrayOf(0.70f, 0.52f, 0.92f, 0.86f),
 )
 
-/** Stick figures to fill as silhouettes: the center, a lean, and the hands and feet. */
-private class Figure(val x: Float, val lean: Float, val hands: List<Spot>, val feet: List<Spot>) {
-    val head = Spot(x, 0.30f)
-    val neck = Spot(x, 0.34f)
-    val hip = Spot(x + lean, 0.52f)
-    val box = floatArrayOf(x - 0.09f, 0.25f, x + 0.09f, 0.76f)
+/** A posed mannequin to fill as a silhouette: its head, chest, and hips, then elbows, hands, knees, and feet. */
+private class Figure(val x: Float, val chest: Spot, val hips: Spot, val limbs: List<Pair<Spot, Spot>>) {
+    val head = Spot(x, 0.3f)
+    private val all = listOf(head, chest, hips) + limbs.flatMap { listOf(it.first, it.second) }
+    val box = floatArrayOf(all.minOf { it.x } - 0.03f, 0.26f, all.maxOf { it.x } + 0.03f, all.maxOf { it.y } + 0.02f)
 }
 
+private fun pose(x: Float, lean: Float, vararg joints: Float): Figure {
+    val spots = (joints.indices step 2).map { Spot(x + joints[it], joints[it + 1]) }
+    return Figure(x, Spot(x + lean * 0.5f, 0.4f), Spot(x + lean, 0.52f), spots.chunked(2).map { it[0] to it[1] })
+}
+
+/** Standing, walking, reaching, kneeling, and jumping, each as two arms then two legs. */
 private val FIGURES = listOf(
-    Figure(0.12f, 0f, listOf(Spot(0.06f, 0.47f), Spot(0.18f, 0.47f)), listOf(Spot(0.08f, 0.73f), Spot(0.16f, 0.73f))),
-    Figure(0.31f, 0.02f, listOf(Spot(0.24f, 0.26f), Spot(0.39f, 0.30f)), listOf(Spot(0.28f, 0.73f), Spot(0.38f, 0.66f))),
-    Figure(0.50f, -0.03f, listOf(Spot(0.42f, 0.40f), Spot(0.58f, 0.46f)), listOf(Spot(0.42f, 0.73f), Spot(0.56f, 0.73f))),
-    Figure(0.69f, 0.04f, listOf(Spot(0.62f, 0.50f), Spot(0.77f, 0.36f)), listOf(Spot(0.64f, 0.73f), Spot(0.78f, 0.70f))),
-    Figure(0.88f, -0.02f, listOf(Spot(0.80f, 0.30f), Spot(0.96f, 0.30f)), listOf(Spot(0.82f, 0.73f), Spot(0.94f, 0.73f))),
+    pose(0.12f, 0.0f, -0.04f, 0.45f, -0.05f, 0.53f, 0.04f, 0.45f, 0.05f, 0.53f, -0.02f, 0.62f, -0.025f, 0.73f, 0.02f, 0.62f, 0.03f, 0.73f),
+    pose(0.31f, 0.015f, -0.035f, 0.44f, -0.06f, 0.5f, 0.045f, 0.45f, 0.07f, 0.49f, -0.03f, 0.62f, -0.07f, 0.72f, 0.05f, 0.62f, 0.05f, 0.73f),
+    pose(0.5f, -0.01f, -0.035f, 0.31f, -0.04f, 0.22f, 0.045f, 0.36f, 0.07f, 0.29f, -0.025f, 0.62f, -0.03f, 0.73f, 0.025f, 0.62f, 0.035f, 0.73f),
+    pose(0.69f, 0.02f, -0.04f, 0.45f, -0.02f, 0.51f, 0.05f, 0.44f, 0.08f, 0.47f, -0.04f, 0.62f, -0.07f, 0.66f, 0.05f, 0.6f, 0.05f, 0.72f),
+    pose(0.88f, 0.0f, -0.055f, 0.34f, -0.085f, 0.27f, 0.055f, 0.34f, 0.085f, 0.27f, -0.045f, 0.58f, -0.02f, 0.66f, 0.04f, 0.6f, 0.07f, 0.66f),
 )
 
-/** The little landscape for value and color studies: mountains, then the path to the lake. */
-private val MOUNTAINS = floatArrayOf(0.04f, 0.56f, 0.22f, 0.32f, 0.36f, 0.48f, 0.52f, 0.26f, 0.70f, 0.50f, 0.82f, 0.38f, 0.96f, 0.56f)
-private val PATH = floatArrayOf(0.46f, 0.96f, 0.58f, 0.96f, 0.53f, 0.57f, 0.51f, 0.57f)
+/** The little landscape for value and color studies, from the far mountains to the house in front. */
+private val FAR_HILLS = floatArrayOf(0.0f, 0.5f, 0.14f, 0.34f, 0.28f, 0.44f, 0.44f, 0.26f, 0.62f, 0.42f, 0.78f, 0.3f, 1.0f, 0.46f)
+private val NEAR_HILLS = floatArrayOf(0.0f, 0.62f, 0.2f, 0.54f, 0.42f, 0.6f, 0.66f, 0.52f, 0.86f, 0.58f, 1.0f, 0.55f)
 
-/** The three faces of the cube, as x and y pairs: top, left, and right. */
-private val CUBE_FACES = run {
-    val c = 0.5f
-    val top = 0.24f
-    val half = 0.22f
-    val rise = 0.12f
-    val side = 0.3f
-    listOf(
-        floatArrayOf(c, top, c + half, top + rise, c, top + rise * 2, c - half, top + rise),
-        floatArrayOf(c - half, top + rise, c, top + rise * 2, c, top + rise * 2 + side, c - half, top + rise + side),
-        floatArrayOf(c, top + rise * 2, c + half, top + rise, c + half, top + rise + side, c, top + rise * 2 + side),
-    )
+private fun oval(cx: Float, cy: Float, rx: Float, ry: Float, from: Float = 0f, to: Float = 2f * PI.toFloat(), samples: Int = 60) =
+    List(samples + 1) { index ->
+        val angle = from + (to - from) * index / samples
+        Spot(cx + rx * cos(angle), cy + ry * sin(angle))
+    }
+
+/** A leaf with its veins, turned on a slant. */
+private val LEAF: List<List<Spot>> = run {
+    val cx = 0.27f
+    val cy = 0.3f
+    val length = 0.36f
+    val width = 0.1f
+    val angle = -0.45f
+    fun place(u: Float, v: Float) = Spot(cx + u * cos(angle) - v * sin(angle), cy + u * sin(angle) + v * cos(angle))
+    fun edge(sign: Float) = List(41) { index ->
+        val t = index / 40f
+        place((t - 0.5f) * length, sign * width * sin(t * PI.toFloat()).let { kotlin.math.sqrt(max(0f, it)) } * (1f - 0.3f * t))
+    }
+    val rib = List(21) { index -> place((index / 20f - 0.5f) * length * 1.08f, 0f) }
+    val veins = listOf(0.3f, 0.5f, 0.7f).flatMap { t ->
+        listOf(1f, -1f).map { sign -> List(8) { index -> place((t - 0.5f) * length + index / 7f * length * 0.16f, sign * index / 7f * width * 0.7f) } }
+    }
+    listOf(edge(1f), edge(-1f), rib) + veins
+}
+
+/** A cup of coffee on its saucer, with two curls of steam. */
+private val CUP: List<List<Spot>> = listOf(
+    oval(0.7f, 0.6f, 0.15f, 0.035f),
+    List(31) { index ->
+        val t = index / 30f
+        val angle = PI.toFloat() * t
+        Spot(0.7f - 0.15f * cos(angle), 0.6f + 0.2f * sin(angle).let { kotlin.math.sqrt(max(0f, it)) })
+    },
+    oval(0.86f, 0.69f, 0.045f, 0.06f, -1.4f, 1.4f),
+    oval(0.7f, 0.85f, 0.23f, 0.035f),
+    List(30) { index -> val t = index / 29f; Spot(0.66f + 0.025f * sin(t * 2.2f * PI.toFloat()), 0.53f - 0.14f * t) },
+    List(30) { index -> val t = index / 29f; Spot(0.74f + 0.025f * sin(t * 2.2f * PI.toFloat() + 1.3f), 0.54f - 0.12f * t) },
+)
+
+/** A ribbon that loops across the page in one continuous line. */
+private val RIBBON: List<Spot> = List(160) { index ->
+    val t = index / 159f
+    Spot(0.52f + 0.4f * t + 0.03f * sin(t * 10f * PI.toFloat()), 0.2f + 0.055f * cos(t * 10f * PI.toFloat()))
+}
+
+/** A spiral shell, widening as it turns. */
+private val SHELL: List<Spot> = List(140) { index ->
+    val t = index / 139f
+    val angle = t * 5f * PI.toFloat()
+    val radius = 0.015f + 0.15f * t
+    Spot(0.24f + radius * cos(angle), 0.72f + radius * sin(angle))
 }
 
 /** The gray paths to trace, each sampled densely. */
-internal val TRACE_PATHS: List<List<Spot>> = listOf(
-    List(80) { index ->
-        val t = index / 79f
-        Spot(0.1f + 0.8f * t, 0.2f + 0.07f * sin(t * 4f * PI.toFloat()))
-    },
-    List(120) { index ->
-        val t = index / 119f
-        val angle = t * 5f * PI.toFloat()
-        val radius = 0.02f + 0.16f * t
-        Spot(0.3f + radius * cos(angle), 0.64f + radius * sin(angle))
-    },
-    List(60) { index ->
-        val t = index / 59f
-        val step = t * 6f
-        val up = if (step.toInt() % 2 == 0) step % 1f else 1f - step % 1f
-        Spot(0.56f + 0.34f * t, 0.84f - 0.32f * up)
-    },
-)
+internal val TRACE_PATHS: List<List<Spot>> = LEAF + CUP + listOf(RIBBON, SHELL)
 
 private const val GUIDE_GRAY = 0xFFB9B2A8.toInt()
 private const val GUIDE_DOT = 0xFF8C7F72.toInt()
-private const val SPHERE_GRAY = 0xFFC6C5C3.toInt()
 
 /** How light the untouched sphere and cube are, to tell paint from the guide. */
 private const val GUIDE_LUMINANCE = 0.772f
-private const val SUN = 0xFFE7A93C.toInt()
 
 /** Paints the exercise's starting point, such as dots to join or a sphere to light. */
-fun drawWarmupGuide(kind: WarmupKind, width: Int, height: Int, sun: SunSpot = SUN_SPOTS[0]): Bitmap {
+fun drawWarmupGuide(kind: WarmupKind, width: Int, height: Int, suns: List<SunSpot> = listOf(SUN_SPOTS[0])): Bitmap {
     val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
     val canvas = Canvas(bitmap)
     val side = min(width, height).toFloat()
@@ -175,20 +204,6 @@ fun drawWarmupGuide(kind: WarmupKind, width: Int, height: Int, sun: SunSpot = SU
     }
     fun x(value: Float) = value * width
     fun y(value: Float) = value * height
-    fun sun() {
-        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SUN }
-        val cx = x((0.5f + sun.x * 0.4f).coerceIn(0.08f, 0.92f))
-        val cy = y((0.46f + sun.y * 0.36f).coerceIn(0.08f, 0.92f))
-        canvas.drawCircle(cx, cy, side * 0.028f, fill)
-        val rays = Paint(paint).apply { color = SUN; strokeWidth = side * 0.006f }
-        repeat(8) { index ->
-            val angle = index * PI.toFloat() / 4f
-            canvas.drawLine(
-                cx + cos(angle) * side * 0.042f, cy + sin(angle) * side * 0.042f,
-                cx + cos(angle) * side * 0.058f, cy + sin(angle) * side * 0.058f, rays,
-            )
-        }
-    }
     fun path(points: FloatArray) = Path().apply {
         moveTo(x(points[0]), y(points[1]))
         for (index in 2 until points.size step 2) lineTo(x(points[index]), y(points[index + 1]))
@@ -212,45 +227,55 @@ fun drawWarmupGuide(kind: WarmupKind, width: Int, height: Int, sun: SunSpot = SU
                 canvas.drawPath(line, trace)
             }
         }
-        WarmupKind.SPHERE_LIGHT, WarmupKind.WARM_COOL, WarmupKind.HUE_SHIFT -> {
-            sun()
-            val radius = SPHERE[2] * side
-            val ground = Paint(paint).apply { strokeWidth = side * 0.003f }
-            canvas.drawLine(x(0.08f), y(SPHERE[1]) + radius, x(0.92f), y(SPHERE[1]) + radius, ground)
-            canvas.drawCircle(x(SPHERE[0]), y(SPHERE[1]), radius, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SPHERE_GRAY })
-        }
-        WarmupKind.CUBE_SHADOW -> {
-            sun()
-            val face = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SPHERE_GRAY }
-            CUBE_FACES.forEach { points ->
-                canvas.drawPath(path(points), face)
-                canvas.drawPath(path(points), paint)
-            }
+        WarmupKind.SPHERE_LIGHT, WarmupKind.CUBE_SHADOW, WarmupKind.WARM_COOL, WarmupKind.HUE_SHIFT ->
+            drawLightForms(canvas, lightForms(kind, suns), width.toFloat(), height.toFloat(), paint)
+        WarmupKind.FACE_EYE, WarmupKind.FACE_NOSE, WarmupKind.FACE_LIPS -> {
+            val construction = Paint(paint).apply { strokeWidth = side * 0.005f; color = 0xFFC9C2B8.toInt() }
+            feature(kind, suns.first())?.let { drawFeature(canvas, it, suns.first(), width.toFloat(), height.toFloat(), construction) }
         }
         WarmupKind.ELLIPSES -> ELLIPSE_BOXES.forEach { canvas.drawRect(x(it[0]), y(it[1]), x(it[2]), y(it[3]), paint) }
         WarmupKind.SILHOUETTES -> {
-            val limb = Paint(paint).apply { strokeWidth = side * 0.006f }
+            val limb = Paint(paint).apply { strokeWidth = side * 0.008f; color = 0xFFCFC8BE.toInt() }
+            val joint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFB9B2A8.toInt() }
             FIGURES.forEach { figure ->
-                fun line(from: Spot, to: Spot) = canvas.drawLine(x(from.x), y(from.y), x(to.x), y(to.y), limb)
-                canvas.drawCircle(x(figure.head.x), y(figure.head.y), side * 0.032f, limb)
-                line(figure.neck, figure.hip)
-                val shoulder = Spot(figure.x + figure.lean * 0.2f, 0.37f)
-                figure.hands.forEach { line(shoulder, it) }
-                figure.feet.forEach { line(figure.hip, it) }
+                fun bone(from: Spot, to: Spot) = canvas.drawLine(x(from.x), y(from.y), x(to.x), y(to.y), limb)
+                val shoulders = listOf(Spot(figure.chest.x - 0.028f, 0.37f), Spot(figure.chest.x + 0.028f, 0.37f))
+                val hips = listOf(Spot(figure.hips.x - 0.018f, 0.53f), Spot(figure.hips.x + 0.018f, 0.53f))
+                val starts = shoulders + hips
+                figure.limbs.forEachIndexed { index, (middle, end) ->
+                    bone(starts[index], middle)
+                    bone(middle, end)
+                    canvas.drawCircle(x(middle.x), y(middle.y), side * 0.006f, joint)
+                }
+                bone(Spot(figure.x, 0.33f), figure.chest)
+                bone(figure.chest, figure.hips)
+                canvas.drawOval(x(figure.head.x - 0.022f), y(figure.head.y - 0.03f), x(figure.head.x + 0.022f), y(figure.head.y + 0.03f), limb)
+                canvas.drawOval(x(figure.chest.x - 0.026f), y(figure.chest.y - 0.042f), x(figure.chest.x + 0.026f), y(figure.chest.y + 0.042f), limb)
+                canvas.drawOval(x(figure.hips.x - 0.024f), y(figure.hips.y - 0.018f), x(figure.hips.x + 0.024f), y(figure.hips.y + 0.018f), limb)
             }
         }
         WarmupKind.THREE_VALUES, WarmupKind.ONE_HUE -> {
-            val outline = Path().apply {
-                moveTo(x(MOUNTAINS[0]), y(MOUNTAINS[1]))
-                for (index in 2 until MOUNTAINS.size step 2) lineTo(x(MOUNTAINS[index]), y(MOUNTAINS[index + 1]))
+            fun ridge(points: FloatArray) = Path().apply {
+                moveTo(x(points[0]), y(points[1]))
+                for (index in 2 until points.size step 2) {
+                    val midX = (points[index - 2] + points[index]) / 2f
+                    val midY = (points[index - 1] + points[index + 1]) / 2f
+                    quadTo(x(points[index - 2]), y(points[index - 1]), x(midX), y(midY))
+                }
+                lineTo(x(points[points.size - 2]), y(points[points.size - 1]))
             }
-            canvas.drawPath(outline, paint)
-            canvas.drawLine(x(0f), y(0.56f), x(1f), y(0.56f), paint)
-            canvas.drawCircle(x(0.80f), y(0.16f), side * 0.05f, paint)
-            canvas.drawRect(x(0.235f), y(0.64f), x(0.265f), y(0.82f), paint)
-            canvas.drawCircle(x(0.25f), y(0.6f), side * 0.07f, paint)
-            canvas.drawPath(path(PATH), paint)
-            canvas.drawOval(x(0.62f), y(0.68f), x(0.9f), y(0.78f), paint)
+            canvas.drawPath(ridge(FAR_HILLS), paint)
+            canvas.drawPath(ridge(NEAR_HILLS), paint)
+            canvas.drawCircle(x(0.84f), y(0.14f), side * 0.045f, paint)
+            canvas.drawRect(x(0.6f), y(0.62f), x(0.78f), y(0.76f), paint)
+            canvas.drawPath(path(floatArrayOf(0.58f, 0.62f, 0.69f, 0.53f, 0.8f, 0.62f)), paint)
+            canvas.drawRect(x(0.665f), y(0.68f), x(0.695f), y(0.76f), paint)
+            canvas.drawRect(x(0.72f), y(0.65f), x(0.755f), y(0.69f), paint)
+            listOf(0.18f to 0.78f, 0.3f to 0.74f, 0.4f to 0.8f).forEach { (treeX, treeBottom) ->
+                canvas.drawPath(path(floatArrayOf(treeX, treeBottom - 0.2f, treeX + 0.05f, treeBottom - 0.03f, treeX - 0.05f, treeBottom - 0.03f)), paint)
+                canvas.drawLine(x(treeX), y(treeBottom - 0.03f), x(treeX), y(treeBottom), paint)
+            }
+            canvas.drawPath(path(floatArrayOf(0.55f, 1.0f, 0.62f, 1.0f, 0.69f, 0.76f, 0.665f, 0.76f)), paint)
         }
     }
     return bitmap
@@ -262,8 +287,10 @@ class WarmupWork(
     val pixels: IntArray,
     val width: Int,
     val height: Int,
-    val sun: SunSpot = SUN_SPOTS[0],
+    val suns: List<SunSpot> = listOf(SUN_SPOTS[0]),
 ) {
+    val sun get() = suns.first()
+
     fun luminance(x: Int, y: Int): Float {
         val color = pixels[y * width + x]
         return (0.2126f * ((color shr 16) and 0xFF) + 0.7152f * ((color shr 8) and 0xFF) + 0.0722f * (color and 0xFF)) / 255f
@@ -281,8 +308,8 @@ fun warmupFeedback(kind: WarmupKind, work: WarmupWork): String = when (kind) {
     WarmupKind.ELLIPSES -> ellipseFeedback(work.strokes)
     WarmupKind.TRACING -> tracingFeedback(work.strokes)
     WarmupKind.SILHOUETTES -> silhouetteFeedback(work)
-    WarmupKind.SPHERE_LIGHT -> sphereFeedback(work)
-    WarmupKind.CUBE_SHADOW -> cubeFeedback(work)
+    WarmupKind.SPHERE_LIGHT, WarmupKind.CUBE_SHADOW -> lightFormsReview(work, kind).text
+    WarmupKind.FACE_EYE, WarmupKind.FACE_NOSE, WarmupKind.FACE_LIPS -> featureReview(work, kind).text
     WarmupKind.THREE_VALUES -> threeValueFeedback(work)
     WarmupKind.VALUE_SCALE -> valueScaleFeedback(work)
     WarmupKind.ONE_HUE -> oneHueFeedback(work)
@@ -549,62 +576,6 @@ private fun sphereSide(work: WarmupWork, lit: Boolean): (Float, Float) -> Boolea
     }
 }
 
-private fun sphereFeedback(work: WarmupWork): String {
-    val lit = meanIn(work, sphereSide(work, true), work::luminance) ?: return tr("Paint on the sphere first, then ask me again.")
-    val shadow = meanIn(work, sphereSide(work, false), work::luminance) ?: return tr("Paint on the sphere first, then ask me again.")
-    if (abs(lit - GUIDE_LUMINANCE) < 0.02f && abs(shadow - GUIDE_LUMINANCE) < 0.02f) return tr("Paint on the sphere first, then ask me again.")
-    val bottom = SPHERE[1] + SPHERE[2] * min(work.width, work.height) / work.height
-    // The cast shadow falls on the ground on the side away from the sun.
-    val away = -work.sun.x
-    val castFrom = min(SPHERE[0], SPHERE[0] + away * 0.4f) - if (away == 0f) 0.15f else 0f
-    val castTo = max(SPHERE[0], SPHERE[0] + away * 0.4f) + if (away == 0f) 0.15f else 0f
-    val cast = meanIn(work, { x, y -> y in bottom - 0.02f..bottom + 0.1f && x in castFrom..castTo }, work::luminance) ?: 1f
-    val form = when {
-        lit < shadow - 0.03f -> tr("The side facing the sun came out darker. Turn it around: light toward the sun, shadow away.")
-        lit - shadow < 0.12f -> tr("The sphere still looks flat. Push the side away from the light darker.")
-        lit - shadow < 0.3f -> tr("The sphere has form. A bit more contrast would make it pop.")
-        else -> tr("Great form: the sphere really turns from light to shadow.")
-    }
-    val ground = if (cast < 0.75f) tr("And the cast shadow grounds it.") else tr("Add a cast shadow on the ground, on the side away from the sun.")
-    return "$form $ground"
-}
-
-private fun inPolygon(points: FloatArray, x: Float, y: Float): Boolean {
-    var inside = false
-    var previous = points.size - 2
-    for (index in points.indices step 2) {
-        val xi = points[index]
-        val yi = points[index + 1]
-        val xj = points[previous]
-        val yj = points[previous + 1]
-        if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) inside = !inside
-        previous = index
-    }
-    return inside
-}
-
-/** Which way each cube face looks: top, left, and right. */
-private val CUBE_NORMALS = listOf(0f to -1f, -0.89f to 0.45f, 0.89f to 0.45f)
-internal val CUBE_FACE_NAMES = listOf("top face", "left face", "right face")
-
-private fun cubeFeedback(work: WarmupWork): String {
-    val faces = CUBE_FACES.map { face -> meanIn(work, { x, y -> inPolygon(face, x, y) }, work::luminance) ?: 1f }
-    if (faces.all { abs(it - GUIDE_LUMINANCE) < 0.02f }) return tr("Shade the cube's faces first, then ask me again.")
-    val facing = CUBE_NORMALS.map { (nx, ny) -> nx * work.sun.x + ny * work.sun.y }
-    val brightest = faces.indices.maxBy { facing[it] }
-    val darkest = faces.indices.minBy { facing[it] }
-    // Faces that look at the sun about equally can share a value, so only clear differences count.
-    val wrong = faces.indices.flatMap { lit -> faces.indices.map { lit to it } }
-        .filter { (lit, dim) -> facing[lit] > facing[dim] + 0.2f && faces[lit] < faces[dim] - 0.02f }
-    return when {
-        wrong.isEmpty() && faces[brightest] - faces[darkest] > 0.25f ->
-            tr("Lovely: the face toward the sun is lightest, the one facing away darkest, and the planes read clearly.")
-        wrong.isEmpty() -> tr("The order is right. Spread the values further apart so each plane separates.")
-        wrong.any { it.first == brightest } -> tr("The %1 should be the lightest, since it faces the sun most.", tr(CUBE_FACE_NAMES[brightest]))
-        else -> tr("The %1 looks away from the sun, so it should be the darkest.", tr(CUBE_FACE_NAMES[wrong.first().second]))
-    }
-}
-
 /** How many distinct value bands cover a real part of the image. */
 internal fun valueBands(work: WarmupWork): Int {
     val bins = IntArray(8)
@@ -741,11 +712,6 @@ private fun box(label: String, area: FloatArray) = NoteMark(label, MarkShape.BOX
 
 private fun line(label: String, stroke: FloatArray) = NoteMark(label, MarkShape.LINE, stroke[0], stroke[1], stroke[stroke.size - 2], stroke[stroke.size - 1])
 
-private fun polygonBox(points: FloatArray) = floatArrayOf(
-    (points.indices step 2).minOf { points[it] }, (points.indices step 2).minOf { points[it + 1] },
-    (points.indices step 2).maxOf { points[it] }, (points.indices step 2).maxOf { points[it + 1] },
-)
-
 /** The spot on the sphere, toward the sun or away from it, where the companion points. */
 private fun sphereSpot(work: WarmupWork, lit: Boolean): Spot {
     val sign = if (lit) 1f else -1f
@@ -799,29 +765,8 @@ fun warmupMarks(kind: WarmupKind, work: WarmupWork): List<NoteMark> {
             fill.indices.filter { fill[it] < 0.22f }.minByOrNull { fill[it] }?.takeIf { fill.any { it > 0.06f } }
                 ?.let { marks += box(tr("Fill this one"), FIGURES[it].box) }
         }
-        WarmupKind.SPHERE_LIGHT -> {
-            val lit = meanIn(work, sphereSide(work, true), work::luminance) ?: return marks
-            val shadow = meanIn(work, sphereSide(work, false), work::luminance) ?: return marks
-            if (abs(lit - GUIDE_LUMINANCE) < 0.02f && abs(shadow - GUIDE_LUMINANCE) < 0.02f) return marks
-            if (lit - shadow < 0.3f) sphereSpot(work, false).let { marks += ring(tr("Darker here"), it.x, it.y, 0.08f) }
-            val bottom = SPHERE[1] + SPHERE[2] * min(work.width, work.height) / work.height
-            val away = -work.sun.x
-            val from = min(SPHERE[0], SPHERE[0] + away * 0.4f) - if (away == 0f) 0.15f else 0f
-            val to = max(SPHERE[0], SPHERE[0] + away * 0.4f) + if (away == 0f) 0.15f else 0f
-            val cast = meanIn(work, { x, y -> y in bottom - 0.02f..bottom + 0.1f && x in from..to }, work::luminance) ?: 1f
-            if (cast >= 0.75f) marks += box(tr("Cast shadow here"), floatArrayOf(from, bottom - 0.02f, to, bottom + 0.08f))
-        }
-        WarmupKind.CUBE_SHADOW -> {
-            val faces = CUBE_FACES.map { face -> meanIn(work, { x, y -> inPolygon(face, x, y) }, work::luminance) ?: 1f }
-            if (faces.all { abs(it - GUIDE_LUMINANCE) < 0.02f }) return marks
-            val facing = CUBE_NORMALS.map { (nx, ny) -> nx * work.sun.x + ny * work.sun.y }
-            faces.indices.flatMap { lit -> faces.indices.map { lit to it } }
-                .firstOrNull { (lit, dim) -> facing[lit] > facing[dim] + 0.2f && faces[lit] < faces[dim] - 0.02f }
-                ?.let { (lit, dim) ->
-                    marks += box(tr("Lighter"), polygonBox(CUBE_FACES[lit]))
-                    marks += box(tr("Darker"), polygonBox(CUBE_FACES[dim]))
-                }
-        }
+        WarmupKind.SPHERE_LIGHT, WarmupKind.CUBE_SHADOW -> return lightFormsReview(work, kind).marks
+        WarmupKind.FACE_EYE, WarmupKind.FACE_NOSE, WarmupKind.FACE_LIPS -> return featureReview(work, kind).marks
         WarmupKind.VALUE_SCALE -> {
             val boxes = VALUE_BOXES.map { area -> meanIn(work, { x, y -> x in area[0] + 0.02f..area[2] - 0.02f && y in area[1] + 0.02f..area[3] - 0.02f }, work::luminance) ?: 1f }
             if (boxes.all { it > 0.95f }) return marks

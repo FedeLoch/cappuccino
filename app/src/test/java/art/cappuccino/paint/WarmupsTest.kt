@@ -76,21 +76,43 @@ class WarmupsTest {
 
     @Test
     fun anUntouchedGuideAsksYouToPaintFirst() {
-        val note = warmupFeedback(WarmupKind.SPHERE_LIGHT, WarmupWork(emptyList(), blank(0xFFC6C5C3.toInt()), 64, 64))
+        val note = warmupFeedback(WarmupKind.SPHERE_LIGHT, WarmupWork(emptyList(), blank(0xFFC6C5C3.toInt()), 64, 64, sunsFor(WarmupKind.SPHERE_LIGHT, 1)))
         assertTrue(note, note.contains("first"))
     }
 
     @Test
-    fun theSphereIsReadAgainstWhereverTheSunIs() {
-        val size = 128
-        fun lit(sun: SunSpot) = IntArray(size * size) { index ->
-            val x = (index % size) / size.toFloat() - 0.5f
-            val y = (index / size) / size.toFloat() - 0.46f
-            if (x * sun.x + y * sun.y > 0f) 0xFFF0F0F0.toInt() else 0xFF303030.toInt()
-        }
+    fun eachSphereIsReadAgainstItsOwnSun() {
+        val size = 192
         val right = SUN_SPOTS.first { it.name == "right" }
         val left = SUN_SPOTS.first { it.name == "left" }
-        assertTrue(warmupFeedback(WarmupKind.SPHERE_LIGHT, WarmupWork(emptyList(), lit(right), size, size, right)).startsWith("Great form"))
-        assertTrue(warmupFeedback(WarmupKind.SPHERE_LIGHT, WarmupWork(emptyList(), lit(right), size, size, left)).startsWith("The side facing the sun came out darker"))
+        val top = SUN_SPOTS.first { it.name == "top" }
+        val suns = listOf(right, left, top)
+        val pixels = IntArray(size * size) { index ->
+            val x = (index % size) / size.toFloat()
+            val y = (index / size) / size.toFloat()
+            val sphere = ((x - 0.05f) / 0.3f).toInt().coerceIn(0, 2)
+            val cx = 0.2f + sphere * 0.3f
+            val inside = kotlin.math.hypot(x - cx, y - 0.5f) < 0.11f
+            val sun = suns[sphere]
+            when {
+                inside && (x - cx) * sun.x + (y - 0.5f) * sun.y > 0f -> 0xFFF0F0F0.toInt()
+                inside -> 0xFF303030.toInt()
+                y in 0.6f..0.66f -> 0xFF505050.toInt()
+                else -> 0xFFFFFFFF.toInt()
+            }
+        }
+        val good = warmupReview(WarmupKind.SPHERE_LIGHT, WarmupWork(emptyList(), pixels, size, size, suns))
+        assertTrue(good.text, good.text.startsWith("Every form"))
+        val flipped = warmupReview(WarmupKind.SPHERE_LIGHT, WarmupWork(emptyList(), pixels, size, size, listOf(left, left, top)))
+        assertTrue(flipped.text, flipped.text.contains("left sphere"))
+        assertTrue(flipped.marks.isNotEmpty())
+    }
+
+    @Test
+    fun aFeatureAsksForBothTheLineAndTheShading() {
+        val note = warmupFeedback(WarmupKind.FACE_LIPS, WarmupWork(emptyList(), blank(), 64, 64))
+        assertTrue(note.contains("first"))
+        val eye = WarmupWork(listOf(floatArrayOf(0.2f, 0.53f, 0.3f, 0.45f)), blank(), 64, 64, listOf(SUN_SPOTS.first { it.name == "left" }))
+        assertTrue(warmupFeedback(WarmupKind.FACE_EYE, eye).contains("Keep going"))
     }
 }
