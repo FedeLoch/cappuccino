@@ -519,10 +519,14 @@ fun Activity.tourSheet(look: CompanionLook, finished: () -> Unit) {
 
 private const val WARMUP_CARD_DP = 128
 private const val PREVIEW_PIXELS = 256
+private const val MUTED_COCOA = 0xFF9A7B66.toInt()
+
+// Previews show one steady example; each session still lays the exercise out fresh.
+private const val PREVIEW_SEED = 7
 
 /** A small picture of an exercise's guide, on white paper like the canvas. */
 private fun Context.warmupPreview(warmup: Warmup, size: Int) = ImageView(this).apply {
-    setImageBitmap(drawWarmupGuide(warmup.kind, PREVIEW_PIXELS, PREVIEW_PIXELS))
+    setImageBitmap(drawWarmupGuide(warmup.kind, PREVIEW_PIXELS, PREVIEW_PIXELS, WarmupLayout(PREVIEW_SEED)))
     background = rounded(Color.WHITE, 10)
     clipToOutline = true
     scaleType = ImageView.ScaleType.FIT_CENTER
@@ -536,6 +540,7 @@ private fun Context.warmupPreview(warmup: Warmup, size: Int) = ImageView(this).a
  */
 fun Activity.warmupPicker(look: CompanionLook, suggested: Warmup, current: Warmup?, pick: (Warmup) -> Unit) {
     lateinit var dialog: Dialog
+    val about = label(tr("Hold an exercise to see what it trains."), 13f, MUTED_COCOA)
     fun start(warmup: Warmup) {
         dialog.dismiss()
         pick(warmup)
@@ -577,6 +582,7 @@ fun Activity.warmupPicker(look: CompanionLook, suggested: Warmup, current: Warmu
                             addView(label(tr("Suggested for you"), 12f, ACCENT))
                             addView(serif(tr(suggested.title), 20f), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(2) })
                             addView(label(tr(suggested.steps), 14f, COCOA), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+                            addView(label(tr(suggested.purpose), 13f, MUTED_COCOA), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) })
                         },
                         LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(16) },
                     )
@@ -585,6 +591,7 @@ fun Activity.warmupPicker(look: CompanionLook, suggested: Warmup, current: Warmu
                 LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(18) },
             )
         }
+        addView(about, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(16) })
         WARMUP_GROUPS.forEach { group ->
             addView(label(tr(group), 13f, COCOA), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(18) })
             addView(
@@ -601,6 +608,12 @@ fun Activity.warmupPicker(look: CompanionLook, suggested: Warmup, current: Warmu
                                 setPadding(dp(8), dp(8), dp(8), dp(10))
                                 contentDescription = tr(warmup.title)
                                 setOnClickListener { start(warmup) }
+                                // A long press reminds you what the exercise is for, without starting it.
+                                setOnLongClickListener {
+                                    about.text = tr("%1: %2", tr(warmup.title), tr(warmup.purpose))
+                                    about.setTextColor(ESPRESSO)
+                                    true
+                                }
                                 addView(warmupPreview(warmup, dp(WARMUP_CARD_DP - 16)))
                                 addView(
                                     label(tr(warmup.title), 13f, ESPRESSO).apply { maxLines = 2 },

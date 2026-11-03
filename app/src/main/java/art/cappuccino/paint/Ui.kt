@@ -5,8 +5,12 @@ import android.graphics.Bitmap
 import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ColorFilter
 import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.PixelFormat
 import android.graphics.RectF
+import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
@@ -281,4 +285,40 @@ class FlowRow(context: Context, private val gap: Int) : ViewGroup(context) {
             rowHeight = maxOf(rowHeight, child.measuredHeight)
         }
     }
+}
+
+/**
+ * A rounded card with a small tail on one side, pointing at whoever is speaking. The tail sits in
+ * the [tail] wide margin on that side, [tailY] from the top.
+ */
+class SpeechBubble(color: Int, private val radius: Float, private val tail: Float, private val tailLeft: Boolean, private val tailY: Float) : Drawable() {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
+    private val shape = Path()
+    private val box = RectF()
+
+    override fun draw(canvas: Canvas) {
+        val area = bounds
+        box.set(area.left + if (tailLeft) tail else 0f, area.top.toFloat(), area.right - if (tailLeft) 0f else tail, area.bottom.toFloat())
+        val edge = if (tailLeft) box.left else box.right
+        val tip = if (tailLeft) area.left.toFloat() else area.right.toFloat()
+        val y = tailY.coerceIn(box.top + radius + tail, box.bottom - radius - tail)
+        shape.reset()
+        shape.addRoundRect(box, radius, radius, Path.Direction.CW)
+        shape.moveTo(edge, y - tail)
+        shape.quadTo(edge - (edge - tip) * 0.35f, y - tail * 0.2f, tip, y)
+        shape.quadTo(edge - (edge - tip) * 0.35f, y + tail * 0.2f, edge, y + tail)
+        shape.close()
+        canvas.drawPath(shape, paint)
+    }
+
+    override fun setAlpha(alpha: Int) {
+        paint.alpha = alpha
+    }
+
+    override fun setColorFilter(filter: ColorFilter?) {
+        paint.colorFilter = filter
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = PixelFormat.TRANSLUCENT
 }

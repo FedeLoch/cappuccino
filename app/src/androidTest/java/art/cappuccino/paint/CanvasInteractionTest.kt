@@ -499,14 +499,17 @@ class CanvasInteractionTest {
         val store = ArtworkStore(context)
         val before = store.artworks().map { it.id }.toSet()
         val exercise = WARMUPS.first { it.kind == WarmupKind.STRAIGHT_LINES }
-        scenario = ActivityScenario.launch(MainActivity.warmupIntent(context, exercise))
+        val seed = 21
+        scenario = ActivityScenario.launch(MainActivity.warmupIntent(context, exercise, seed))
+        // Keeps clear of the sliders on the left edge of the screen.
+        val (from, to) = WarmupLayout(seed).dots.maxBy { minOf(it.first.x, it.second.x) }
         waitForPaper()
         var start = floatArrayOf()
         var end = floatArrayOf()
         onStudio {
             it.setColor(Color.BLACK)
-            start = it.canvasToScreen(WARMUP_SIZE_FOR_TEST * 0.16f, WARMUP_SIZE_FOR_TEST * 0.88f)
-            end = it.canvasToScreen(WARMUP_SIZE_FOR_TEST * 0.84f, WARMUP_SIZE_FOR_TEST * 0.80f)
+            start = it.canvasToScreen(WARMUP_SIZE_FOR_TEST * from.x, WARMUP_SIZE_FOR_TEST * from.y)
+            end = it.canvasToScreen(WARMUP_SIZE_FOR_TEST * to.x, WARMUP_SIZE_FOR_TEST * to.y)
         }
         stroke(start[0], start[1], end[0], end[1])
         settle()
@@ -521,6 +524,21 @@ class CanvasInteractionTest {
         scenario.close()
         SystemClock.sleep(1000)
         assertEquals("a warm-up shouldn't be saved", before, store.artworks().map { it.id }.toSet())
+    }
+
+    @Test
+    fun everyBlendModeKeepsTheCanvasSolid() {
+        val y = height / 2f
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        onStudio { it.addLayer() }
+        for (blend in BLEND_MODES.indices) {
+            onStudio { it.setBlend(it.activeLayer()!!, blend) }
+            var lowest = -1
+            onStudio { it.canvasOpacityForTest { value -> lowest = value } }
+            repeat(10) { if (lowest < 0) SystemClock.sleep(200) }
+            assertEquals("blend ${BLEND_MODES[blend]} should leave the canvas solid", 255, lowest)
+        }
     }
 
     @Test

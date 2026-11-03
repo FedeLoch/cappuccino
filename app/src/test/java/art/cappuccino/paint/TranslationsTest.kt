@@ -50,7 +50,7 @@ class TranslationsTest {
             Light.entries.map { it.label } + CompanionLook.entries.map { it.label } +
             GUIDES.filter { it != "None" } + CANVAS_PRESETS.map { it.label } + LIQUIFY_TOOLS + FILTERS.map { it.label } +
             FILTERS.flatMap { kind -> kind.sliders.map { it.label } } + STARTER_PALETTES_NAMES + HARMONY_NAMES +
-            WARMUPS.flatMap { listOf(it.title, it.steps) } + WARMUP_GROUPS + SUN_SPOTS.map { it.name } + FORM_WORDS +
+            WARMUPS.flatMap { listOf(it.title, it.steps, it.purpose) } + WARMUP_GROUPS + SUN_SPOTS.map { it.name } + FORM_WORDS +
             listOf("Palette", "Values", "Composition", "Silhouette", "Mood", "Light", "Perspective", "Next step", "Progress")
         val missing = names.filter { it !in SPANISH }
         assertTrue("Missing Spanish: $missing", missing.isEmpty())

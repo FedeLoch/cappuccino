@@ -126,29 +126,36 @@ internal val FORM_WORDS = SPHERE_NAMES + listOf(
     "top", "left side", "right side", "lower lip", "upper lip",
 )
 
-/** How many suns an exercise needs: one per form, or one for the whole canvas. */
-fun sunCount(kind: WarmupKind) = when (kind) {
-    WarmupKind.SPHERE_LIGHT -> 3
-    WarmupKind.CUBE_SHADOW -> 2
-    else -> 1
-}
-
-/** Picks a different sun spot for each form, so every session lights things a new way. */
-fun sunsFor(kind: WarmupKind, seed: Int): List<SunSpot> {
-    val choices = when (kind) {
-        WarmupKind.FACE_LIPS -> SUN_SPOTS.filter { it.y < -0.5f }
-        WarmupKind.FACE_EYE, WarmupKind.FACE_NOSE -> SUN_SPOTS.filter { it.x != 0f }
-        else -> SUN_SPOTS
+/** The forms an exercise lights, each with its own sun, placed and sized for this session. */
+internal fun lightForms(kind: WarmupKind, layout: WarmupLayout): List<LightForm> = when (kind) {
+    WarmupKind.SPHERE_LIGHT -> layout.spheres.mapIndexed { index, (cx, cy, r) ->
+        val name = when {
+            layout.spheres.size == 1 -> "sphere"
+            index == 0 -> "left sphere"
+            index == layout.spheres.lastIndex -> "right sphere"
+            else -> "middle sphere"
+        }
+        sphere(name, layout.sphereSuns[index], cx, cy, r)
     }
-    return choices.shuffled(java.util.Random(seed.toLong())).take(sunCount(kind))
+    WarmupKind.CUBE_SHADOW -> {
+        val (cubeX, cylinderX) = if (layout.cubeFirst) 0.3f to 0.72f else 0.72f to 0.3f
+        listOf(
+            cube(layout.suns[0], cubeX, 0.5f, layout.cubeSize),
+            cylinder(layout.suns[1], cylinderX, 0.5f, layout.cylinderRadius, layout.cylinderTall),
+        )
+    }
+    WarmupKind.WARM_COOL, WarmupKind.HUE_SHIFT -> layout.colorSphere.let { (cx, cy, r) -> listOf(sphere("sphere", layout.suns[0], cx, cy, r)) }
+    else -> emptyList()
 }
 
-/** The forms an exercise lights, each with its own sun. */
-internal fun lightForms(kind: WarmupKind, suns: List<SunSpot>): List<LightForm> = when (kind) {
-    WarmupKind.SPHERE_LIGHT -> List(3) { index -> sphere(SPHERE_NAMES[index], suns[index % suns.size], 0.2f + index * 0.3f, 0.5f, 0.11f) }
-    WarmupKind.CUBE_SHADOW -> listOf(cube(suns[0], 0.3f, 0.5f, 0.15f), cylinder(suns[1 % suns.size], 0.72f, 0.5f, 0.12f, 0.3f))
-    WarmupKind.WARM_COOL, WarmupKind.HUE_SHIFT -> listOf(sphere("sphere", suns[0], 0.5f, 0.48f, 0.24f))
-    else -> emptyList()
+/** The sun lighting a face feature. */
+internal fun featureSun(kind: WarmupKind, layout: WarmupLayout) = if (kind == WarmupKind.FACE_LIPS) layout.lipSun else layout.faceSun
+
+/** The one sun lighting the whole exercise, when there is only one. */
+fun singleSun(kind: WarmupKind, layout: WarmupLayout): SunSpot? = when (kind) {
+    WarmupKind.WARM_COOL, WarmupKind.HUE_SHIFT -> layout.suns[0]
+    WarmupKind.FACE_EYE, WarmupKind.FACE_NOSE, WarmupKind.FACE_LIPS -> featureSun(kind, layout)
+    else -> null
 }
 
 /** A soft yellow sun: a warm core that fades into the paper. */
@@ -169,9 +176,19 @@ internal fun drawLightForms(canvas: Canvas, forms: List<LightForm>, width: Float
         val floor = form.planes.maxOf { it.bounds[3] }
         canvas.drawLine((form.center.x - form.radius * 1.8f) * width, floor * height, (form.center.x + form.radius * 1.8f) * width, floor * height, ground)
         form.outline(canvas, width, height, fill, line)
-        val reach = form.radius * 1.55f + 0.04f
+        val reach = form.radius * 1.45f + 0.035f
         val sunX = (form.center.x + form.sun.x * reach).coerceIn(0.05f, 0.95f)
         val sunY = (form.center.y + form.sun.y * reach * width / height).coerceIn(0.05f, 0.95f)
+        if (forms.size > 1) {
+            // A faint ray ties each sun to its own form.
+            val ray = Paint(line).apply {
+                strokeWidth = side * 0.002f
+                pathEffect = android.graphics.DashPathEffect(floatArrayOf(side * 0.008f, side * 0.01f), 0f)
+                alpha = 150
+            }
+            val edge = form.radius * 1.08f
+            canvas.drawLine(sunX * width, sunY * height, (form.center.x + form.sun.x * edge) * width, (form.center.y + form.sun.y * edge * width / height) * height, ray)
+        }
         drawSun(canvas, sunX * width, sunY * height, side * (if (forms.size > 1) 0.018f else 0.026f))
     }
 }
@@ -226,7 +243,7 @@ private fun mark(label: String, area: FloatArray) = NoteMark(label, MarkShape.BO
 
 /** Reads each lit form against its own sun, and points at the one that needs the most help. */
 internal fun lightFormsReview(work: WarmupWork, kind: WarmupKind): WarmupReview {
-    val forms = lightForms(kind, work.suns)
+    val forms = lightForms(kind, work.layout)
     val checks = forms.map { check(work, it) }
     if (checks.none { it.painted }) return WarmupReview(tr("Shade the forms first, then ask me again."), emptyList())
     val worst = checks.filter { it.painted }.let { painted -> painted.firstOrNull { it.brighter != null } ?: painted.minBy { it.spread } }
@@ -298,24 +315,27 @@ private fun halves(bounds: FloatArray, sun: SunSpot, inside: (Float, Float) -> B
 }
 
 /** An eye: lids, iris, pupil, crease, and brow, with the eyeball read for shading. */
-private fun eye(sun: SunSpot): Feature {
-    val upper = smooth(Spot(0.2f, 0.53f), Spot(0.34f, 0.41f), Spot(0.52f, 0.37f), Spot(0.68f, 0.42f), Spot(0.8f, 0.51f))
-    val lower = smooth(Spot(0.2f, 0.53f), Spot(0.36f, 0.6f), Spot(0.54f, 0.62f), Spot(0.7f, 0.58f), Spot(0.8f, 0.51f))
+private fun eye(sun: SunSpot, look: Float, open: Float): Feature {
+    fun lid(y: Float) = 0.52f + (y - 0.52f) * open
+    val upper = smooth(Spot(0.2f, 0.53f), Spot(0.34f, lid(0.41f)), Spot(0.52f, lid(0.37f)), Spot(0.68f, lid(0.42f)), Spot(0.8f, 0.51f))
+    val lower = smooth(Spot(0.2f, 0.53f), Spot(0.36f, lid(0.6f)), Spot(0.54f, lid(0.62f)), Spot(0.7f, lid(0.58f)), Spot(0.8f, 0.51f))
     val crease = smooth(Spot(0.27f, 0.42f), Spot(0.42f, 0.31f), Spot(0.6f, 0.3f), Spot(0.76f, 0.4f))
     val brow = smooth(Spot(0.16f, 0.32f), Spot(0.34f, 0.2f), Spot(0.58f, 0.18f), Spot(0.84f, 0.27f))
     val almond = polygon(upper + lower.reversed())
     val (lit, shade) = halves(boundsOf(almond), sun) { x, y -> inside(almond, x, y) }
-    return Feature(listOf(upper, lower, crease, brow, ring(0.5f, 0.49f, 0.1f, 0.1f), ring(0.5f, 0.49f, 0.04f, 0.04f)), lit, shade)
+    val iris = 0.5f + look
+    return Feature(listOf(upper, lower, crease, brow, ring(iris, 0.49f, 0.1f * min(1f, open), 0.1f * min(1f, open)), ring(iris, 0.49f, 0.04f, 0.04f)), lit, shade)
 }
 
 /** A nose from the front: the bridge, the ball, the wings, and the nostrils. */
-private fun nose(sun: SunSpot): Feature {
+private fun nose(sun: SunSpot, width: Float): Feature {
+    fun w(x: Float) = 0.5f + (x - 0.5f) * width
     val left = smooth(Spot(0.45f, 0.16f), Spot(0.44f, 0.36f), Spot(0.42f, 0.56f))
     val right = smooth(Spot(0.55f, 0.16f), Spot(0.56f, 0.36f), Spot(0.58f, 0.56f))
-    val ball = ring(0.5f, 0.64f, 0.075f, 0.07f)
-    val wingLeft = smooth(Spot(0.43f, 0.6f), Spot(0.35f, 0.64f), Spot(0.36f, 0.73f), Spot(0.44f, 0.74f))
-    val wingRight = smooth(Spot(0.57f, 0.6f), Spot(0.65f, 0.64f), Spot(0.64f, 0.73f), Spot(0.56f, 0.74f))
-    val nostrils = listOf(ring(0.455f, 0.735f, 0.022f, 0.011f), ring(0.545f, 0.735f, 0.022f, 0.011f))
+    val ball = ring(0.5f, 0.64f, 0.075f * width, 0.07f)
+    val wingLeft = smooth(Spot(w(0.43f), 0.6f), Spot(w(0.35f), 0.64f), Spot(w(0.36f), 0.73f), Spot(w(0.44f), 0.74f))
+    val wingRight = smooth(Spot(w(0.57f), 0.6f), Spot(w(0.65f), 0.64f), Spot(w(0.64f), 0.73f), Spot(w(0.56f), 0.74f))
+    val nostrils = listOf(ring(w(0.455f), 0.735f, 0.022f, 0.011f), ring(w(0.545f), 0.735f, 0.022f, 0.011f))
     val outline = polygon(left + wingLeft + wingRight.reversed() + right.reversed())
     val bounds = floatArrayOf(0.33f, 0.14f, 0.67f, 0.78f)
     val (lit, shade) = halves(bounds, sun) { x, y -> x in 0.33f..0.67f && y in 0.14f..0.78f && (inside(outline, x, y) || hypot(x - 0.5f, y - 0.64f) < 0.08f) }
@@ -323,10 +343,11 @@ private fun nose(sun: SunSpot): Feature {
 }
 
 /** Lips: the upper lip with its cupid's bow, the line between them, and the fuller lower lip. */
-private fun lips(): Feature {
-    val upper = smooth(Spot(0.22f, 0.53f), Spot(0.36f, 0.45f), Spot(0.46f, 0.42f), Spot(0.5f, 0.445f), Spot(0.54f, 0.42f), Spot(0.64f, 0.45f), Spot(0.78f, 0.53f))
+private fun lips(full: Float): Feature {
+    fun f(y: Float) = 0.53f + (y - 0.53f) * full
+    val upper = smooth(Spot(0.22f, 0.53f), Spot(0.36f, f(0.45f)), Spot(0.46f, f(0.42f)), Spot(0.5f, f(0.445f)), Spot(0.54f, f(0.42f)), Spot(0.64f, f(0.45f)), Spot(0.78f, 0.53f))
     val middle = smooth(Spot(0.22f, 0.53f), Spot(0.36f, 0.535f), Spot(0.5f, 0.555f), Spot(0.64f, 0.535f), Spot(0.78f, 0.53f))
-    val lower = smooth(Spot(0.22f, 0.53f), Spot(0.34f, 0.62f), Spot(0.5f, 0.66f), Spot(0.66f, 0.62f), Spot(0.78f, 0.53f))
+    val lower = smooth(Spot(0.22f, 0.53f), Spot(0.34f, f(0.62f)), Spot(0.5f, f(0.66f)), Spot(0.66f, f(0.62f)), Spot(0.78f, 0.53f))
     val philtrum = listOf(smooth(Spot(0.478f, 0.425f), Spot(0.472f, 0.37f)), smooth(Spot(0.522f, 0.425f), Spot(0.528f, 0.37f)))
     val top = polygon(upper + middle.reversed())
     val bottom = polygon(middle + lower.reversed())
@@ -337,11 +358,36 @@ private fun lips(): Feature {
     )
 }
 
-internal fun feature(kind: WarmupKind, sun: SunSpot): Feature? = when (kind) {
-    WarmupKind.FACE_EYE -> eye(sun)
-    WarmupKind.FACE_NOSE -> nose(sun)
-    WarmupKind.FACE_LIPS -> lips()
-    else -> null
+internal fun feature(kind: WarmupKind, layout: WarmupLayout): Feature? {
+    val sun = featureSun(kind, layout)
+    val base = when (kind) {
+        WarmupKind.FACE_EYE -> eye(sun, layout.eyeLook, layout.eyeOpen)
+        WarmupKind.FACE_NOSE -> nose(sun, layout.noseWidth)
+        WarmupKind.FACE_LIPS -> lips(layout.lipFullness)
+        else -> return null
+    }
+    return base.turned(layout.featureScale, layout.featureTilt, layout.featureShift)
+}
+
+/** The same feature, sized, tilted, and moved a little, so it looks new each session. */
+private fun Feature.turned(scale: Float, tilt: Float, shift: Spot): Feature {
+    fun move(spot: Spot): Spot {
+        val dx = (spot.x - 0.5f) * scale
+        val dy = (spot.y - 0.5f) * scale
+        return Spot(0.5f + shift.x + dx * cos(tilt) - dy * sin(tilt), 0.5f + shift.y + dx * sin(tilt) + dy * cos(tilt))
+    }
+    // Areas are checked by moving the point back into the feature's own space.
+    fun back(x: Float, y: Float): Spot {
+        val dx = x - 0.5f - shift.x
+        val dy = y - 0.5f - shift.y
+        return Spot(0.5f + (dx * cos(tilt) + dy * sin(tilt)) / scale, 0.5f + (-dx * sin(tilt) + dy * cos(tilt)) / scale)
+    }
+    fun plane(plane: Plane): Plane {
+        val corners = listOf(Spot(plane.bounds[0], plane.bounds[1]), Spot(plane.bounds[2], plane.bounds[1]), Spot(plane.bounds[2], plane.bounds[3]), Spot(plane.bounds[0], plane.bounds[3])).map(::move)
+        val bounds = floatArrayOf(corners.minOf { it.x }, corners.minOf { it.y }, corners.maxOf { it.x }, corners.maxOf { it.y })
+        return Plane(plane.name, plane.normalX, plane.normalY, bounds) { x, y -> back(x, y).let { plane.contains(it.x, it.y) } }
+    }
+    return Feature(contours.map { it.map(::move) }, plane(lit), plane(shade))
 }
 
 /** Draws a feature's construction lines and its sun. */
@@ -358,7 +404,7 @@ internal fun drawFeature(canvas: Canvas, feature: Feature, sun: SunSpot, width: 
 
 /** Reads how closely you followed the construction, and whether the shading turns the right way. */
 internal fun featureReview(work: WarmupWork, kind: WarmupKind): WarmupReview {
-    val feature = feature(kind, work.sun) ?: return WarmupReview("", emptyList())
+    val feature = feature(kind, work.layout) ?: return WarmupReview("", emptyList())
     val guide = feature.contours.flatten()
     val points = work.strokes.flatMap { stroke -> (stroke.indices step 2).map { Spot(stroke[it], stroke[it + 1]) } }
     val lit = meanOver(work, feature.lit.bounds, feature.lit.contains, work::luminance) ?: 1f

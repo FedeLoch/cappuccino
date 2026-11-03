@@ -1795,28 +1795,38 @@ void Renderer::drawCanvas(const float* matrix) {
         if (!layer.clip) base = &layer;
         const bool clipped = layer.clip && base != nullptr;
         if (!layer.visible || (clipped && !base->visible)) continue;
-        glBlendEquation(GL_FUNC_ADD);
+        // The canvas stays opaque: the paper's alpha is kept whatever the blend, since the fast
+        // stroke preview is shown over the rest of the screen and would let it show through.
         blendMatte_ = 0.0f;
+        GLenum equation = GL_FUNC_ADD;
+        GLenum source = GL_ONE;
+        GLenum destination = GL_ONE_MINUS_SRC_ALPHA;
         switch (layer.blend) {
-            case BlendMode::kNormal: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); break;
-            case BlendMode::kMultiply: glBlendFunc(GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break;
-            case BlendMode::kScreen: glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_COLOR); break;
-            case BlendMode::kAdd: glBlendFunc(GL_ONE, GL_ONE); break;
+            case BlendMode::kNormal: break;
+            case BlendMode::kMultiply: source = GL_DST_COLOR; break;
+            case BlendMode::kScreen: destination = GL_ONE_MINUS_SRC_COLOR; break;
+            case BlendMode::kAdd: destination = GL_ONE; break;
             case BlendMode::kDarken:
-                glBlendEquation(GL_MIN);
+                equation = GL_MIN;
                 blendMatte_ = 1.0f;
                 break;
-            case BlendMode::kLighten: glBlendEquation(GL_MAX); break;
+            case BlendMode::kLighten: equation = GL_MAX; break;
             case BlendMode::kSoftLight:
-                glBlendFunc(GL_DST_COLOR, GL_SRC_COLOR);
+                source = GL_DST_COLOR;
+                destination = GL_SRC_COLOR;
                 blendMatte_ = 0.5f;
                 break;
             case BlendMode::kSubtract:
-                glBlendEquation(GL_FUNC_REVERSE_SUBTRACT);
-                glBlendFunc(GL_ONE, GL_ONE);
+                equation = GL_FUNC_REVERSE_SUBTRACT;
+                destination = GL_ONE;
                 break;
-            case BlendMode::kExclusion: glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_COLOR); break;
+            case BlendMode::kExclusion:
+                source = GL_ONE_MINUS_DST_COLOR;
+                destination = GL_ONE_MINUS_SRC_COLOR;
+                break;
         }
+        glBlendEquationSeparate(equation, GL_FUNC_ADD);
+        glBlendFuncSeparate(source, destination, GL_ZERO, GL_ONE);
         glUniform1f(canvasMatte_, blendMatte_);
         glUniform1f(canvasOpacity_, layer.opacity);
         glUniform1f(canvasUseClip_, clipped ? 1.0f : 0.0f);
