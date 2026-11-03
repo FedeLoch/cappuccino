@@ -517,42 +517,111 @@ fun Activity.tourSheet(look: CompanionLook, finished: () -> Unit) {
     dialog.show()
 }
 
-/** Offers today's warm-up. Starting it opens a fresh canvas for five minutes of practice. */
-fun Activity.warmupSheet(look: CompanionLook, warmup: Warmup, start: () -> Unit) {
+private const val WARMUP_CARD_DP = 128
+private const val PREVIEW_PIXELS = 256
+
+/** A small picture of an exercise's guide, on white paper like the canvas. */
+private fun Context.warmupPreview(warmup: Warmup, size: Int) = ImageView(this).apply {
+    setImageBitmap(drawWarmupGuide(warmup.kind, PREVIEW_PIXELS, PREVIEW_PIXELS))
+    background = rounded(Color.WHITE, 10)
+    clipToOutline = true
+    scaleType = ImageView.ScaleType.FIT_CENTER
+    layoutParams = LinearLayout.LayoutParams(size, size)
+    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+}
+
+/**
+ * Lets you pick a warm-up exercise, with the one your notes point to suggested first. Warm-ups are
+ * only practice, so nothing from them is saved.
+ */
+fun Activity.warmupPicker(look: CompanionLook, suggested: Warmup, current: Warmup?, pick: (Warmup) -> Unit) {
     lateinit var dialog: Dialog
+    fun start(warmup: Warmup) {
+        dialog.dismiss()
+        pick(warmup)
+    }
     val content = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        gravity = Gravity.CENTER_HORIZONTAL
-        setPadding(dp(28), dp(24), dp(28), dp(22))
-        addView(
-            CompanionView(context).apply {
-                this.look = look
-                contentDescription = tr("Your companion")
-            },
-            LinearLayout.LayoutParams(dp(64), dp(64)),
-        )
-        addView(label(tr("Five-minute warm-up"), 13f, COCOA), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(10) })
-        addView(serif(tr(warmup.title), 24f), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(2) })
-        addView(
-            label(tr(warmup.steps), 15f, COCOA).apply { gravity = Gravity.CENTER },
-            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
-        )
+        setPadding(dp(26), dp(22), dp(26), dp(20))
         addView(
             LinearLayout(context).apply {
-                gravity = Gravity.CENTER
-                addView(creamChip(tr("Not now")) { dialog.dismiss() })
+                gravity = Gravity.CENTER_VERTICAL
                 addView(
-                    sheetButton(tr("Start"), ACCENT) {
-                        dialog.dismiss()
-                        start()
+                    CompanionView(context).apply {
+                        this.look = look
+                        contentDescription = tr("Your companion")
                     },
-                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(10) },
+                    LinearLayout.LayoutParams(dp(52), dp(52)),
+                )
+                addView(
+                    LinearLayout(context).apply {
+                        orientation = LinearLayout.VERTICAL
+                        addView(serif(tr("Warm up"), 24f))
+                        addView(label(tr("Pick an exercise. Warm-ups are just practice, so nothing is saved."), 14f, COCOA))
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(14) },
                 )
             },
-            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(18) },
+        )
+        if (suggested != current) {
+            addView(
+                LinearLayout(context).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = rounded(OAT, 18)
+                    setPadding(dp(12), dp(12), dp(18), dp(12))
+                    setOnClickListener { start(suggested) }
+                    addView(warmupPreview(suggested, dp(104)))
+                    addView(
+                        LinearLayout(context).apply {
+                            orientation = LinearLayout.VERTICAL
+                            addView(label(tr("Suggested for you"), 12f, ACCENT))
+                            addView(serif(tr(suggested.title), 20f), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(2) })
+                            addView(label(tr(suggested.steps), 14f, COCOA), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(4) })
+                        },
+                        LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(16) },
+                    )
+                    addView(sheetButton(tr("Start"), ACCENT) { start(suggested) }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(12) })
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(18) },
+            )
+        }
+        WARMUP_GROUPS.forEach { group ->
+            addView(label(tr(group), 13f, COCOA), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(18) })
+            addView(
+                FlowRow(context, dp(10)).apply {
+                    WARMUPS.filter { it.group == group }.forEach { warmup ->
+                        addView(
+                            LinearLayout(context).apply {
+                                orientation = LinearLayout.VERTICAL
+                                background = GradientDrawable().apply {
+                                    cornerRadius = dp(16).toFloat()
+                                    setColor(OAT)
+                                    if (warmup == current) setStroke(dp(2), ACCENT)
+                                }
+                                setPadding(dp(8), dp(8), dp(8), dp(10))
+                                contentDescription = tr(warmup.title)
+                                setOnClickListener { start(warmup) }
+                                addView(warmupPreview(warmup, dp(WARMUP_CARD_DP - 16)))
+                                addView(
+                                    label(tr(warmup.title), 13f, ESPRESSO).apply { maxLines = 2 },
+                                    LinearLayout.LayoutParams(dp(WARMUP_CARD_DP - 16), -2).apply { topMargin = dp(8) },
+                                )
+                            },
+                        )
+                    }
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
+            )
+        }
+        addView(
+            LinearLayout(context).apply {
+                gravity = Gravity.END
+                addView(creamChip(tr("Not now")) { dialog.dismiss() })
+            },
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(20) },
         )
     }
-    dialog = smallSheet(content)
+    dialog = sheet(content)
     dialog.show()
 }
 

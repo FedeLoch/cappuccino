@@ -52,8 +52,10 @@ private const val MIN_BRUSH = 4
 private const val MAX_BRUSH = 300
 private const val KEY_SIZE_STEP = 1.2f
 private const val FINISH_NOTE_DELAY_MS = 3500L
-private const val WARMUP_MS = 5 * 60_000L
-private const val WARMUP_NOTE_DELAY_MS = 1200L
+private const val WARMUP_NOTE_DELAY_MS = 900L
+private const val WARMUP_SIZE = 2048
+private const val WARMUP_READ_WIDTH = 512
+private const val WARMUP_BAR_DP = 620
 private const val ANIMATION_SIDE = 1280
 private const val ANIMATION_SECONDS = 6
 private const val AUTOSAVE_DELAY_MS = 2500L
@@ -124,6 +126,13 @@ class MainActivity : Activity(), ReferenceHost {
     private var report: AnalysisReport? = null
     private var progress: String? = null
     private var earlier: ArtSnapshot? = null
+    private var warmup: Warmup? = null
+    private val warmupStrokes = ArrayList<FloatArray>()
+    private val undoneWarmupStrokes = ArrayList<FloatArray>()
+    private var checkingWarmup = false
+    private var warmupBar: PopupWindow? = null
+    private var warmupBarContent: FrameLayout? = null
+    private var warmupSun = SUN_SPOTS[0]
     private var onionSkin = true
     private var playingFrame = -1
     private var animationBar: PopupWindow? = null
@@ -244,6 +253,8 @@ class MainActivity : Activity(), ReferenceHost {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         store = ArtworkStore(this)
+        warmup = intent.getStringExtra(EXTRA_WARMUP)?.let { name -> WARMUPS.firstOrNull { it.kind.name == name } }
+        warmupSun = SUN_SPOTS.getOrElse(intent.getIntExtra(EXTRA_SUN, 0)) { SUN_SPOTS[0] }
         val artworkId = intent.getStringExtra(EXTRA_ARTWORK)
         PendingSaves.await()
         val loaded = artworkId?.let(store::load)
@@ -304,11 +315,18 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.onUndoGesture = { undoEdit() }
         canvas.onRedoGesture = { redoEdit() }
         canvas.penButtonAction = preferences.getInt("penButton", 0)
-        intent.getStringExtra(EXTRA_WARMUP)?.takeIf { savedInstanceState == null }?.let { steps ->
+        warmup?.let { exercise ->
+            canvas.post { if (!isDestroyed) showWarmupBar(exercise) }
+            val steps = if (exercise.kind.usesSun) "${tr("The sun is at the %1.", tr(warmupSun.name))} ${tr(exercise.steps)}" else tr(exercise.steps)
             handler.postDelayed({ if (!isDestroyed) say(steps, long = true) }, WARMUP_NOTE_DELAY_MS)
-            handler.postDelayed({ if (!isDestroyed) say(tr("Five minutes! Nice warm-up. Keep going or start your real piece."), long = true) }, WARMUP_MS)
         }
-        canvas.onStrokePath = { checkPerspective(it) }
+        canvas.onStrokePath = {
+            checkPerspective(it)
+            if (warmup != null) {
+                warmupStrokes += it
+                undoneWarmupStrokes.clear()
+            }
+        }
                 canvas.onToggleInterface = {
             interfaceHidden = !interfaceHidden
             fadeChrome(if (interfaceHidden) 0f else 1f)
@@ -349,6 +367,7 @@ class MainActivity : Activity(), ReferenceHost {
                 NativeEngine.createLayer(it, 1)
                 NativeEngine.setActiveLayer(it, 1)
             }
+            warmup?.let { setUpWarmupLayers(it.kind) }
             canvas.acceptsInput = true
             return
         }
@@ -406,6 +425,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun writeJournal(entry: JournalEntry) {
+        if (warmup != null) return
         val journal = store.journal(document.id)
         val sequence = journalSequence
         journalWriter.execute { runCatching { journal.append(sequence, entry) } }
@@ -504,6 +524,11 @@ class MainActivity : Activity(), ReferenceHost {
     /** Saves changes. [withPreview] adds the sharp image used on sheets, and [then] runs afterward. */
     private fun save(withPreview: Boolean = false, then: (() -> Unit)? = null) {
         handler.removeCallbacks(saveLater)
+        // A warm-up is only practice, so it never reaches the library.
+        if (warmup != null) {
+            then?.let { saver.execute(it) }
+            return
+        }
         if (!unsaved && !withPreview) {
             then?.let { saver.execute(it) }
             return
@@ -615,7 +640,7 @@ class MainActivity : Activity(), ReferenceHost {
         )
         val now = ArtSnapshot(System.currentTimeMillis(), result.contrast, result.coverage, result.colored)
         latestSnapshot = now
-        if (!earlierLoaded) {
+        if (!earlierLoaded && warmup == null) {
             earlierLoaded = true
             store.saveFirstSnapshot(document.id, now)
             val saved = store.snapshot(document.id)
@@ -639,7 +664,7 @@ class MainActivity : Activity(), ReferenceHost {
             matchedScope = choice.scope
             matchedBoards = choice.boards
             if (changed && result.tips.isNotEmpty()) unreadTips = true
-            result.tips.firstOrNull { it.topic in WARMUP_TOPICS }?.let {
+            result.tips.firstOrNull { it.topic in WARMUP_TOPICS }?.takeIf { warmup == null }?.let {
                 preferences.edit().putString("warmupTopic", it.topic).apply()
             }
             if (unreadTips) peek?.mood = Mood.TIP
@@ -2961,6 +2986,7 @@ class MainActivity : Activity(), ReferenceHost {
             Edit.Stroke -> {
                 canvas.undo()
                 writeJournal(JournalEntry.Undo)
+                warmupStrokes.removeLastOrNull()?.let(undoneWarmupStrokes::add)
             }
             is Edit.Layers -> {
                 if (edit.pixels) canvas.undo()
@@ -2977,6 +3003,7 @@ class MainActivity : Activity(), ReferenceHost {
             Edit.Stroke -> {
                 canvas.redo()
                 writeJournal(JournalEntry.Redo)
+                undoneWarmupStrokes.removeLastOrNull()?.let(warmupStrokes::add)
             }
             is Edit.Layers -> {
                 if (edit.pixels) canvas.redo()
@@ -3017,6 +3044,116 @@ class MainActivity : Activity(), ReferenceHost {
         if (document.animation) syncLayers(structural = false)
         markUnsaved()
     }
+
+    /** Puts the exercise's guide on the bottom layer and a clear practice layer above it. */
+    private fun setUpWarmupLayers(kind: WarmupKind) {
+        val guide = drawWarmupGuide(kind, document.width, document.height, warmupSun)
+        val pixels = ArtworkStore.pixelBuffer(document.width, document.height)
+        guide.copyPixelsToBuffer(pixels)
+        guide.recycle()
+        pixels.rewind()
+        document.layers[0].name = tr("Guide")
+        val id = document.nextLayerId++
+        engineLayers.add(id)
+        document.layers.add(LayerInfo(id, tr("Practice")))
+        document.activeLayer = id
+        canvas.act { engine ->
+            NativeEngine.writeLayer(engine, 1, pixels)
+            NativeEngine.markLayerDirty(engine, 1)
+            NativeEngine.createLayer(engine, id)
+            NativeEngine.setLayerOrder(engine, intArrayOf(1, id))
+            NativeEngine.setActiveLayer(engine, id)
+        }
+    }
+
+    /** A slim bar under the canvas with the exercise, its feedback, and where to go next. */
+    private fun showWarmupBar(exercise: Warmup) {
+        val holder = warmupBarContent ?: FrameLayout(this).also { content ->
+            warmupBarContent = content
+            warmupBar = PopupWindow(content, -2, -2).apply {
+                showAtLocation(canvas, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL, 0, dp(20))
+                chrome.add(this)
+            }
+        }
+        holder.removeAllViews()
+        val card = column().apply {
+            background = rounded(SURFACE, 20)
+            setPadding(dp(16), dp(10), dp(10), dp(10))
+            addView(
+                LinearLayout(context).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(
+                        column().apply {
+                            addView(label(tr(exercise.title), 14f).apply { isSingleLine = true })
+                            if (exercise.kind.usesSun) addView(label(tr("The sun is at the %1.", tr(warmupSun.name)), 12f, MUTED_TEXT).apply { isSingleLine = true })
+                        },
+                    )
+                    fun gap() = LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) }
+                    addView(
+                        smallChip(if (lastWarmupNote == null) tr("How did I do?") else tr("Look again"), true) { warmupFeedbackNow(exercise) },
+                        LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(16) },
+                    )
+                    addView(
+                        smallChip(tr("Again")) {
+                            startActivity(warmupIntent(this@MainActivity, exercise))
+                            finish()
+                        },
+                        gap(),
+                    )
+                    addView(
+                        smallChip(tr("Another")) {
+                            warmupPicker(companion.look, WARMUPS[(WARMUPS.indexOf(exercise) + 1) % WARMUPS.size], exercise) { next ->
+                                startActivity(warmupIntent(this@MainActivity, next))
+                                finish()
+                            }
+                        },
+                        gap(),
+                    )
+                    addView(smallChip(tr("Finish")) { finish() }, gap())
+                    for (index in 0 until childCount) (getChildAt(index) as? android.widget.TextView)?.isSingleLine = true
+                },
+            )
+            val note = if (checkingWarmup) tr("Looking at your practice...") else lastWarmupNote
+            if (note != null) {
+                addView(
+                    label(note, 14f, TEXT_COLOR),
+                    LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8); marginEnd = dp(6) },
+                )
+            }
+        }
+        holder.addView(card)
+        holder.measure(View.MeasureSpec.makeMeasureSpec(min(canvas.width - dp(32), dp(WARMUP_BAR_DP)), View.MeasureSpec.AT_MOST), View.MeasureSpec.UNSPECIFIED)
+        warmupBar?.update(holder.measuredWidth, holder.measuredHeight)
+    }
+
+    /** Reads what you drew and lets the companion comment on just what the exercise practices. */
+    internal fun warmupFeedbackNow(exercise: Warmup) {
+        checkingWarmup = true
+        showWarmupBar(exercise)
+        val strokes = warmupStrokes.map { path ->
+            FloatArray(path.size) { index -> if (index % 2 == 0) path[index] / document.width else path[index] / document.height }
+        }
+        val width = WARMUP_READ_WIDTH
+        val height = max(1, width * document.height / document.width)
+        val sun = warmupSun
+        canvas.snapshot { engine ->
+            val pixels = ArtworkStore.pixelBuffer(width, height)
+            NativeEngine.readComposite(engine, width, height, pixels)
+            val colors = rgbaToColors(pixels, width * height)
+            saver.execute {
+                val review = warmupReview(exercise.kind, WarmupWork(strokes, colors, width, height, sun))
+                lastWarmupNote = review.text
+                runOnUiThread {
+                    if (isDestroyed) return@runOnUiThread
+                    checkingWarmup = false
+                    showWarmupBar(exercise)
+                    showNoteMarks(review.marks)
+                }
+            }
+        }
+    }
+
+    @Volatile internal var lastWarmupNote: String? = null
 
     /** How much each layer shows while animating, by id. Empty when the artwork isn't animated. */
     private fun animationShares(): Map<Int, Float> {
@@ -4894,5 +5031,15 @@ class MainActivity : Activity(), ReferenceHost {
         const val EXTRA_HEIGHT = "height"
         const val EXTRA_NAME = "name"
         const val EXTRA_WARMUP = "warmup"
+        const val EXTRA_SUN = "sun"
+
+        /** Opens a fresh canvas for one warm-up exercise. Nothing drawn there is saved. */
+        fun warmupIntent(context: android.content.Context, warmup: Warmup): Intent =
+            Intent(context, MainActivity::class.java)
+                .putExtra(EXTRA_NAME, tr("Warm-up"))
+                .putExtra(EXTRA_WIDTH, WARMUP_SIZE)
+                .putExtra(EXTRA_HEIGHT, WARMUP_SIZE)
+                .putExtra(EXTRA_WARMUP, warmup.kind.name)
+                .putExtra(EXTRA_SUN, SUN_SPOTS.indices.random())
     }
 }

@@ -23,6 +23,8 @@ import java.io.ByteArrayOutputStream
 
 private data class Pointer(val id: Int, val x: Float, val y: Float)
 
+private const val WARMUP_SIZE_FOR_TEST = 2048f
+
 @RunWith(AndroidJUnit4::class)
 class CanvasInteractionTest {
     private val automation: UiAutomation =
@@ -488,6 +490,37 @@ class CanvasInteractionTest {
         settle()
         assertTrue("the bottom layer should show while erasing above it", during)
         assertTrue("the bottom layer should show after erasing above it", hasInk(x, y))
+    }
+
+    @Test
+    fun aWarmupGivesFeedbackAndLeavesNothingSaved() {
+        scenario.close()
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val store = ArtworkStore(context)
+        val before = store.artworks().map { it.id }.toSet()
+        val exercise = WARMUPS.first { it.kind == WarmupKind.STRAIGHT_LINES }
+        scenario = ActivityScenario.launch(MainActivity.warmupIntent(context, exercise))
+        waitForPaper()
+        var start = floatArrayOf()
+        var end = floatArrayOf()
+        onStudio {
+            it.setColor(Color.BLACK)
+            start = it.canvasToScreen(WARMUP_SIZE_FOR_TEST * 0.16f, WARMUP_SIZE_FOR_TEST * 0.88f)
+            end = it.canvasToScreen(WARMUP_SIZE_FOR_TEST * 0.84f, WARMUP_SIZE_FOR_TEST * 0.80f)
+        }
+        stroke(start[0], start[1], end[0], end[1])
+        settle()
+        assertEquals("the guide and a practice layer", 2, layerCount())
+        onStudio { it.warmupFeedbackNow(exercise) }
+        var note: String? = null
+        repeat(20) {
+            scenario.onActivity { note = it.lastWarmupNote }
+            if (note == null) SystemClock.sleep(250)
+        }
+        assertTrue("the note should talk about straight lines: $note", note?.contains("straight") == true)
+        scenario.close()
+        SystemClock.sleep(1000)
+        assertEquals("a warm-up shouldn't be saved", before, store.artworks().map { it.id }.toSet())
     }
 
     @Test

@@ -10,6 +10,7 @@ import android.graphics.RectF
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
@@ -240,4 +241,44 @@ fun SeekBar.onChange(change: (Int) -> Unit) {
         override fun onStartTrackingTouch(bar: SeekBar) = Unit
         override fun onStopTrackingTouch(bar: SeekBar) = Unit
     })
+}
+
+/** Lays out its children in rows, starting a new row when the next one doesn't fit. */
+class FlowRow(context: Context, private val gap: Int) : ViewGroup(context) {
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val width = MeasureSpec.getSize(widthMeasureSpec)
+        var x = 0
+        var y = 0
+        var rowHeight = 0
+        for (index in 0 until childCount) {
+            val child = getChildAt(index)
+            child.measure(MeasureSpec.makeMeasureSpec(width, MeasureSpec.AT_MOST), MeasureSpec.UNSPECIFIED)
+            if (x > 0 && x + child.measuredWidth > width) {
+                x = 0
+                y += rowHeight + gap
+                rowHeight = 0
+            }
+            x += child.measuredWidth + gap
+            rowHeight = maxOf(rowHeight, child.measuredHeight)
+        }
+        setMeasuredDimension(width, y + rowHeight)
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        val width = right - left
+        var x = 0
+        var y = 0
+        var rowHeight = 0
+        for (index in 0 until childCount) {
+            val child = getChildAt(index)
+            if (x > 0 && x + child.measuredWidth > width) {
+                x = 0
+                y += rowHeight + gap
+                rowHeight = 0
+            }
+            child.layout(x, y, x + child.measuredWidth, y + child.measuredHeight)
+            x += child.measuredWidth + gap
+            rowHeight = maxOf(rowHeight, child.measuredHeight)
+        }
+    }
 }

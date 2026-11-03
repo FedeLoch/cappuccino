@@ -25,7 +25,6 @@ import kotlin.math.max
 
 private const val ALL = "all"
 private const val DAY_MS = 24 * 60 * 60 * 1000L
-private const val WARMUP_SIZE = 2048
 private const val NARROW_DP = 600
 private const val PICK_REFERENCES = 42
 private const val TOUR_SEEN = "tourSeen"
@@ -253,15 +252,8 @@ class GalleryActivity : Activity() {
         val preferences = getSharedPreferences("studio", MODE_PRIVATE)
         val look = CompanionLook.valueOf(preferences.getString("mascot", null) ?: CompanionLook.COFFEE_DROP.name)
         val day = (System.currentTimeMillis() / DAY_MS).toInt()
-        val warmup = warmupFor(preferences.getString("warmupTopic", null), day)
-        warmupSheet(look, warmup) {
-            startActivity(
-                Intent(this, MainActivity::class.java)
-                    .putExtra(MainActivity.EXTRA_NAME, tr("Warm-up"))
-                    .putExtra(MainActivity.EXTRA_WIDTH, WARMUP_SIZE)
-                    .putExtra(MainActivity.EXTRA_HEIGHT, WARMUP_SIZE)
-                    .putExtra(MainActivity.EXTRA_WARMUP, "${tr(warmup.title)}. ${tr(warmup.steps)}"),
-            )
+        warmupPicker(look, warmupFor(preferences.getString("warmupTopic", null), day), null) { warmup ->
+            startActivity(MainActivity.warmupIntent(this, warmup))
         }
     }
 
