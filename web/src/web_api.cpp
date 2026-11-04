@@ -111,6 +111,11 @@ EMSCRIPTEN_KEEPALIVE void cap_read_layer_region(int id, int left, int top, int r
     renderer->readLayerRegion(id, {left, top, right, bottom}, pixels);
 }
 
+EMSCRIPTEN_KEEPALIVE void cap_read_layer(int id, void* pixels) { renderer->readLayer(id, pixels); }
+
+// The flattened color under a canvas point, as 0xRRGGBB-style packed bytes from the engine.
+EMSCRIPTEN_KEEPALIVE uint32_t cap_pick_color(int x, int y) { return renderer->pickColor(x, y); }
+
 EMSCRIPTEN_KEEPALIVE void cap_read_composite(int width, int height, void* pixels) {
     renderer->readComposite(width, height, pixels);
 }
@@ -224,7 +229,8 @@ EMSCRIPTEN_KEEPALIVE void cap_cancel_liquify() { renderer->cancelLiquify(); }
 EMSCRIPTEN_KEEPALIVE void cap_set_adjustment(int active) {
     renderer->setAdjustment(active != 0, points);
 }
-EMSCRIPTEN_KEEPALIVE void cap_commit_adjustment() { renderer->commitAdjustment(); }
+// A chained commit undoes together with the one before it.
+EMSCRIPTEN_KEEPALIVE void cap_commit_adjustment(int chained) { renderer->commitAdjustment(chained != 0); }
 
 // Previews a filter with the four values in cap_points() and a color.
 EMSCRIPTEN_KEEPALIVE void cap_set_filter(int active, int kind, float red, float green, float blue) {
@@ -232,6 +238,9 @@ EMSCRIPTEN_KEEPALIVE void cap_set_filter(int active, int kind, float red, float 
     renderer->setFilter(active != 0, kind, points, color);
 }
 EMSCRIPTEN_KEEPALIVE void cap_commit_filter() { renderer->commitFilter(); }
+
+// Sets the frames guide from cap_points(): left, top, right, bottom for each of count frames.
+EMSCRIPTEN_KEEPALIVE void cap_set_frames(int count) { renderer->setFrames(points, count * 4); }
 
 EMSCRIPTEN_KEEPALIVE void cap_set_view_options(int mode, int guide) {
     renderer->setViewOptions(mode, guide);
