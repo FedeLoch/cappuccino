@@ -6,35 +6,50 @@
 <meta name="color-scheme" content="dark">
 <title>Cappuccino</title>
 <link rel="icon" href="../icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500&display=swap">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <canvas id="canvas"></canvas>
+<canvas id="overlay"></canvas>
 
-<div id="bar" role="toolbar" aria-label="Brush">
-  <div class="group" role="radiogroup" aria-label="Tool">
-    <button class="tool" data-tool="ink" aria-pressed="true">Ink</button>
-    <button class="tool" data-tool="pencil" aria-pressed="false">Pencil</button>
-    <button class="tool" data-tool="eraser" aria-pressed="false">Eraser</button>
+<div id="left" class="pill">
+  <button class="icon" data-icon="gallery" data-action="projects" aria-label="Projects"></button>
+  <button class="icon" data-icon="actions" data-action="actions" aria-label="Actions"></button>
+  <button class="icon" data-icon="references" data-action="references" aria-label="References"></button>
+  <button class="icon" data-icon="view" data-action="view" aria-label="Art direction"></button>
+  <button class="icon" id="tools-button" data-icon="select" data-action="tools" aria-label="Tools"></button>
+</div>
+
+<div id="right" class="pill">
+  <button class="icon" id="brush-button" data-icon="brush" aria-label="Brushes"></button>
+  <button class="icon" id="eraser-button" data-icon="eraser" aria-label="Eraser"></button>
+  <button class="icon" data-icon="layers" data-action="layers" aria-label="Layers"></button>
+  <button id="color-button" class="swatch-button" aria-label="Color"><span></span></button>
+</div>
+
+<div id="sliders" class="pill vertical">
+  <div class="slider" id="size-slider" role="slider" tabindex="0" aria-label="Brush size" aria-valuemin="0" aria-valuemax="1000">
+    <div class="track"></div><div class="fill"></div><div class="thumb"></div>
   </div>
-  <label class="size" title="Size ( [ and ] )">
-    <input id="size" type="range" min="1" max="200" value="24" aria-label="Size">
-    <output id="size-value">24</output>
-  </label>
-  <div class="group" id="colors" role="radiogroup" aria-label="Color"></div>
-  <div class="group">
-    <button id="undo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>
-    </button>
-    <button id="redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/></svg>
-    </button>
-    <button id="stats-toggle" title="Pen stats" aria-label="Pen stats" aria-pressed="false">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
-    </button>
+  <div class="slider" id="opacity-slider" role="slider" tabindex="0" aria-label="Brush opacity" aria-valuemin="0" aria-valuemax="1000">
+    <div class="track"></div><div class="fill"></div><div class="thumb"></div>
   </div>
 </div>
 
+<div id="recent" class="pill vertical">
+  <button class="dot" aria-label="Use this color"></button>
+  <button class="dot" aria-label="Use this color"></button>
+  <button class="dot" aria-label="Use this color"></button>
+  <button class="dot" aria-label="Use this color"></button>
+</div>
+
+<canvas id="companion" role="button" aria-label="Companion"></canvas>
+
+<div id="panel" hidden><div id="panel-body"></div></div>
+<div id="toast" hidden></div>
 <pre id="stats" hidden></pre>
 <div id="message" hidden></div>
 

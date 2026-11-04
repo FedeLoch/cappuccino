@@ -28,9 +28,10 @@ em++ "${OPT[@]}" -std=c++20 -Wall -Wextra \
     -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 \
     -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB -sMAXIMUM_MEMORY=2GB \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createEngine -sENVIRONMENT=web \
-    -sEXPORTED_RUNTIME_METHODS=HEAPF32 \
+    -sEXPORTED_RUNTIME_METHODS=HEAPF32,HEAPU8 \
     -sSTACK_SIZE=1MB \
     -o "$OUT/engine.js"
 
-cp web/index.html web/app.js web/style.css "$OUT/"
+python3 web/tools/icons.py app/src/main/res/drawable "$OUT/icons.js"
+cp web/index.html web/style.css web/app.js web/brushes.js web/companion.js "$OUT/"
 echo "Built $OUT: $(du -sh "$OUT" | cut -f1)"

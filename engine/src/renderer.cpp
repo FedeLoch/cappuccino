@@ -1551,6 +1551,9 @@ void Renderer::drawScene(const float* matrix, int bufferWidth, int bufferHeight,
         const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
         glDisable(GL_SCISSOR_TEST);
         createTarget(bufferWidth, bufferHeight, viewTexture_, viewFbo_);
+#ifdef __EMSCRIPTEN__
+        glBindTexture(GL_TEXTURE_2D, 0);  // See the note after the filter pass below.
+#endif
         if (scissor) glEnable(GL_SCISSOR_TEST);
         viewWidth_ = bufferWidth;
         viewHeight_ = bufferHeight;
@@ -1569,6 +1572,11 @@ void Renderer::drawScene(const float* matrix, int bufferWidth, int bufferHeight,
     glBindVertexArray(canvasVao_);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
+#ifdef __EMSCRIPTEN__
+    // WebGL refuses any draw into viewFbo_ while its texture stays bound, even to an unused
+    // sampler, so the next frame's paper would go missing.
+    glBindTexture(GL_TEXTURE_2D, 0);
+#endif
     drawGuides(matrix);
     drawPerspective(matrix);
 }
