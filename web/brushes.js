@@ -23,6 +23,18 @@ export class JavaRandom {
   nextFloat() {
     return this.next(24) / (1 << 24);
   }
+  nextBoolean() {
+    return this.next(1) !== 0;
+  }
+  // Collections.shuffle(list, random), as Kotlin's shuffled(random) uses.
+  shuffled(items) {
+    const list = [...items];
+    for (let i = list.length - 1; i > 0; i--) {
+      const j = this.nextInt(i + 1);
+      [list[i], list[j]] = [list[j], list[i]];
+    }
+    return list;
+  }
   nextInt(bound) {
     if ((bound & -bound) === bound) return Number((BigInt(bound) * BigInt(this.next(31))) >> 31n);
     let bits, value;

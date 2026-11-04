@@ -33,7 +33,14 @@ let noteTimer = 0;
 let noteElement = null;
 
 // A small dark note at the top of the screen, with the companion beside it.
-export function say(message, { long = false, look = "coffee", color } = {}) {
+export function say(message, { long = false, look, color } = {}) {
+  if (!look) {
+    try {
+      look = JSON.parse(localStorage.getItem("cappuccino.mascot")) || "COFFEE_DROP";
+    } catch {
+      look = "COFFEE_DROP";
+    }
+  }
   noteElement?.remove();
   const face = h("canvas", { className: "note-face" });
   const note = h("div", { className: "note", role: "status" }, face, h("span", {}, message));

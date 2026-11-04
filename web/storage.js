@@ -315,6 +315,27 @@ export class ArtworkStore {
     return copy;
   }
 
+  // --- What the companion remembers, as snapshot.json and first-snapshot.json --------------------
+
+  async snapshot(doc) {
+    const text = await readText(doc.dir, "snapshot.json");
+    return text ? JSON.parse(text) : null;
+  }
+
+  async saveSnapshot(doc, snapshot) {
+    await writeFile(doc.dir, "snapshot.json", JSON.stringify(snapshot));
+  }
+
+  async firstSnapshot(doc) {
+    const text = await readText(doc.dir, "first-snapshot.json");
+    return text ? JSON.parse(text) : null;
+  }
+
+  async saveFirstSnapshot(doc, snapshot) {
+    if (await readFile(doc.dir, "first-snapshot.json")) return;
+    await writeFile(doc.dir, "first-snapshot.json", JSON.stringify(snapshot));
+  }
+
   // --- Loading and saving pixels ------------------------------------------------------------
 
   async load(id) {
