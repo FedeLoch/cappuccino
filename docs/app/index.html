@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="color-scheme" content="dark">
+<title>Cappuccino</title>
+<link rel="icon" href="../icon.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="canvas"></canvas>
+
+<div id="bar" role="toolbar" aria-label="Brush">
+  <div class="group" role="radiogroup" aria-label="Tool">
+    <button class="tool" data-tool="ink" aria-pressed="true">Ink</button>
+    <button class="tool" data-tool="pencil" aria-pressed="false">Pencil</button>
+    <button class="tool" data-tool="eraser" aria-pressed="false">Eraser</button>
+  </div>
+  <label class="size" title="Size ( [ and ] )">
+    <input id="size" type="range" min="1" max="200" value="24" aria-label="Size">
+    <output id="size-value">24</output>
+  </label>
+  <div class="group" id="colors" role="radiogroup" aria-label="Color"></div>
+  <div class="group">
+    <button id="undo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg>
+    </button>
+    <button id="redo" title="Redo (Ctrl+Shift+Z)" aria-label="Redo" disabled>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/></svg>
+    </button>
+    <button id="stats-toggle" title="Pen stats" aria-label="Pen stats" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+    </button>
+  </div>
+</div>
+
+<pre id="stats" hidden></pre>
+<div id="message" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
