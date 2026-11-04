@@ -395,6 +395,11 @@ void createTarget(int width, int height, GLuint& texture, GLuint& fbo) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
     glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
     glClear(GL_COLOR_BUFFER_BIT);
+#ifdef __EMSCRIPTEN__
+    // WebGL refuses any draw into a framebuffer while its texture stays bound to a texture unit,
+    // even one no sampler reads, so the new target's first draw would go missing.
+    glBindTexture(GL_TEXTURE_2D, 0);
+#endif
 }
 
 void multiply(const float* a, const float* b, float* out) {
@@ -1551,9 +1556,6 @@ void Renderer::drawScene(const float* matrix, int bufferWidth, int bufferHeight,
         const GLboolean scissor = glIsEnabled(GL_SCISSOR_TEST);
         glDisable(GL_SCISSOR_TEST);
         createTarget(bufferWidth, bufferHeight, viewTexture_, viewFbo_);
-#ifdef __EMSCRIPTEN__
-        glBindTexture(GL_TEXTURE_2D, 0);  // See the note after the filter pass below.
-#endif
         if (scissor) glEnable(GL_SCISSOR_TEST);
         viewWidth_ = bufferWidth;
         viewHeight_ = bufferHeight;

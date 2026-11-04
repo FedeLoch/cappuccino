@@ -20,7 +20,6 @@ namespace {
 constexpr int kMaxSamples = 1024;
 constexpr int kMaxPoints = 8192;
 constexpr int kSampleFloats = sizeof(Sample) / sizeof(float);
-constexpr int kLayer = 1;
 
 EMSCRIPTEN_WEBGL_CONTEXT_HANDLE context = 0;
 std::unique_ptr<Renderer> renderer;
@@ -43,7 +42,7 @@ extern "C" {
 
 // The page creates the WebGL 2 context first with the attributes it wants (desynchronized among
 // them, which Emscripten can't ask for), so this call picks up that same context.
-EMSCRIPTEN_KEEPALIVE int cap_init(int width, int height) {
+EMSCRIPTEN_KEEPALIVE int cap_init() {
     EmscriptenWebGLContextAttributes attributes;
     emscripten_webgl_init_context_attributes(&attributes);
     attributes.majorVersion = 2;
@@ -57,12 +56,54 @@ EMSCRIPTEN_KEEPALIVE int cap_init(int width, int height) {
     context = emscripten_webgl_create_context("#canvas", &attributes);
     if (context <= 0) return 0;
     emscripten_webgl_make_context_current(context);
+    return 1;
+}
+
+// Starts an empty artwork of this size, without layers, dropping the one before it.
+EMSCRIPTEN_KEEPALIVE void cap_open(int width, int height) {
+    renderer.reset();
     canvasWidth = width;
     canvasHeight = height;
     renderer = std::make_unique<Renderer>(width, height);
-    renderer->createLayer(kLayer);
-    renderer->setActiveLayer(kLayer);
+}
+
+EMSCRIPTEN_KEEPALIVE void cap_create_layer(int id) { renderer->createLayer(id); }
+EMSCRIPTEN_KEEPALIVE void cap_set_active_layer(int id) { renderer->setActiveLayer(id); }
+EMSCRIPTEN_KEEPALIVE void cap_set_layer_mask(int id, int maskId, int enabled) {
+    renderer->setLayerMask(id, maskId, enabled != 0);
+}
+EMSCRIPTEN_KEEPALIVE void cap_set_layer_properties(int id, float opacity, int visible, int blend,
+                                                   int clip) {
+    renderer->setLayerProperties(id, opacity, visible != 0,
+                                 static_cast<cappuccino::BlendMode>(blend), clip != 0);
+}
+EMSCRIPTEN_KEEPALIVE void cap_set_layer_order(const int* ids, int count) {
+    renderer->setLayerOrder(ids, count);
+}
+EMSCRIPTEN_KEEPALIVE void cap_mark_layer_dirty(int id) { renderer->markLayerDirty(id); }
+EMSCRIPTEN_KEEPALIVE void cap_write_layer(int id, const void* pixels) {
+    renderer->writeLayer(id, pixels);
+}
+
+// Writes what changed on a layer since the last call into rect as left, top, right, bottom,
+// and returns 0 when nothing did.
+EMSCRIPTEN_KEEPALIVE int cap_take_layer_dirty(int id, int* rect) {
+    const cappuccino::Rect dirty = renderer->takeLayerDirty(id);
+    if (dirty.empty()) return 0;
+    rect[0] = dirty.left;
+    rect[1] = dirty.top;
+    rect[2] = dirty.right;
+    rect[3] = dirty.bottom;
     return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE void cap_read_layer_region(int id, int left, int top, int right, int bottom,
+                                                void* pixels) {
+    renderer->readLayerRegion(id, {left, top, right, bottom}, pixels);
+}
+
+EMSCRIPTEN_KEEPALIVE void cap_read_composite(int width, int height, void* pixels) {
+    renderer->readComposite(width, height, pixels);
 }
 
 EMSCRIPTEN_KEEPALIVE float* cap_samples() { return &samples[0].x; }
@@ -159,8 +200,13 @@ EMSCRIPTEN_KEEPALIVE void cap_set_view_options(int mode, int guide) {
     renderer->setViewOptions(mode, guide);
 }
 
-EMSCRIPTEN_KEEPALIVE void cap_set_symmetry(int mode) {
-    renderer->setSymmetry(mode, canvasWidth / 2.0f, canvasHeight / 2.0f);
+// Mirrors strokes around (x, y), or around the middle of the canvas when x is negative.
+EMSCRIPTEN_KEEPALIVE void cap_set_symmetry(int mode, float x, float y) {
+    if (x < 0) {
+        x = canvasWidth / 2.0f;
+        y = canvasHeight / 2.0f;
+    }
+    renderer->setSymmetry(mode, x, y);
 }
 
 }  // extern "C"

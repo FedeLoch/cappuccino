@@ -1,20 +1,23 @@
 # Cappuccino on the web
 
-The Android app's drawing screen in the browser: the C++ engine from `engine/src/` compiled to
-WebAssembly on WebGL 2, with the same toolbars, sliders, panels, icons, and companion as
-`MainActivity.showChrome()`. It's meant for friends who draw on Windows with Wacom, XP-Pen, or
-Huion tablets.
+The Android app in the browser: the home screen from `GalleryActivity` and the drawing screen from
+`MainActivity`, over the C++ engine from `engine/src/` compiled to WebAssembly on WebGL 2. It's
+meant for friends who draw on Windows with Wacom, XP-Pen, or Huion tablets. The site's
+"Use it online" buttons open it at `/app/`.
 
 The engine sources are shared with the Android app, not copied. The only engine change is two
 `glBindTexture(GL_TEXTURE_2D, 0)` calls behind `#ifdef __EMSCRIPTEN__` in `renderer.cpp`: WebGL
-refuses to draw into a framebuffer while its texture is bound to any texture unit, which broke the
-Gray, values, and Print views. The icons are generated from the Android vector drawables at build
-time. Everything web-only lives here:
+refuses to draw into a framebuffer while its texture is bound to any texture unit, which broke
+the paper in the Gray, values, and Print views and in saved thumbnails. The icons are generated
+from the Android vector drawables at build time. Everything web-only lives here:
 
 | File | What it is |
 | --- | --- |
 | `src/web_api.cpp` | A small C API over `Renderer`, the web counterpart of `app/src/main/cpp/jni.cpp` |
-| `index.html`, `style.css`, `app.js` | The drawing screen: canvas, toolbars, panels, pointer input |
+| `index.html`, `style.css`, `app.js` | The page, and the drawing screen: canvas, toolbars, panels, pointer input, saving |
+| `home.js` | The home screen and its sheets, from `GalleryActivity.kt` and `ArtworkSheets.kt` |
+| `storage.js` | Reads and writes artworks in the Android format, in a folder or in the browser |
+| `ui.js` | The DOM builder, the companion's notes, and the cream sheets |
 | `brushes.js` | The built-in brushes and erasers from `BrushKind` in `Model.kt`, tips included |
 | `companion.js` | The paint drop companion from `CompanionView.kt` |
 | `tools/icons.py` | Turns `app/src/main/res/drawable/ic_*.xml` into `icons.js` |
@@ -41,11 +44,39 @@ python3 -m http.server 4173 --directory docs
 
 Then open <http://localhost:4173/app/>. Add `?stats` for the pen stats panel, or press `` ` ``.
 
+## Where artworks are saved
+
+Choose a folder on your computer and every artwork is saved there as you draw. The first New
+artwork asks, and **Backup** on the home screen lets you change it later. This uses the File
+System Access API, so it needs Chrome or Edge; other browsers keep artworks in the browser's own
+storage. After a reload the browser asks once for permission to open the folder again.
+
+The folder has the same layout and formats as the Android app's storage and its backup zip:
+
+```
+projects.json
+artworks/<id>/manifest.json, manifest.prev.json, thumbnail.png, preview.jpg, pack-<n>.bin
+```
+
+Layers are 256 px RGBA tiles compressed with zlib, packed into `pack-<n>.bin` files. A save writes
+only the tiles that changed, 2.5 seconds after the last edit as on Android, and again with a
+preview when you go back home. So an unzipped Android backup can be chosen as the folder, and the
+folder can be zipped into a backup for Android. Neither direction has been tried with a real
+Android backup yet.
+
 ## What works
 
-The screen is laid out as on Android, in the same sizes (one dp is one CSS pixel) and colors.
+The home screen is laid out as on Android: the wordmark with Backup, Import PSD, and New
+artwork; the companion's greeting; Continue on the latest artwork; your sketchbooks; and Recent,
+with search from six artworks. Sketchbooks open to their own cover and grid. New artwork has the
+same canvas presets, orientation, custom size, name, and sketchbook. Each artwork's ··· menu
+continues, renames, moves, duplicates, makes a variation, or deletes it. Right-click does what a
+long press does on Android. Artworks with several layers, masks, and groups open and save with
+all of them, though the web has no layer panel yet.
 
-- **Top left**: Projects, Actions, References, Art direction, and Tools. Art direction has the
+The drawing screen is laid out as on Android, in the same sizes (one dp is one CSS pixel) and colors.
+
+- **Top left**: Projects (saves and goes home), Actions, References, Art direction, and Tools. Art direction has the
   Color, Gray, 2 values, 3 values, and Print views, the composition guides, symmetry, and Flip
   canvas. Tools has Smudge, Fill, Gradient, and Lasso fill.
 - **Top right**: Brushes, Eraser, Layers, and the color swatch. The Brushes panel has the Sketch,
@@ -67,8 +98,8 @@ The screen is laid out as on Android, in the same sizes (one dp is one CSS pixel
 
 ## Not yet
 
-- Projects, Actions, References, and Layers open a "coming soon" panel. Layers, saving to browser
-  storage, and importing Android backups are step 2.
+- Actions, References, and Layers open a "coming soon" panel. Import PSD, Warm up, sketchbook
+  references, backup files, and the language choice say they're coming soon.
 - The companion's notes and warm-ups (step 3). Tapping it shows a short note for now.
 - Lasso and Magic wand selection, the perspective, light, and figure guides, Snap shapes, custom
   brushes, the CMYK picker, palettes from artwork or references, and two-finger rotation.

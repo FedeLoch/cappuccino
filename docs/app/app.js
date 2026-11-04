@@ -13,10 +13,14 @@ import {
   isTool, javaHash, stampFlow,
 } from "./brushes.js";
 import { Companion } from "./companion.js";
+import { h, say as sayNote, svg } from "./ui.js";
+import { Home } from "./home.js";
+import {
+  ArtworkStore, PREVIEW_WIDTH, THUMBNAIL_WIDTH, TILE_SIZE, previewHeight, thumbnailHeight,
+} from "./storage.js";
 
 // The defaults and limits from Model.kt and MainActivity.kt.
-const CANVAS_WIDTH = 4096;
-const CANVAS_HEIGHT = 2732;
+const AUTOSAVE_DELAY_MS = 2500;
 const MIN_BRUSH = 4;
 const MAX_BRUSH = 300;
 const KEY_SIZE_STEP = 1.2;
@@ -41,7 +45,8 @@ const overlay = document.getElementById("overlay");
 const overlayContext = overlay.getContext("2d");
 const panel = document.getElementById("panel");
 const panelBody = document.getElementById("panel-body");
-const toast = document.getElementById("toast");
+const studioView = document.getElementById("studio");
+const homeView = document.getElementById("home");
 const statsBox = document.getElementById("stats");
 const message = document.getElementById("message");
 
@@ -60,7 +65,7 @@ const gl = canvas.getContext("webgl2", {
 if (!gl) fail("This browser doesn't support WebGL 2.");
 
 const engine = await createEngine();
-if (!engine._cap_init(CANVAS_WIDTH, CANVAS_HEIGHT)) fail("Couldn't start the drawing engine.");
+if (!engine._cap_init()) fail("Couldn't start the drawing engine.");
 
 const SAMPLE_FLOATS = engine._cap_sample_floats();
 const MAX_SAMPLES = engine._cap_max_samples();
@@ -123,6 +128,9 @@ function pressureGamma(kind) {
 
 // --- View --------------------------------------------------------------------------------------
 
+let canvasWidth = 4096;
+let canvasHeight = 2732;
+let opened = false;  // Whether the engine holds an artwork yet.
 let dpr = 1;
 let zoom = 1;
 let flipped = false;
@@ -152,10 +160,10 @@ function toCanvasY(y) {
 }
 
 function fitView() {
-  zoom = Math.min(canvas.width / CANVAS_WIDTH, canvas.height / CANVAS_HEIGHT) * 0.95;
+  zoom = Math.min(canvas.width / canvasWidth, canvas.height / canvasHeight) * 0.95;
   flipped = false;
-  panX = (canvas.width - CANVAS_WIDTH * zoom) / 2;
-  panY = (canvas.height - CANVAS_HEIGHT * zoom) / 2;
+  panX = (canvas.width - canvasWidth * zoom) / 2;
+  panY = (canvas.height - canvasHeight * zoom) / 2;
   writeView();
   queueCompose();
 }
@@ -184,8 +192,8 @@ function resize() {
   const first = canvas.width === 300 && canvas.height === 150;
   if (!first) {
     // Keeps the same part of the canvas in the middle at the same share of the screen.
-    const before = Math.min(canvas.width / CANVAS_WIDTH, canvas.height / CANVAS_HEIGHT);
-    const after = Math.min(width / CANVAS_WIDTH, height / CANVAS_HEIGHT);
+    const before = Math.min(canvas.width / canvasWidth, canvas.height / canvasHeight);
+    const after = Math.min(width / canvasWidth, height / canvasHeight);
     const scale = after / before;
     panX = width / 2 + (panX - canvas.width / 2) * scale;
     panY = height / 2 + (panY - canvas.height / 2) * scale;
@@ -211,6 +219,7 @@ function queueCompose() {
 function composeNow() {
   if (!composeQueued && arguments.length > 0) return;
   composeQueued = false;
+  if (!opened) return;
   const start = performance.now();
   engine._cap_compose();
   composeIndex = record(composeTimes, composeIndex, performance.now() - start);
@@ -430,6 +439,7 @@ function endStroke() {
   // The lift itself carries no pressure on most pens, so it only closes the stroke.
   engine._cap_draw(0, 0, 1);
   strokePointer = -1;
+  markUnsaved();
   queueCompose();  // Clears any predicted ink left past the real end.
 }
 
@@ -489,6 +499,7 @@ function drawLasso() {
 function endToolGesture(cancelled) {
   const gesture = toolGesture;
   toolGesture = null;
+  if (!cancelled) markUnsaved();
   if (gesture.kind.mode === "gradient") {
     if (cancelled) {
       engine._cap_set_gradient(0, 0, 0, 0, 0, 0, 0, 0);
@@ -526,6 +537,7 @@ function capture(event) {
 }
 
 canvas.addEventListener("pointerdown", (event) => {
+  if (!ready) return;
   lastPointerType = event.pointerType;
   closePanel();
   if (event.pointerType === "touch") {
@@ -560,6 +572,7 @@ canvas.addEventListener("pointerdown", (event) => {
     engine._cap_fill_at(Math.floor(toCanvasX(event.clientX * dpr)), Math.floor(toCanvasY(event.clientY * dpr)),
       rgb[0], rgb[1], rgb[2]);
     queueCompose();
+    markUnsaved();
     return;
   }
   if (kind.mode === "gradient" || kind.mode === "lasso") {
@@ -686,20 +699,21 @@ document.addEventListener("contextmenu", (event) => event.preventDefault());
 // --- History -----------------------------------------------------------------------------------
 
 function undo() {
-  if (strokePointer !== -1) return;
-  engine._cap_undo();
+  if (strokePointer !== -1 || !ready) return;
+  if (engine._cap_undo()) markUnsaved();
   queueCompose();
 }
 
 function redo() {
-  if (strokePointer !== -1) return;
-  engine._cap_redo();
+  if (strokePointer !== -1 || !ready) return;
+  if (engine._cap_redo()) markUnsaved();
   queueCompose();
 }
 
 // --- Keyboard, as MainActivity.onKeyDown ------------------------------------------------------
 
 window.addEventListener("keydown", (event) => {
+  if (studioView.hidden || !ready) return;
   if (event.target instanceof HTMLInputElement) return;
   const command = event.ctrlKey || event.metaKey;
   const key = event.key.toLowerCase();
@@ -738,6 +752,7 @@ window.addEventListener("keydown", (event) => {
 });
 
 window.addEventListener("keyup", (event) => {
+  if (studioView.hidden) return;
   if (event.key === " ") {
     spaceHeld = false;
     if (panPointer === -1) canvas.style.cursor = "";
@@ -779,7 +794,7 @@ colorButton.addEventListener("click", () => {
 for (const button of document.querySelectorAll("[data-action]")) {
   const action = button.dataset.action;
   button.addEventListener("click", () => {
-    if (action === "projects") say("Projects come to the web soon");
+    if (action === "projects") leaveStudio();
     else if (action === "view") togglePanel("view", viewPanel);
     else if (action === "tools") togglePanel("tools", toolsPanel);
     else togglePanel(action, () => comingPanel(button.getAttribute("aria-label")));
@@ -930,28 +945,6 @@ function closePanel() {
   panel.hidden = true;
   panelKey = "";
   panelBuilder = null;
-}
-
-// A small DOM builder: h("div", {className: "row"}, child, "text").
-function h(tag, props = {}, ...children) {
-  const element = document.createElement(tag);
-  for (const [name, value] of Object.entries(props)) {
-    if (name.startsWith("on")) element.addEventListener(name.slice(2).toLowerCase(), value);
-    else if (name === "style") Object.assign(element.style, value);
-    else if (name in element) element[name] = value;
-    else element.setAttribute(name, value);
-  }
-  for (const child of children.flat()) {
-    if (child === null || child === undefined || child === false) continue;
-    element.append(child instanceof Node ? child : document.createTextNode(String(child)));
-  }
-  return element;
-}
-
-function svg(name) {
-  const holder = document.createElement("span");
-  holder.innerHTML = ICONS[name];
-  return holder.firstElementChild;
 }
 
 const gap = (element) => {
@@ -1193,7 +1186,12 @@ function viewPanel() {
     gap(h("div", { className: "small" }, "Symmetry")),
     segmented(["Off", "↔", "↕", "✛", "✺"], symmetry, (index) => {
       symmetry = index;
-      engine._cap_set_symmetry(index);
+      engine._cap_set_symmetry(index, -1, -1);
+      if (doc) {
+        doc.manifest.symmetry = index;
+        doc.manifest.symmetryCenter = [canvasWidth / 2, canvasHeight / 2];
+        markUnsaved();
+      }
       queueCompose();
       rerender();
     }),
@@ -1455,19 +1453,203 @@ panelObserver.observe(panel, { attributes: true, attributeFilter: ["class"] });
 
 // --- Messages ----------------------------------------------------------------------------------
 
-let toastTimer = 0;
-
-function say(text) {
-  toast.textContent = text;
-  toast.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { toast.hidden = true; }, 2000);
+// Notes come from the studio's companion, in the brush color, as on Android.
+function say(text, long = false) {
+  sayNote(text, { long, look: "paint", color });
 }
 
 function fail(text) {
   message.textContent = text;
   message.hidden = false;
   throw new Error(text);
+}
+
+// --- Artworks: opening, saving, and going home, as MainActivity -------------------------------
+
+let store = null;
+let waitingFolder = null;
+let home = null;
+let doc = null;  // The open artwork: {id, dir, manifest, width, height, fresh}.
+let ready = false;
+let unsaved = false;
+let previewStale = false;
+let saveTimer = 0;
+let saving = Promise.resolve();
+const rectPointer = engine._malloc(16);
+
+function markUnsaved() {
+  if (!doc) return;
+  unsaved = true;
+  previewStale = true;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(autosave, AUTOSAVE_DELAY_MS);
+}
+
+function autosave() {
+  // Waits for the pen to lift, so saving never lands in the middle of a stroke.
+  if (strokePointer !== -1) {
+    saveTimer = setTimeout(autosave, AUTOSAVE_DELAY_MS);
+    return;
+  }
+  save(false);
+}
+
+async function encodeComposite(width, height, type) {
+  const size = width * height * 4;
+  const pointer = engine._malloc(size);
+  engine._cap_read_composite(width, height, pointer);
+  const pixels = new Uint8ClampedArray(engine.HEAPU8.buffer, pointer, size).slice();
+  engine._free(pointer);
+  const surface = new OffscreenCanvas(width, height);
+  surface.getContext("2d").putImageData(new ImageData(pixels, width, height), 0, 0);
+  return surface.convertToBlob(type === "image/jpeg" ? { type, quality: 0.92 } : { type });
+}
+
+// Reads every layer's changes now, while the engine holds them, then writes in the background.
+function save(withPreview) {
+  if (!doc) return saving;
+  const target = doc;
+  const regions = new Map();
+  for (const layer of target.manifest.layers) {
+    for (const id of [layer.id, layer.mask || 0]) {
+      if (!id || !engine._cap_take_layer_dirty(id, rectPointer)) continue;
+      const rect = engine.HEAP32.subarray(rectPointer >> 2, (rectPointer >> 2) + 4);
+      const left = Math.floor(rect[0] / TILE_SIZE) * TILE_SIZE;
+      const top = Math.floor(rect[1] / TILE_SIZE) * TILE_SIZE;
+      const right = Math.min(target.width, Math.ceil(rect[2] / TILE_SIZE) * TILE_SIZE);
+      const bottom = Math.min(target.height, Math.ceil(rect[3] / TILE_SIZE) * TILE_SIZE);
+      const size = (right - left) * (bottom - top) * 4;
+      const pointer = engine._malloc(size);
+      engine._cap_read_layer_region(id, left, top, right, bottom, pointer);
+      regions.set(id, { left, top, width: right - left, height: bottom - top, pixels: engine.HEAPU8.slice(pointer, pointer + size) });
+      engine._free(pointer);
+    }
+  }
+  const thumbnail = encodeComposite(THUMBNAIL_WIDTH, thumbnailHeight(target.width, target.height), "image/png");
+  const preview = withPreview ? encodeComposite(PREVIEW_WIDTH, previewHeight(target.width, target.height), "image/jpeg") : null;
+  unsaved = false;
+  if (withPreview) previewStale = false;
+  target.fresh = false;
+  companion.setMood("thinking");
+  const saveStore = store;
+  saving = saving.then(async () => {
+    await saveStore.save(target, regions, await thumbnail, preview && await preview);
+  }).catch((error) => {
+    console.error(error);
+    // Those changes never reached disk, so the next save has to include them.
+    if (doc === target) {
+      for (const id of regions.keys()) engine._cap_mark_layer_dirty(id);
+      unsaved = true;
+    }
+    say("Couldn't save your artwork", true);
+  }).finally(() => companion.setMood("idle"));
+  return saving;
+}
+
+// Puts an artwork in the engine: its layers bottom first, their masks, and their settings.
+async function openDocument(next) {
+  ready = false;
+  doc = next;
+  canvasWidth = next.width;
+  canvasHeight = next.height;
+  showStudio();
+  engine._cap_open(canvasWidth, canvasHeight);
+  opened = true;
+  fitView();
+  const manifest = next.manifest;
+  const groups = new Map((manifest.groups || []).map((group) => [group.id, group]));
+  const size = canvasWidth * canvasHeight * 4;
+  const pixels = new Uint8Array(size);
+  const pointer = engine._malloc(size);
+  const ids = [];
+  try {
+    for (const layer of manifest.layers) {
+      engine._cap_create_layer(layer.id);
+      ids.push(layer.id);
+      if (!next.fresh && await store.readLayer(next, layer.tiles, layer.file, pixels)) {
+        engine.HEAPU8.set(pixels, pointer);
+        engine._cap_write_layer(layer.id, pointer);
+      }
+      if (layer.mask) {
+        engine._cap_create_layer(layer.mask);
+        engine._cap_set_layer_mask(layer.id, layer.mask, layer.maskEnabled === false ? 0 : 1);
+        if (await store.readLayer(next, layer.maskTiles, layer.maskFile, pixels)) {
+          engine.HEAPU8.set(pixels, pointer);
+          engine._cap_write_layer(layer.mask, pointer);
+        }
+      }
+      // Older Android artworks move to tiles on their next save, all at once.
+      if (!layer.tiles) engine._cap_mark_layer_dirty(layer.id);
+      if (layer.mask && !layer.maskTiles) engine._cap_mark_layer_dirty(layer.mask);
+      const group = groups.get(layer.group);
+      engine._cap_set_layer_properties(layer.id, layer.opacity * (group ? group.opacity : 1),
+        layer.visible && (!group || group.visible) ? 1 : 0, layer.blend || 0, layer.clip ? 1 : 0);
+    }
+  } catch (error) {
+    console.error(error);
+    say("Part of this artwork couldn't be read", true);
+  } finally {
+    engine._free(pointer);
+  }
+  engine._cap_set_active_layer(manifest.activeLayer || ids[0]);
+  symmetry = manifest.symmetry || 0;
+  const center = manifest.symmetryCenter && manifest.symmetryCenter.length === 2 ? manifest.symmetryCenter : [-1, -1];
+  engine._cap_set_symmetry(symmetry, center[0], center[1]);
+  viewMode = 0;
+  guide = 0;
+  engine._cap_set_view_options(0, 0);
+  unsaved = false;
+  previewStale = !!next.fresh;
+  queueCompose();
+  ready = true;
+}
+
+async function openArtwork(id) {
+  const loaded = await store.load(id).catch(() => null);
+  if (!loaded) {
+    sayNote("Couldn't open that artwork", { long: true });
+    return;
+  }
+  await openDocument(loaded);
+}
+
+async function newArtwork(width, height, name, projectId) {
+  await openDocument(await store.create(name, projectId, width, height));
+  markUnsaved();
+}
+
+function showStudio() {
+  homeView.hidden = true;
+  studioView.hidden = false;
+  closePanel();
+  placeRecentStrip();
+  placeCompanion();
+  companion.resize();
+  selectTool(brush);
+}
+
+async function leaveStudio() {
+  if (!ready) return;
+  ready = false;
+  closePanel();
+  clearTimeout(saveTimer);
+  if (unsaved || previewStale || doc?.fresh) save(true);
+  await saving;
+  doc = null;
+  studioView.hidden = true;
+  homeView.hidden = false;
+  await home.render();
+}
+
+window.addEventListener("beforeunload", (event) => {
+  if (!doc || !(unsaved || previewStale)) return;
+  save(true);
+  event.preventDefault();
+});
+
+function setStore(next, waiting) {
+  store = next;
+  waitingFolder = waiting;
 }
 
 // --- Start -------------------------------------------------------------------------------------
@@ -1478,11 +1660,23 @@ window.addEventListener("resize", () => {
   placeCompanion();
 });
 resize();
-placeRecentStrip();
-placeCompanion();
 setColor(color);
 selectTool(brush);
 showRecentColors();
 setStats(statsOn);
+
+({ store, waiting: waitingFolder } = await ArtworkStore.open());
+home = new Home(homeView, {
+  get store() { return store; },
+  get waiting() { return waitingFolder; },
+  setStore,
+  openArtwork,
+  newArtwork,
+});
+await home.render();
+window.addEventListener("resize", () => {
+  if (!homeView.hidden) home.render();
+});
+
 // Exposed for checking the page from the console and from automated tests.
-window.cappuccino = { engine, fitView, undo, redo, selectTool, setColor };
+window.cappuccino = { engine, fitView, undo, redo, selectTool, setColor, leaveStudio, get store() { return store; } };

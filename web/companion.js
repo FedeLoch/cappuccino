@@ -1,13 +1,18 @@
-// The paint drop companion, drawn as CompanionView in
-// app/src/main/java/art/cappuccino/paint/CompanionView.kt draws its PAINT_DROP look.
+// The companion, drawn as CompanionView in app/src/main/java/art/cappuccino/paint/CompanionView.kt
+// draws its PAINT_DROP look in the studio and its COFFEE_DROP look on the home screen.
 
 const CREAM = "#F1EFE8";
 const INK = "#2C2C2A";
+const COFFEE = "#6B4226";
 const BLINK_EVERY_MS = 4200;
 const BLINK_MS = 140;
 
 const DROP = new Path2D(
   "M0,-50C0,-50 -34,-8 -34,14C-34,36 -18,46 0,46C18,46 34,36 34,14C34,-8 0,-50 0,-50Z",
+);
+
+const FOAM_CAP = new Path2D(
+  "M-40,-60L40,-60L40,-15L24,-15Q17,-2 9,-12Q2,3 -7,-11Q-15,-3 -24,-15L-40,-15Z",
 );
 
 function luminance(hex) {
@@ -20,18 +25,20 @@ function luminance(hex) {
 }
 
 export class Companion {
-  constructor(canvas) {
+  constructor(canvas, { look = "paint", outline = CREAM, blink = true } = {}) {
     this.canvas = canvas;
     this.context = canvas.getContext("2d");
+    this.look = look;
+    this.outline = outline;
     this.bodyColor = INK;
     this.mood = "idle";
     this.blinking = false;
-    const blink = () => {
+    const blinkNow = () => {
       this.blinking = !this.blinking;
       this.draw();
-      setTimeout(blink, this.blinking ? BLINK_MS : BLINK_EVERY_MS);
+      setTimeout(blinkNow, this.blinking ? BLINK_MS : BLINK_EVERY_MS);
     };
-    setTimeout(blink, BLINK_EVERY_MS);
+    if (blink) setTimeout(blinkNow, BLINK_EVERY_MS);
     this.resize();
   }
 
@@ -62,9 +69,22 @@ export class Companion {
     c.scale(width / 120, width / 120);
     c.lineWidth = 3.5;
     c.lineCap = "round";
+    if (this.look === "coffee") {
+      c.fillStyle = COFFEE;
+      c.fill(DROP);
+      c.save();
+      c.clip(DROP);
+      c.fillStyle = CREAM;
+      c.fill(FOAM_CAP);
+      c.restore();
+      c.strokeStyle = this.outline;
+      c.stroke(DROP);
+      this.drawFace(14, CREAM);
+      return;
+    }
     c.fillStyle = this.bodyColor;
     c.fill(DROP);
-    c.strokeStyle = CREAM;
+    c.strokeStyle = this.outline;
     c.stroke(DROP);
     this.drawFace(10, luminance(this.bodyColor) > 0.35 ? INK : CREAM);
   }
