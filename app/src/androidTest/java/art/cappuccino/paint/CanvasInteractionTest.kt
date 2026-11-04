@@ -542,6 +542,19 @@ class CanvasInteractionTest {
     }
 
     @Test
+    fun separateStrokesStaySeparate() {
+        onStudio { it.setColor(Color.BLACK) }
+        val top = height * 0.35f
+        val bottom = height * 0.6f
+        stroke(width * 0.2f, top, width * 0.4f, top)
+        settle()
+        stroke(width * 0.6f, bottom, width * 0.8f, bottom)
+        settle()
+        assertTrue("both strokes should be there", hasInk(width * 0.3f, top) && hasInk(width * 0.7f, bottom))
+        assertFalse("nothing should join the end of one stroke to the start of the next", hasInk(width * 0.5f, (top + bottom) / 2f))
+    }
+
+    @Test
     fun cutToLayerMovesPixelsAndUndoRestoresThem() {
         val y = height / 2f
         stroke(width * 0.2f, y, width * 0.8f, y)
