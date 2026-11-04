@@ -486,6 +486,41 @@ export class ArtworkStore {
     for (const name of unused) await remove(dir, name);
   }
 
+  // Saves an exported file: into Exports in the chosen folder, or as a download from the browser.
+  // Returns where it went, for the companion to say.
+  async saveExport(fileName, blob) {
+    if (this.folderName) {
+      const exports = await directory(this.root, "Exports");
+      await writeFile(exports, fileName, blob);
+      return `${this.folderName}/Exports`;
+    }
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = fileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    return "your downloads";
+  }
+
+  // Turns a read PSD into an artwork, its layers bottom first, as ArtworkStore.importPsd() does.
+  async importPsd(image, name, projectId, thumbnail) {
+    const doc = await this.create(name, projectId, image.width, image.height);
+    const base = doc.manifest.layers[0];
+    doc.manifest.layers = image.layers.map((layer, index) => ({
+      ...base, id: index + 1, name: layer.name, opacity: layer.opacity, visible: layer.visible,
+      blend: layer.blend, clip: layer.clipped, group: layer.group,
+    }));
+    doc.manifest.groups = image.groups.map((group, index) => ({ id: index + 1, name: group, visible: true, opacity: 1, collapsed: false }));
+    doc.manifest.nextGroupId = image.groups.length + 1;
+    doc.manifest.activeLayer = image.layers.length;
+    doc.manifest.nextLayerId = image.layers.length + 1;
+    const regions = new Map(image.layers.map((layer, index) => [index + 1, { left: 0, top: 0, width: image.width, height: image.height, pixels: layer.rgba }]));
+    await this.save(doc, regions, thumbnail, null);
+    return doc.id;
+  }
+
   // A new artwork's folder and manifest, as MainActivity.openDocument() starts one.
   async create(name, projectId, width, height) {
     const id = crypto.randomUUID();

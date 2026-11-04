@@ -10,6 +10,8 @@ import {
 import { ArtworkStore, canChooseFolder } from "./storage.js";
 import { WARMUPS, WARMUP_GROUPS, warmupFor } from "./warmups.js";
 import { WarmupLayout, drawWarmupGuide } from "./practice.js";
+import { readPsd } from "./psd.js";
+import { THUMBNAIL_WIDTH, thumbnailHeight } from "./storage.js";
 
 const ALL = "all";
 const NARROW = 600;
@@ -78,7 +80,7 @@ export class Home {
     const narrow = window.innerWidth < NARROW;
     const buttons = h("div", { className: "home-buttons" },
       creamChip("Backup", false, () => this.backupOptions()),
-      creamChip("Import PSD", false, () => say("Importing PSD files comes to the web soon")),
+      creamChip("Import PSD", false, () => this.pickPsd()),
       accentChip("New artwork", () => this.showNewArtwork()));
     return h("div", { className: narrow ? "home-header narrow" : "home-header" },
       h("div", { className: "wordmark" }, "Cappuccino"), buttons);
@@ -109,6 +111,26 @@ export class Home {
       creamChip("Warm up", false, () => this.offerWarmup()));
     requestAnimationFrame(() => new Companion(face, { look: mascot(), outline: COCOA }));
     return row;
+  }
+
+  pickPsd() {
+    const input = h("input", { type: "file", accept: ".psd,image/vnd.adobe.photoshop" });
+    input.addEventListener("change", async () => {
+      const file = input.files[0];
+      if (!file) return;
+      const project = this.selected === ALL ? "" : this.selected;
+      say("Importing PSD");
+      try {
+        const image = readPsd(await file.arrayBuffer());
+        if (image.width > MAX_CANVAS_SIDE || image.height > MAX_CANVAS_SIDE) throw new Error("too large");
+        await this.store.importPsd(image, "Imported PSD", project, await psdThumbnail(image));
+      } catch (error) {
+        console.error(error);
+        say("Couldn't import this PSD. Use an 8-bit RGB file.", { long: true });
+      }
+      this.render();
+    });
+    input.click();
   }
 
   offerWarmup() {
@@ -663,4 +685,31 @@ export function warmupPicker(look, suggested, current, pick) {
   body.append(h("div", { className: "end gap18" }, creamChip("Not now", false, () => close())));
   close = sheet(body);
   requestAnimationFrame(() => new Companion(face, { look }));
+}
+
+// A small flattened picture of a PSD's visible layers on white, for its card.
+async function psdThumbnail(image) {
+  const width = THUMBNAIL_WIDTH;
+  const height = thumbnailHeight(image.width, image.height);
+  const surface = new OffscreenCanvas(width, height);
+  const c = surface.getContext("2d");
+  c.fillStyle = "#FFFFFF";
+  c.fillRect(0, 0, width, height);
+  const page = new OffscreenCanvas(image.width, image.height);
+  const pageContext = page.getContext("2d");
+  for (const layer of image.layers.filter((it) => it.visible)) {
+    const pixels = new Uint8ClampedArray(layer.rgba.length);
+    for (let i = 0; i < pixels.length; i += 4) {
+      const alpha = layer.rgba[i + 3];
+      const scale = alpha ? 255 / alpha : 0;
+      pixels[i] = layer.rgba[i] * scale;
+      pixels[i + 1] = layer.rgba[i + 1] * scale;
+      pixels[i + 2] = layer.rgba[i + 2] * scale;
+      pixels[i + 3] = alpha;
+    }
+    pageContext.putImageData(new ImageData(pixels, image.width, image.height), 0, 0);
+    c.globalAlpha = layer.opacity;
+    c.drawImage(page, 0, 0, width, height);
+  }
+  return surface.convertToBlob({ type: "image/png" });
 }
