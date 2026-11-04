@@ -81,6 +81,15 @@ EMSCRIPTEN_KEEPALIVE void cap_set_layer_order(const int* ids, int count) {
     renderer->setLayerOrder(ids, count);
 }
 EMSCRIPTEN_KEEPALIVE void cap_mark_layer_dirty(int id) { renderer->markLayerDirty(id); }
+EMSCRIPTEN_KEEPALIVE void cap_delete_layer(int id) { renderer->deleteLayer(id); }
+EMSCRIPTEN_KEEPALIVE void cap_duplicate_layer(int id, int newId) { renderer->duplicateLayer(id, newId); }
+EMSCRIPTEN_KEEPALIVE void cap_merge_layer_down(int id, int belowId) { renderer->mergeLayerDown(id, belowId); }
+EMSCRIPTEN_KEEPALIVE void cap_create_mask(int id, int maskId) { renderer->createMask(id, maskId); }
+EMSCRIPTEN_KEEPALIVE void cap_apply_mask(int id) { renderer->applyMask(id); }
+EMSCRIPTEN_KEEPALIVE void cap_clear_selection() { renderer->clearSelection(); }
+EMSCRIPTEN_KEEPALIVE void cap_read_layer_thumbnail(int id, int width, int height, void* pixels) {
+    renderer->readLayerThumbnail(id, width, height, pixels);
+}
 EMSCRIPTEN_KEEPALIVE void cap_write_layer(int id, const void* pixels) {
     renderer->writeLayer(id, pixels);
 }
@@ -131,7 +140,8 @@ EMSCRIPTEN_KEEPALIVE void cap_begin_stroke(float diameter, float red, float gree
                                            float pressureFlow, float hardness, float grain,
                                            int eraser, int smudge, float pressureGamma,
                                            float scatter, float sizeJitter, float angleJitter,
-                                           float shadeJitter, float hueJitter, int useTip) {
+                                           float shadeJitter, float hueJitter, int useTip,
+                                           int alphaLock) {
     BrushParams brush;
     brush.diameter = diameter;
     brush.color[0] = red;
@@ -151,6 +161,7 @@ EMSCRIPTEN_KEEPALIVE void cap_begin_stroke(float diameter, float red, float gree
     brush.grain = grain;
     brush.eraser = eraser != 0;
     brush.smudge = smudge != 0;
+    brush.alphaLock = alphaLock != 0;
     if (useTip) brush.tip.assign(tip, tip + sizeof(tip));
     renderer->beginStroke(brush);
 }
@@ -195,6 +206,32 @@ EMSCRIPTEN_KEEPALIVE void cap_set_gradient(int active, float x1, float y1, float
 }
 
 EMSCRIPTEN_KEEPALIVE void cap_commit_gradient() { renderer->commitGradient(); }
+
+// Previews the layer under the 3x3 row-major transform in cap_points(), or ends it when id is 0.
+EMSCRIPTEN_KEEPALIVE void cap_set_layer_transform(int id) { renderer->setLayerTransform(id, points); }
+EMSCRIPTEN_KEEPALIVE void cap_commit_layer_transform() { renderer->commitLayerTransform(); }
+
+EMSCRIPTEN_KEEPALIVE void cap_begin_liquify(int id) { renderer->beginLiquify(id); }
+EMSCRIPTEN_KEEPALIVE void cap_liquify_dab(float fromX, float fromY, float toX, float toY,
+                                          float radius, float strength, int mode) {
+    renderer->liquifyDab(fromX, fromY, toX, toY, radius, strength,
+                         static_cast<cappuccino::LiquifyMode>(mode));
+}
+EMSCRIPTEN_KEEPALIVE void cap_commit_liquify() { renderer->commitLiquify(); }
+EMSCRIPTEN_KEEPALIVE void cap_cancel_liquify() { renderer->cancelLiquify(); }
+
+// Previews hue, saturation, brightness, shadows, midtones, and highlights from cap_points().
+EMSCRIPTEN_KEEPALIVE void cap_set_adjustment(int active) {
+    renderer->setAdjustment(active != 0, points);
+}
+EMSCRIPTEN_KEEPALIVE void cap_commit_adjustment() { renderer->commitAdjustment(); }
+
+// Previews a filter with the four values in cap_points() and a color.
+EMSCRIPTEN_KEEPALIVE void cap_set_filter(int active, int kind, float red, float green, float blue) {
+    const float color[3] = {red, green, blue};
+    renderer->setFilter(active != 0, kind, points, color);
+}
+EMSCRIPTEN_KEEPALIVE void cap_commit_filter() { renderer->commitFilter(); }
 
 EMSCRIPTEN_KEEPALIVE void cap_set_view_options(int mode, int guide) {
     renderer->setViewOptions(mode, guide);

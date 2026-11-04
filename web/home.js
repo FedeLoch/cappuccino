@@ -8,6 +8,8 @@ import {
   sheetButton, svg,
 } from "./ui.js";
 import { ArtworkStore, canChooseFolder } from "./storage.js";
+import { WARMUPS, WARMUP_GROUPS, warmupFor } from "./warmups.js";
+import { WarmupLayout, drawWarmupGuide } from "./practice.js";
 
 const ALL = "all";
 const NARROW = 600;
@@ -34,6 +36,15 @@ function oriented(width, height, portrait) {
 function layerLimit(width, height) {
   const memory = (navigator.deviceMemory || 8) * 1024 ** 3;
   return Math.min(64, Math.max(8, Math.floor(memory / 5 / (width * height * 4))));
+}
+
+// The companion chosen in the studio, or the coffee drop the home screen starts with.
+export function mascot() {
+  try {
+    return JSON.parse(localStorage.getItem("cappuccino.mascot")) || "COFFEE_DROP";
+  } catch {
+    return "COFFEE_DROP";
+  }
 }
 
 export class Home {
@@ -95,9 +106,20 @@ export class Home {
     const hello = hour < 12 ? "Good morning." : hour < 19 ? "Good afternoon." : "Good evening.";
     const row = h("div", { className: "greeting" }, face,
       h("span", { className: window.innerWidth < NARROW ? "grow" : "" }, `${hello} Ready for another layer?`),
-      creamChip("Warm up", false, () => say("Warm-ups come to the web soon")));
-    requestAnimationFrame(() => new Companion(face, { look: "coffee", outline: COCOA }));
+      creamChip("Warm up", false, () => this.offerWarmup()));
+    requestAnimationFrame(() => new Companion(face, { look: mascot(), outline: COCOA }));
     return row;
+  }
+
+  offerWarmup() {
+    let topic = null;
+    try {
+      topic = JSON.parse(localStorage.getItem("cappuccino.warmupTopic"));
+    } catch {
+      // No topic yet.
+    }
+    const day = Math.floor(Date.now() / (24 * 60 * 60 * 1000));
+    warmupPicker(mascot(), warmupFor(topic, day), null, (warmup) => this.app.startWarmup(warmup));
   }
 
   renderHome(page, projects, artworks) {
@@ -562,4 +584,83 @@ function paper(ratio, chosen) {
   sheetOf.style.height = `${ratio >= 1 ? longest / ratio : longest}px`;
   box.append(sheetOf);
   return box;
+}
+
+// --- Warm-ups, as warmupPicker() in ArtworkSheets.kt --------------------------------------------
+
+const PREVIEW_PIXELS = 256;
+const PREVIEW_SEED = 7;  // Previews show one steady example; each session still lays it out fresh.
+const MUTED_COCOA = "#9A7B66";
+
+function warmupPreview(warmup, size) {
+  const preview = h("canvas", { className: "warmup-preview", width: PREVIEW_PIXELS, height: PREVIEW_PIXELS });
+  preview.style.width = `${size}px`;
+  preview.style.height = `${size}px`;
+  const c = preview.getContext("2d");
+  c.fillStyle = "#FFFFFF";
+  c.fillRect(0, 0, PREVIEW_PIXELS, PREVIEW_PIXELS);
+  drawWarmupGuide(c, warmup.kind, PREVIEW_PIXELS, PREVIEW_PIXELS, new WarmupLayout(PREVIEW_SEED));
+  return preview;
+}
+
+// Lets you pick a warm-up exercise, with the one your notes point to suggested first. Warm-ups
+// are only practice, so nothing from them is saved.
+export function warmupPicker(look, suggested, current, pick) {
+  let close;
+  const start = (warmup) => {
+    close();
+    pick(warmup);
+  };
+  const about = h("div", { className: "warmup-about" }, "Hold an exercise to see what it trains.");
+  const face = h("canvas", { className: "warmup-face", ariaLabel: "Your companion" });
+  const body = h("div", { className: "sheet-body warmup-body" },
+    h("div", { className: "row" }, face,
+      h("div", { className: "grow warmup-intro" }, serif("Warm up", 24),
+        h("div", { className: "sheet-message" }, "Pick an exercise. Warm-ups are just practice, so nothing is saved."))));
+  if (suggested !== current) {
+    body.append(h("div", { className: "suggested", role: "button", tabIndex: 0, onClick: () => start(suggested) },
+      warmupPreview(suggested, 104),
+      h("div", { className: "grow suggested-text" },
+        h("div", { className: "suggested-label" }, "Suggested for you"),
+        serif(suggested.title, 20),
+        h("div", { className: "suggested-steps" }, suggested.steps),
+        h("div", { className: "suggested-purpose" }, suggested.purpose)),
+      sheetButton("Start", (event) => {
+        event.stopPropagation();
+        start(suggested);
+      })));
+  }
+  body.append(about);
+  for (const group of WARMUP_GROUPS) {
+    body.append(h("div", { className: "label gap18" }, group));
+    body.append(h("div", { className: "warmup-row" }, WARMUPS.filter((warmup) => warmup.group === group).map((warmup) => {
+      let held = false;
+      let timer = 0;
+      return h("button", {
+        className: warmup === current ? "warmup-card on" : "warmup-card",
+        ariaLabel: warmup.title,
+        onPointerdown: () => {
+          held = false;
+          timer = setTimeout(() => {
+            held = true;
+            about.textContent = `${warmup.title}: ${warmup.purpose}`;
+            about.style.color = ESPRESSO;
+          }, 500);
+        },
+        onPointerup: () => clearTimeout(timer),
+        onPointerleave: () => clearTimeout(timer),
+        onContextmenu: (event) => {
+          event.preventDefault();
+          about.textContent = `${warmup.title}: ${warmup.purpose}`;
+          about.style.color = ESPRESSO;
+        },
+        onClick: () => {
+          if (!held) start(warmup);
+        },
+      }, warmupPreview(warmup, 112), h("span", { className: "warmup-title" }, warmup.title));
+    })));
+  }
+  body.append(h("div", { className: "end gap18" }, creamChip("Not now", false, () => close())));
+  close = sheet(body);
+  requestAnimationFrame(() => new Companion(face, { look }));
 }
