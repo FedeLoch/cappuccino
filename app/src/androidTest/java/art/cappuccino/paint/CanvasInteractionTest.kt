@@ -75,6 +75,45 @@ class CanvasInteractionTest {
         assertTrue("redo did not restore ink", hasInk(width / 2f, y))
     }
 
+    @Test
+    fun quickTapsInARowAndHoldingKeepUndoing() {
+        val rows = (0 until 5).map { height * (0.4f + it * 0.05f) }
+        val x = width / 2f
+        for (y in rows) {
+            stroke(width * 0.2f, y, width * 0.8f, y)
+            settle()
+            assertTrue("stroke was not drawn", hasInk(x, y))
+        }
+        val a = Pointer(0, width * 0.3f, height * 0.2f)
+        val b = Pointer(1, width * 0.5f, height * 0.2f)
+        val c = Pointer(2, width * 0.4f, height * 0.25f)
+        val d = Pointer(3, width * 0.6f, height * 0.25f)
+        fun pointerAction(action: Int, index: Int) = action or (index shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+
+        // The second tap lands while a finger from the first is still resting.
+        val down = SystemClock.uptimeMillis()
+        inject(MotionEvent.ACTION_DOWN, down, 0, listOf(a), stylus = false)
+        inject(pointerAction(MotionEvent.ACTION_POINTER_DOWN, 1), down, 5, listOf(a, b), stylus = false)
+        inject(pointerAction(MotionEvent.ACTION_POINTER_UP, 1), down, 40, listOf(a, b), stylus = false)
+        inject(pointerAction(MotionEvent.ACTION_POINTER_DOWN, 1), down, 60, listOf(a, c), stylus = false)
+        inject(pointerAction(MotionEvent.ACTION_POINTER_DOWN, 2), down, 65, listOf(a, c, d), stylus = false)
+        inject(pointerAction(MotionEvent.ACTION_POINTER_UP, 0), down, 90, listOf(a, c, d), stylus = false)
+        inject(pointerAction(MotionEvent.ACTION_POINTER_UP, 1), down, 100, listOf(c, d), stylus = false)
+        inject(MotionEvent.ACTION_UP, down, 100, listOf(c), stylus = false)
+        settle()
+        assertFalse("first quick tap did not undo", hasInk(x, rows[4]))
+        assertFalse("second quick tap did not undo", hasInk(x, rows[3]))
+        assertTrue("quick taps undid too much", hasInk(x, rows[2]))
+
+        // Holding two fingers still keeps undoing.
+        val hold = SystemClock.uptimeMillis()
+        press(listOf(a, b), hold)
+        SystemClock.sleep(900)
+        release(listOf(a, b), hold)
+        settle()
+        assertFalse("holding did not keep undoing", hasInk(x, rows[1]))
+    }
+
     private fun onStudio(action: (MainActivity) -> Unit) {
         scenario.onActivity(action)
         settle()

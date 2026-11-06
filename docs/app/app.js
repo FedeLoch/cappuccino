@@ -41,6 +41,8 @@ const QUICK_COLORS = 4;
 const MAX_SMOOTHING = 0.92;
 const TAP_TIMEOUT_MS = 300;
 const TAP_TRAVEL = 16;
+const HOLD_REPEAT_MS = 500;
+const REPEAT_MS = 150;
 const MIN_ZOOM = 0.02;
 const MAX_ZOOM = 32;
 const TEXT_COLOR = "#F1EFE8";
@@ -582,6 +584,8 @@ let gesture = null;
 let tapStart = 0;
 let tapTravel = 0;
 let tapFingers = 0;
+let tapSpent = false;  // The current fingers already tapped or moved; the next to land start a new tap.
+let holdTimer = 0;
 let panPointer = -1;  // Middle button or space + drag.
 let panLastX = 0;
 let panLastY = 0;
@@ -611,13 +615,17 @@ canvas.addEventListener("pointerdown", (event) => {
   if (event.pointerType === "touch") {
     if (strokePointer !== -1 || toolGesture) return;  // Palm on the screen while the pen draws.
     capture(event);
-    if (touches.size === 0) {
+    // A finger still resting from the last tap doesn't count toward the next one.
+    if (touches.size === 0 || tapSpent) {
       tapStart = event.timeStamp;
       tapTravel = 0;
       tapFingers = 0;
+      tapSpent = false;
     }
     touches.set(event.pointerId, { x: event.clientX * dpr, y: event.clientY * dpr });
-    tapFingers = Math.max(tapFingers, touches.size);
+    tapFingers += 1;
+    clearTimeout(holdTimer);
+    if (tapFingers === 2 || tapFingers === 3) holdTimer = setTimeout(holdRepeat, HOLD_REPEAT_MS);
     gesture = null;
     clearTimeout(pickTimer);
     if (touches.size === 1) {
@@ -773,12 +781,25 @@ function finishPointer(event, cancelled) {
   }
   if (!touches.delete(event.pointerId)) return;
   gesture = null;
-  if (touches.size > 0 || cancelled) return;
+  clearTimeout(holdTimer);
   // Taps with two, three, and four fingers undo, redo, and hide the interface, as on Android.
-  const isTap = tapTravel < TAP_TRAVEL && event.timeStamp - tapStart < TAP_TIMEOUT_MS;
+  // The first finger to lift ends the tap, so quick taps in a row each count.
+  if (tapSpent || tapFingers < 2) return;
+  tapSpent = true;
+  const isTap = !cancelled && tapTravel < TAP_TRAVEL && event.timeStamp - tapStart < TAP_TIMEOUT_MS;
   if (isTap && tapFingers === 2) undo();
   if (isTap && tapFingers === 3) redo();
   if (isTap && tapFingers === 4) toggleInterface();
+}
+
+// Holding two or three fingers still keeps undoing or redoing until they lift or move.
+function holdRepeat() {
+  if (tapTravel >= TAP_TRAVEL || touches.size < 2) return;
+  tapSpent = true;
+  if (tapFingers === 2) undo();
+  else if (tapFingers === 3) redo();
+  else return;
+  holdTimer = setTimeout(holdRepeat, REPEAT_MS);
 }
 canvas.addEventListener("pointerup", (event) => finishPointer(event, false));
 canvas.addEventListener("pointercancel", (event) => finishPointer(event, true));

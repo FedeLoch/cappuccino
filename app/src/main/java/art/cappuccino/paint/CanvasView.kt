@@ -17,7 +17,6 @@ import java.util.concurrent.ConcurrentLinkedQueue
 import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.hypot
-import kotlin.math.max
 import kotlin.math.min
 
 private const val MIN_ZOOM = 0.1f
@@ -26,6 +25,8 @@ private const val TAP_TIMEOUT_MS = 300L
 private const val TAP_TRAVEL_DP = 16f
 private const val FIRST_FRAME_RETRY_MS = 100L
 private const val LONG_PRESS_MS = 500L
+private const val HOLD_REPEAT_MS = 500L
+private const val REPEAT_MS = 150L
 private const val PEN_HOLD_MS = 700L
 private const val PEN_HOLD_TRAVEL_DP = 5f
 private const val SNAP_HOLD_MS = 600L
@@ -183,6 +184,8 @@ class CanvasView(
     private val colorRandom = java.util.Random()
 
     private var maxFingers = 0
+    // Set once the current fingers have tapped or moved, so the next fingers to land start a new tap.
+    private var tapSpent = false
     private var gestureStart = 0L
     private var travel = 0f
     private var pressX = 0f
@@ -822,6 +825,7 @@ class CanvasView(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 maxFingers = 1
+                tapSpent = false
                 gestureStart = event.eventTime
                 travel = 0f
                 pressX = event.x
@@ -831,40 +835,74 @@ class CanvasView(
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 removeCallbacks(pickAtPress)
-                maxFingers = max(maxFingers, event.pointerCount)
+                removeCallbacks(holdRepeat)
+                // A finger still resting from the last tap doesn't count toward the next one.
+                if (tapSpent) {
+                    tapSpent = false
+                    maxFingers = 0
+                    gestureStart = event.eventTime
+                    travel = 0f
+                }
+                maxFingers += 1
                 captureGesture(event, skip = -1)
+                if (maxFingers == 2 || maxFingers == 3) postDelayed(holdRepeat, HOLD_REPEAT_MS)
             }
             MotionEvent.ACTION_MOVE -> {
                 if (picking) {
                     pickAt(event.x, event.y)
                 } else if (event.pointerCount >= 2) {
                     applyGesture(event)
+                    if (travel >= tapTravel) removeCallbacks(holdRepeat)
                 } else if (hypot(event.x - pressX, event.y - pressY) > tapTravel) {
                     removeCallbacks(pickAtPress)
                 }
             }
             MotionEvent.ACTION_CANCEL -> {
                 removeCallbacks(pickAtPress)
+                removeCallbacks(holdRepeat)
                 endPick()
             }
-            MotionEvent.ACTION_POINTER_UP ->
+            MotionEvent.ACTION_POINTER_UP -> {
+                // The first finger to lift ends a multi-finger tap, so quick taps in a row each count.
+                endFingerTap(event)
                 if (event.pointerCount >= 3) captureGesture(event, skip = event.actionIndex)
+            }
             MotionEvent.ACTION_UP -> {
                 removeCallbacks(pickAtPress)
                 endPick()
-                val isTap = travel < tapTravel && event.eventTime - gestureStart < TAP_TIMEOUT_MS
+                val isTap = !tapSpent && travel < tapTravel && event.eventTime - gestureStart < TAP_TIMEOUT_MS
                 if (isTap && maxFingers == 1 && acceptsInput && brushKind.mode == BrushMode.FILL &&
                     selectionTool == SelectionTool.NONE
                 ) {
                     val spot = screenToCanvas(event.x, event.y)
                     onFillTap(spot[0].toInt(), spot[1].toInt())
                 }
-                if (isTap && maxFingers == 2) onUndoGesture()
-                if (isTap && maxFingers == 3) onRedoGesture()
-                if (isTap && maxFingers == 4) onToggleInterface()
+                endFingerTap(event)
             }
         }
         return true
+    }
+
+    private fun endFingerTap(event: MotionEvent) {
+        removeCallbacks(holdRepeat)
+        if (tapSpent || maxFingers < 2) return
+        tapSpent = true
+        if (travel >= tapTravel || event.eventTime - gestureStart >= TAP_TIMEOUT_MS) return
+        when (maxFingers) {
+            2 -> onUndoGesture()
+            3 -> onRedoGesture()
+            4 -> onToggleInterface()
+        }
+    }
+
+    // Holding two or three fingers still keeps undoing or redoing until they lift or move.
+    private val holdRepeat = object : Runnable {
+        override fun run() {
+            if (travel >= tapTravel) return
+            tapSpent = true
+            if (maxFingers == 2) onUndoGesture() else if (maxFingers == 3) onRedoGesture() else return
+            postDelayed(this, REPEAT_MS)
+        }
     }
 
     private fun pickAt(screenX: Float, screenY: Float) {
