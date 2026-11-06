@@ -2,6 +2,32 @@
 // (Activity.say in ArtworkSheets.kt), and the cream sheets the home screen opens.
 
 import ICONS from "./icons.js";
+
+// --- Scale: the interface keeps the tablet's proportions -------------------------------------------
+//
+// Android lays out in dp, and a tablet screen is about 1000 by 680 dp. A computer window is much
+// wider in CSS pixels, so at one pixel per dp everything would look small. The whole page is zoomed
+// to fill the window the way the app fills a tablet, never below one to one and at most twice.
+// Pointer positions and bounding boxes stay in real pixels; styles are in interface units.
+
+const TABLET_WIDTH = 1000;
+const TABLET_HEIGHT = 680;
+let scale = 1;
+
+export function applyUiScale() {
+  scale = Math.min(2, Math.max(1, Math.min(window.innerWidth / TABLET_WIDTH, window.innerHeight / TABLET_HEIGHT)));
+  document.documentElement.style.zoom = String(scale);
+  document.documentElement.style.setProperty("--ui", String(scale));
+  return scale;
+}
+
+export const uiScale = () => scale;
+// Turns real pixels, such as a pointer's clientX, into interface units for styles.
+export const toUi = (value) => value / scale;
+export const viewWidth = () => window.innerWidth / scale;
+export const viewHeight = () => window.innerHeight / scale;
+// Backing pixels per interface unit, so small canvases stay sharp when zoomed.
+export const pixelRatio = () => (window.devicePixelRatio || 1) * scale;
 import { Companion } from "./companion.js";
 
 // h("div", {className: "row", onClick}, child, "text")
@@ -162,5 +188,5 @@ export function relativeTime(time) {
   if (days < 7) return `${days} days ago`;
   const date = new Date(time);
   const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleDateString("en-US", sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+  return date.toLocaleDateString(document.documentElement.lang === "es" ? "es" : "en-US", sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
 }

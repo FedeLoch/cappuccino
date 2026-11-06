@@ -10,6 +10,8 @@
 // The files live either in a folder you choose (the File System Access API, in Chrome and Edge)
 // or in this browser's private storage (the origin private file system, everywhere else).
 
+import { readZip, writeZip } from "./zip.js";
+
 export const TILE_SIZE = 256;
 export const THUMBNAIL_WIDTH = 480;
 export const PREVIEW_WIDTH = 1600;
@@ -17,6 +19,24 @@ const MANIFEST = "manifest.json";
 const PREVIOUS_MANIFEST = "manifest.prev.json";
 const THUMBNAIL = "thumbnail.png";
 const PREVIEW = "preview.jpg";
+const REFERENCE_NOTES = "library.json";
+const BOARD_PURPOSES = "boards.json";
+
+// Ready-made reference blocks, each already telling the companion what to read in it.
+export const REFERENCE_BLOCK_PURPOSES = {
+  "Color palettes": ["PALETTE"],
+  "Lights": ["VALUES"],
+  "Composition": ["COMPOSITION"],
+  "Mood": ["MOOD"],
+  "Character design": ["PALETTE", "VALUES"],
+  "Environment": ["PALETTE", "VALUES", "COMPOSITION", "MOOD"],
+  "Perspective": ["INSPIRATION"],
+  "Inspiration": ["INSPIRATION"],
+};
+
+// Android keeps colors as signed ARGB integers.
+const colorToInt = (hex) => (0xFF000000 | parseInt(hex.slice(1), 16)) | 0;
+const colorFromInt = (value) => `#${((value >>> 0) & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase()}`;
 
 export const canChooseFolder = typeof window.showDirectoryPicker === "function";
 
@@ -173,9 +193,236 @@ export class ArtworkStore {
         await copyDirectory(handle, await directory(ours, name));
       }
     }
+    // References: each sketchbook's folder keeps anything already here, file by file.
+    const theirReferences = await directory(other.root, "references");
+    const ourReferences = await directory(this.root, "references");
+    for await (const [name, handle] of theirReferences.entries()) {
+      if (handle.kind !== "directory") continue;
+      const target = await directory(ourReferences, name);
+      for await (const [file, entry] of handle.entries()) {
+        if (entry.kind !== "file") continue;
+        if (!(await readFile(target, file))) await writeFile(target, file, await entry.getFile());
+      }
+    }
     const existing = await this.projects();
     const added = (await other.projects()).filter((project) => !existing.some((p) => p.id === project.id));
     if (added.length) await this.writeProjects([...existing, ...added]);
+    const palettes = await this.palettes();
+    const addedPalettes = (await other.palettes()).filter((palette) => !palettes.some((p) => p.id === palette.id));
+    if (addedPalettes.length) await this.writePalettes([...palettes, ...addedPalettes]);
+  }
+
+  // --- Backup files, the same zip ArtworkStore.backup() writes on Android ------------------------
+
+  // Packs all artworks, references, sketchbooks, palettes, and brushes into one zip file.
+  async backup() {
+    const entries = [];
+    const walk = async (dir, path) => {
+      for await (const [name, handle] of dir.entries()) {
+        if (name.endsWith(".tmp") || name.endsWith(".crswap")) continue;
+        if (handle.kind === "directory") await walk(handle, `${path}${name}/`);
+        else entries.push([`${path}${name}`, await handle.getFile()]);
+      }
+    };
+    for (const folder of ["artworks", "references"]) await walk(await directory(this.root, folder), `${folder}/`);
+    for (const name of ["projects.json", "palettes.json", "brushes.json"]) {
+      const file = await readFile(this.root, name);
+      if (file) entries.push([name, file]);
+    }
+    return writeZip(entries);
+  }
+
+  // Adds a backup's contents. Existing files are kept, and sketchbooks and palettes are combined.
+  async restore(blob) {
+    const entries = await readZip(blob);
+    const json = (name) => {
+      const entry = entries.find(([path]) => path === name);
+      try {
+        return entry ? JSON.parse(new TextDecoder().decode(entry[1])) : [];
+      } catch {
+        return [];
+      }
+    };
+    for (const [path, bytes] of entries) {
+      const parts = path.split("/");
+      if (!["artworks", "references"].includes(parts[0]) || parts.length < 3) continue;
+      if (parts.some((part) => part === "" || part === "." || part === "..")) throw new Error("Invalid backup");
+      let dir = this.root;
+      for (const part of parts.slice(0, -1)) dir = await directory(dir, part);
+      if (!(await readFile(dir, parts[parts.length - 1]))) await writeFile(dir, parts[parts.length - 1], bytes);
+    }
+    const existing = await this.projects();
+    const added = json("projects.json").filter((project) => !existing.some((p) => p.id === project.id))
+      .map((item) => ({ id: item.id, name: item.name, color: item.color ?? 0 }));
+    await this.writeProjects([...existing, ...added]);
+    const palettes = await this.palettes();
+    const addedPalettes = json("palettes.json").filter((palette) => !palettes.some((p) => p.id === palette.id))
+      .map((item) => ({ id: item.id, name: item.name, colors: item.colors.map(colorFromInt) }));
+    await this.writePalettes([...palettes, ...addedPalettes]);
+  }
+
+  // --- Your own brushes, in brushes.json with each tip in brush-<id>.tip, as on Android ----------
+
+  async customBrushes() {
+    const text = await readText(this.root, "brushes.json");
+    let items = [];
+    try {
+      items = text ? JSON.parse(text) : [];
+    } catch {
+      return [];
+    }
+    const brushes = [];
+    for (const item of items) {
+      const tipFile = await readFile(this.root, `brush-${item.id}.tip`);
+      brushes.push({
+        id: item.id, label: item.label, minScale: item.minScale, spacing: item.spacing, flow: item.flow,
+        pressureFlow: item.pressureFlow, hardness: item.hardness, grain: item.grain, size: item.size,
+        eraser: false, mode: "paint", custom: true,
+        tip: tipFile ? new Uint8Array(await tipFile.arrayBuffer()) : null,
+        scatter: item.scatter ?? 0, sizeJitter: item.sizeJitter ?? 0, angleJitter: item.angleJitter ?? 0,
+        shadeJitter: item.shadeJitter ?? 0, hueJitter: item.hueJitter ?? 0, strokeJitter: item.strokeJitter ?? 0,
+      });
+    }
+    return brushes;
+  }
+
+  async writeBrushes(brushes) {
+    const fields = ["id", "label", "minScale", "spacing", "flow", "pressureFlow", "hardness", "grain", "size",
+      "scatter", "sizeJitter", "angleJitter", "shadeJitter", "hueJitter", "strokeJitter"];
+    await writeFile(this.root, "brushes.json", JSON.stringify(brushes.map((brush) =>
+      Object.fromEntries(fields.map((field) => [field, brush[field]])))));
+  }
+
+  async saveBrush(brush) {
+    await this.writeBrushes([...(await this.customBrushes()).filter((other) => other.id !== brush.id), brush]);
+    if (brush.tip) await writeFile(this.root, `brush-${brush.id}.tip`, brush.tip);
+  }
+
+  async deleteBrush(id) {
+    await this.writeBrushes((await this.customBrushes()).filter((brush) => brush.id !== id));
+    await remove(this.root, `brush-${id}.tip`);
+  }
+
+  // --- Palettes, in palettes.json with colors as ARGB integers like Android ----------------------
+
+  async palettes() {
+    const text = await readText(this.root, "palettes.json");
+    if (!text) return [];
+    try {
+      return JSON.parse(text).map((item) => ({ id: item.id, name: item.name, colors: item.colors.map(colorFromInt) }));
+    } catch {
+      return [];
+    }
+  }
+
+  writePalettes(palettes) {
+    return writeFile(this.root, "palettes.json", JSON.stringify(palettes.map((palette) => ({
+      id: palette.id, name: palette.name, colors: palette.colors.map(colorToInt),
+    }))));
+  }
+
+  async addPalette(name, colors) {
+    await this.writePalettes([...(await this.palettes()), { id: crypto.randomUUID(), name, colors }]);
+  }
+
+  async deletePalette(id) {
+    await this.writePalettes((await this.palettes()).filter((palette) => palette.id !== id));
+  }
+
+  // --- References, in references/<sketchbook or "unsorted">/ as ReferenceLibrary.kt keeps them ---
+
+  async referenceDir(projectId) {
+    return directory(await directory(this.root, "references"), projectId || "unsorted");
+  }
+
+  // Each image file with its time, newest first.
+  async references(projectId) {
+    const dir = await this.referenceDir(projectId);
+    const files = [];
+    for await (const [name, handle] of dir.entries()) {
+      if (handle.kind !== "file" || name === REFERENCE_NOTES || name === BOARD_PURPOSES || name.endsWith(".tmp")) continue;
+      const file = await handle.getFile();
+      files.push({ name, file, time: file.lastModified });
+    }
+    return files.sort((a, b) => b.time - a.time);
+  }
+
+  async referenceFile(projectId, name) {
+    return readFile(await this.referenceDir(projectId), name);
+  }
+
+  async addReference(projectId, file) {
+    const name = crypto.randomUUID();
+    await writeFile(await this.referenceDir(projectId), name, file);
+    return name;
+  }
+
+  async referenceNotes(projectId) {
+    const text = await readText(await this.referenceDir(projectId), REFERENCE_NOTES);
+    try {
+      const items = text ? JSON.parse(text) : {};
+      const notes = {};
+      for (const [name, item] of Object.entries(items)) notes[name] = { starred: !!item.starred, board: item.board || "" };
+      return notes;
+    } catch {
+      return {};
+    }
+  }
+
+  async writeReferenceNotes(projectId, notes) {
+    const items = {};
+    for (const [name, note] of Object.entries(notes)) {
+      if (note.starred || note.board) items[name] = { starred: !!note.starred, board: note.board || "" };
+    }
+    await writeFile(await this.referenceDir(projectId), REFERENCE_NOTES, JSON.stringify(items));
+  }
+
+  async updateReferenceNote(projectId, name, change) {
+    const notes = await this.referenceNotes(projectId);
+    notes[name] = change(notes[name] || { starred: false, board: "" });
+    await this.writeReferenceNotes(projectId, notes);
+  }
+
+  async deleteReference(projectId, name) {
+    await remove(await this.referenceDir(projectId), name);
+    const notes = await this.referenceNotes(projectId);
+    delete notes[name];
+    await this.writeReferenceNotes(projectId, notes);
+  }
+
+  // Moves a reference and its star to another sketchbook. Its board stays behind.
+  async moveReference(name, fromProject, toProject) {
+    const from = await this.referenceDir(fromProject);
+    const file = await readFile(from, name);
+    if (!file) return false;
+    await writeFile(await this.referenceDir(toProject), name, file);
+    await remove(from, name);
+    const notes = await this.referenceNotes(fromProject);
+    const note = notes[name] || { starred: false, board: "" };
+    delete notes[name];
+    await this.writeReferenceNotes(fromProject, notes);
+    await this.updateReferenceNote(toProject, name, () => ({ ...note, board: "" }));
+    return true;
+  }
+
+  // Boards and what the companion reads them for: the ready-made blocks' own purposes, unless changed.
+  async boardPurposes(projectId) {
+    return { ...REFERENCE_BLOCK_PURPOSES, ...(await this.savedBoardPurposes(projectId)) };
+  }
+
+  async savedBoardPurposes(projectId) {
+    const text = await readText(await this.referenceDir(projectId), BOARD_PURPOSES);
+    try {
+      return text ? JSON.parse(text) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  async setBoardPurposes(projectId, board, uses) {
+    const saved = await this.savedBoardPurposes(projectId);
+    saved[board] = uses;
+    await writeFile(await this.referenceDir(projectId), BOARD_PURPOSES, JSON.stringify(saved));
   }
 
   artworksDir() {
@@ -221,6 +468,7 @@ export class ArtworkStore {
       if (art.projectId === id) await this.moveArtwork(art.id, "");
     }
     await this.writeProjects((await this.projects()).filter((p) => p.id !== id));
+    await remove(await directory(this.root, "references"), id, true);
   }
 
   // --- Artworks ------------------------------------------------------------------------------
@@ -313,6 +561,26 @@ export class ArtworkStore {
       m.updated = Date.now();
     });
     return copy;
+  }
+
+  // --- Time-lapse frames, as timelapse/000000.jpg on Android --------------------------------
+
+  async addTimelapseFrame(doc, pixels, width, height) {
+    const dir = await directory(doc.dir, "timelapse");
+    let count = 0;
+    for await (const _ of dir.keys()) count++;
+    const surface = new OffscreenCanvas(width, height);
+    surface.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+    const blob = await surface.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+    await writeFile(dir, `${String(count).padStart(6, "0")}.jpg`, blob);
+  }
+
+  async timelapseFrames(doc) {
+    const dir = await directory(doc.dir, "timelapse");
+    const files = [];
+    for await (const [name, handle] of dir.entries()) if (handle.kind === "file") files.push([name, handle]);
+    files.sort((a, b) => a[0].localeCompare(b[0]));
+    return Promise.all(files.map(([, handle]) => handle.getFile()));
   }
 
   // --- What the companion remembers, as snapshot.json and first-snapshot.json --------------------
@@ -484,6 +752,41 @@ export class ArtworkStore {
       if ((name.startsWith("layer-") || name.startsWith("pack-")) && !used.has(name)) unused.push(name);
     }
     for (const name of unused) await remove(dir, name);
+  }
+
+  // Saves an exported file: into Exports in the chosen folder, or as a download from the browser.
+  // Returns where it went, for the companion to say.
+  async saveExport(fileName, blob) {
+    if (this.folderName) {
+      const exports = await directory(this.root, "Exports");
+      await writeFile(exports, fileName, blob);
+      return `${this.folderName}/Exports`;
+    }
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = fileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    return "your downloads";
+  }
+
+  // Turns a read PSD into an artwork, its layers bottom first, as ArtworkStore.importPsd() does.
+  async importPsd(image, name, projectId, thumbnail) {
+    const doc = await this.create(name, projectId, image.width, image.height);
+    const base = doc.manifest.layers[0];
+    doc.manifest.layers = image.layers.map((layer, index) => ({
+      ...base, id: index + 1, name: layer.name, opacity: layer.opacity, visible: layer.visible,
+      blend: layer.blend, clip: layer.clipped, group: layer.group,
+    }));
+    doc.manifest.groups = image.groups.map((group, index) => ({ id: index + 1, name: group, visible: true, opacity: 1, collapsed: false }));
+    doc.manifest.nextGroupId = image.groups.length + 1;
+    doc.manifest.activeLayer = image.layers.length;
+    doc.manifest.nextLayerId = image.layers.length + 1;
+    const regions = new Map(image.layers.map((layer, index) => [index + 1, { left: 0, top: 0, width: image.width, height: image.height, pixels: layer.rgba }]));
+    await this.save(doc, regions, thumbnail, null);
+    return doc.id;
   }
 
   // A new artwork's folder and manifest, as MainActivity.openDocument() starts one.

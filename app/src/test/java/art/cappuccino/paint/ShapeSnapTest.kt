@@ -102,4 +102,15 @@ class ShapeSnapTest {
         assertEquals(210f, moved[2], 0.01f)
         assertEquals(110f, moved[5], 0.01f)
     }
+
+    @Test
+    fun aSnappedEllipseGetsItsBoxCornersAsHandles() {
+        val ellipse = snapShape(circle(100f))!!
+        val anchors = shapeAnchors(ellipse)
+        assertTrue(anchors[2] - anchors[0] > 180f)
+        assertTrue(anchors[3] - anchors[1] > 180f)
+        val moved = reshapeShape(ellipse, anchors, floatArrayOf(anchors[0], anchors[1], anchors[2] + 100f, anchors[3]))
+        val right = moved.filterIndexed { index, _ -> index % 2 == 0 }.max()
+        assertEquals(anchors[2] + 100f, right, 1f)
+    }
 }

@@ -20,11 +20,23 @@ private const val SIDE_POINTS = 12
 private const val ELLIPSE_POINTS = 96
 private const val SEARCH_STEP_DEGREES = 2
 
+/**
+ * True for an ellipse or box. A snapped ellipse runs one step past its start so the stroke joins
+ * without a gap, so its end lands about one step from its first point, while a line's end is many
+ * steps away.
+ */
+private fun isClosedShape(shape: FloatArray): Boolean {
+    val last = shape.size - 2
+    val gap = hypot(shape[last] - shape[0], shape[last + 1] - shape[1])
+    if (gap < 1f) return true
+    val step = hypot(shape[2] - shape[0], shape[3] - shape[1])
+    return shape.size >= 8 && gap <= step * 1.5f
+}
+
 /** Two handles for a snapped shape: a line's ends, or the corners of a closed shape's box. */
 fun shapeAnchors(shape: FloatArray): FloatArray {
     val last = shape.size - 2
-    val closed = hypot(shape[last] - shape[0], shape[last + 1] - shape[1]) < 1f
-    if (!closed) return floatArrayOf(shape[0], shape[1], shape[last], shape[last + 1])
+    if (!isClosedShape(shape)) return floatArrayOf(shape[0], shape[1], shape[last], shape[last + 1])
     val xs = shape.filterIndexed { index, _ -> index % 2 == 0 }
     val ys = shape.filterIndexed { index, _ -> index % 2 == 1 }
     return floatArrayOf(xs.min(), ys.min(), xs.max(), ys.max())
@@ -32,8 +44,7 @@ fun shapeAnchors(shape: FloatArray): FloatArray {
 
 /** Moves a snapped shape so its handles land on [target]. Lines turn, closed shapes stretch. */
 fun reshapeShape(shape: FloatArray, anchors: FloatArray, target: FloatArray): FloatArray {
-    val last = shape.size - 2
-    val closed = hypot(shape[last] - shape[0], shape[last + 1] - shape[1]) < 1f
+    val closed = isClosedShape(shape)
     val spanX = anchors[2] - anchors[0]
     val spanY = anchors[3] - anchors[1]
     val result = shape.copyOf()

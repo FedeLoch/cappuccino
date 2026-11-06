@@ -87,6 +87,20 @@ EMSCRIPTEN_KEEPALIVE void cap_merge_layer_down(int id, int belowId) { renderer->
 EMSCRIPTEN_KEEPALIVE void cap_create_mask(int id, int maskId) { renderer->createMask(id, maskId); }
 EMSCRIPTEN_KEEPALIVE void cap_apply_mask(int id) { renderer->applyMask(id); }
 EMSCRIPTEN_KEEPALIVE void cap_clear_selection() { renderer->clearSelection(); }
+// Selects the closed shape in cap_points(), count points long: mode 0 replaces, 1 adds, 2 removes.
+EMSCRIPTEN_KEEPALIVE void cap_set_selection_polygon(int count, int mode) {
+    if (count > kMaxPoints) count = kMaxPoints;
+    renderer->setSelectionPolygon(points, count, mode);
+}
+EMSCRIPTEN_KEEPALIVE void cap_select_color_at(int x, int y, int tolerance, int mode) {
+    renderer->selectColorAt(x, y, tolerance, mode);
+}
+EMSCRIPTEN_KEEPALIVE void cap_invert_selection() { renderer->invertSelection(); }
+EMSCRIPTEN_KEEPALIVE void cap_set_selection_feather(int radius) { renderer->setSelectionFeather(radius); }
+EMSCRIPTEN_KEEPALIVE void cap_copy_selection_to_layer(int newId, int cut) {
+    renderer->copySelectionToLayer(newId, cut != 0);
+}
+EMSCRIPTEN_KEEPALIVE int cap_has_selection() { return renderer->hasSelection() ? 1 : 0; }
 EMSCRIPTEN_KEEPALIVE void cap_read_layer_thumbnail(int id, int width, int height, void* pixels) {
     renderer->readLayerThumbnail(id, width, height, pixels);
 }
@@ -247,6 +261,15 @@ EMSCRIPTEN_KEEPALIVE void cap_set_view_options(int mode, int guide) {
 }
 
 // Mirrors strokes around (x, y), or around the middle of the canvas when x is negative.
+// Vanishing points as x and y pairs, read from the points buffer.
+EMSCRIPTEN_KEEPALIVE void cap_set_perspective(int count) {
+    renderer->setPerspective(points, count);
+}
+
+EMSCRIPTEN_KEEPALIVE void cap_set_figure(float top, float bottom, float divisions) {
+    renderer->setFigureGuide(top, bottom, divisions);
+}
+
 EMSCRIPTEN_KEEPALIVE void cap_set_symmetry(int mode, float x, float y) {
     if (x < 0) {
         x = canvasWidth / 2.0f;

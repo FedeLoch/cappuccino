@@ -760,3 +760,163 @@ button:focus-visible, .slider:focus-visible { outline: 2px solid var(--accent); 
   background: #FFFFFF;
   border: 2px solid var(--roast);
 }
+
+/* --- Actions, stickers, variants ---------------------------------------------------------------- */
+
+.variation-grid, .variant-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.variation-cell { display: flex; flex-direction: column; text-align: left; }
+.variation-thumb { width: 100%; aspect-ratio: 3 / 2; object-fit: cover; padding: 2px; border-radius: 8px; background: var(--surface-raised); }
+.variation-thumb.on { background: var(--accent); }
+.variant-button { border-radius: 8px; overflow: hidden; background: var(--surface-raised); }
+.variant { width: 100%; aspect-ratio: 3 / 2; object-fit: cover; display: block; }
+.sticker-preview { width: 100%; height: 190px; object-fit: contain; border-radius: 10px; background: var(--roast); }
+.text-field { resize: vertical; min-height: 56px; }
+.segmented.light { background: var(--oat); }
+.segmented.light button { color: var(--espresso); min-height: 36px; font-size: 13px; }
+.segmented.light button.on { background: var(--accent); color: #FFFFFF; }
+.animation-bar { max-width: calc(100vw - 32px); }
+.scroll-bar { overflow-x: auto; scrollbar-width: none; padding: 6px 8px; }
+.frame-chip { width: 32px; padding: 4px 0; flex: none; }
+
+/* --- References, as ReferenceWindow.kt and referencesPanel() -------------------------------- */
+
+.reference {
+  position: fixed;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--surface);
+  z-index: 3;
+  transition: opacity 120ms;
+  touch-action: none;
+}
+.reference::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border: 2px solid #F1EFE8;
+  border-radius: 11px;
+  pointer-events: none;
+}
+.reference.pinned { pointer-events: none; }
+.reference-image { position: absolute; inset: 0; width: 100%; height: 100%; cursor: grab; }
+.reference-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  padding: 0 5px 1px 0;
+  font-size: 16px;
+  color: #F1EFE8;
+  text-shadow: 0 0 3px var(--surface);
+  cursor: nwse-resize;
+  z-index: 1;
+}
+.reference-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 2px 4px;
+  background: var(--surface);
+  z-index: 2;
+}
+.reference-tools { display: flex; align-items: center; overflow-x: auto; scrollbar-width: none; }
+.reference-tools .icon { flex: none; border-radius: 8px; }
+.reference-tools .icon svg { width: 100%; height: 100%; }
+.reference-tools .icon.on { background: var(--accent); }
+.reference-bar .range { width: 100%; height: 22px; }
+
+.reference-blocks { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.reference-block {
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--surface-raised);
+  text-align: left;
+  min-width: 0;
+}
+.reference-block .peeks { display: flex; gap: 2px; height: 46px; }
+.reference-block .peeks img { width: 46px; height: 46px; object-fit: cover; border-radius: 6px; background: var(--surface); }
+.reference-block .name { margin-top: 6px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.reference-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.reference-cell {
+  position: relative;
+  aspect-ratio: 1;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--surface);
+}
+.reference-cell.on { background: var(--accent); }
+.reference-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 8px;
+  background: var(--surface-raised);
+  display: block;
+}
+.reference-cell .block {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  max-width: calc(100% - 12px);
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 9px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reference-cell .star { position: absolute; top: 5px; right: 8px; font-size: 13px; text-shadow: 0 1px 4px #000; }
+.wrap-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.tabs.scroll { overflow-x: auto; scrollbar-width: none; }
+.home-references { display: grid; grid-template-columns: repeat(auto-fill, 180px); gap: 12px; margin-top: 16px; }
+.home-reference { position: relative; width: 180px; height: 180px; cursor: pointer; }
+.home-reference img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; background: var(--oat); display: block; }
+.home-reference .block {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 2px 7px;
+  border-radius: 7px;
+  background: var(--cream);
+  color: var(--espresso);
+  font-size: 11px;
+}
+.home-reference .star { position: absolute; top: 4px; right: 8px; font-size: 18px; color: #FFFFFF; text-shadow: 0 1px 5px #000; }
+.empty.small-note { font-size: 13px; }
+.match-row { display: flex; align-items: center; }
+.match-name { width: 96px; flex: none; }
+.match-bar { flex: 1; height: 4px; border-radius: 2px; background: var(--surface-raised); overflow: hidden; }
+.match-bar span { display: block; height: 100%; background: var(--accent); }
+.match-colors { display: flex; gap: 3px; }
+.match-colors button { flex: 1; height: 34px; border-radius: 8px; }
+.why-pair { display: flex; gap: 4px; }
+.why-pair .column { flex: 1; min-width: 0; }
+.why-pair img { width: 100%; height: 96px; object-fit: contain; object-position: left top; }
+.guide-handle {
+  position: absolute;
+  width: 36px;
+  height: 36px;
+  border-radius: 18px;
+  border: 3px solid #F1EFE8;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: grab;
+}
+.print-note { display: flex; align-items: center; gap: 8px; }
+.print-note .printed { width: 28px; height: 22px; border-radius: 6px; flex: none; }
+.field.dark {
+  width: 100%;
+  background: var(--surface-raised);
+  color: #F1EFE8;
+  border: none;
+}
+.field.dark::placeholder { color: var(--muted); }
+.brush-preview { width: 100%; height: 64px; display: block; }

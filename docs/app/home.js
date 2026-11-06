@@ -4,12 +4,16 @@
 
 import { Companion } from "./companion.js";
 import {
-  accentChip, askSheet, choiceSheet, confirmSheet, creamChip, h, relativeTime, say, serif, sheet,
+  viewHeight, viewWidth, accentChip, askSheet, choiceSheet, confirmSheet, creamChip, h, relativeTime, say, serif, sheet,
   sheetButton, svg,
 } from "./ui.js";
 import { ArtworkStore, canChooseFolder } from "./storage.js";
 import { WARMUPS, WARMUP_GROUPS, warmupFor } from "./warmups.js";
 import { WarmupLayout, drawWarmupGuide } from "./practice.js";
+import { readPsd } from "./psd.js";
+import { LANGUAGES, language, saveLanguage, tr } from "./i18n.js";
+import { STARRED_FILTER, filterReferences, referenceBoards, referenceOptions, referencePreview } from "./references.js";
+import { THUMBNAIL_WIDTH, thumbnailHeight } from "./storage.js";
 
 const ALL = "all";
 const NARROW = 600;
@@ -70,15 +74,15 @@ export class Home {
     page.append(this.header());
     if (this.app.waiting) page.append(this.folderNote());
     if (this.selected === ALL) this.renderHome(page, projects, artworks);
-    else this.renderSketchbook(page, projects, artworks);
+    else await this.renderSketchbook(page, projects, artworks);
     this.root.replaceChildren(page);
   }
 
   header() {
-    const narrow = window.innerWidth < NARROW;
+    const narrow = viewWidth() < NARROW;
     const buttons = h("div", { className: "home-buttons" },
       creamChip("Backup", false, () => this.backupOptions()),
-      creamChip("Import PSD", false, () => say("Importing PSD files comes to the web soon")),
+      creamChip("Import PSD", false, () => this.pickPsd()),
       accentChip("New artwork", () => this.showNewArtwork()));
     return h("div", { className: narrow ? "home-header narrow" : "home-header" },
       h("div", { className: "wordmark" }, "Cappuccino"), buttons);
@@ -105,10 +109,30 @@ export class Home {
     const hour = new Date().getHours();
     const hello = hour < 12 ? "Good morning." : hour < 19 ? "Good afternoon." : "Good evening.";
     const row = h("div", { className: "greeting" }, face,
-      h("span", { className: window.innerWidth < NARROW ? "grow" : "" }, `${hello} Ready for another layer?`),
+      h("span", { className: viewWidth() < NARROW ? "grow" : "" }, `${hello} Ready for another layer?`),
       creamChip("Warm up", false, () => this.offerWarmup()));
     requestAnimationFrame(() => new Companion(face, { look: mascot(), outline: COCOA }));
     return row;
+  }
+
+  pickPsd() {
+    const input = h("input", { type: "file", accept: ".psd,image/vnd.adobe.photoshop" });
+    input.addEventListener("change", async () => {
+      const file = input.files[0];
+      if (!file) return;
+      const project = this.selected === ALL ? "" : this.selected;
+      say("Importing PSD");
+      try {
+        const image = readPsd(await file.arrayBuffer());
+        if (image.width > MAX_CANVAS_SIDE || image.height > MAX_CANVAS_SIDE) throw new Error("too large");
+        await this.store.importPsd(image, "Imported PSD", project, await psdThumbnail(image));
+      } catch (error) {
+        console.error(error);
+        say("Couldn't import this PSD. Use an 8-bit RGB file.", { long: true });
+      }
+      this.render();
+    });
+    input.click();
   }
 
   offerWarmup() {
@@ -130,7 +154,7 @@ export class Home {
       this.sketchbook("Unsorted", artworks.filter((a) => !a.projectId).length, null, () => this.select("")),
       h("button", { className: "new-book", onClick: () => this.newSketchbook(projects.length) }, "New sketchbook"));
     const books = h("div", { className: "books" }, h("div", { className: "heading" }, "Your sketchbooks"), shelf);
-    const portrait = window.innerHeight > window.innerWidth;
+    const portrait = viewHeight() > viewWidth();
     const top = h("div", { className: portrait ? "home-top portrait" : "home-top" });
     if (artworks[0]) top.append(this.continueCard(artworks[0]));
     top.append(books);
@@ -170,7 +194,7 @@ export class Home {
         this.artworkOptions(art);
       },
     }, h("div", { className: "continue-image" }, this.thumbnail(art, true), this.moreButton(art)),
-    h("div", { className: "continue-label" }, `Continue ${art.name}`));
+    h("div", { className: "continue-label" }, tr("Continue %1", ""), h("span", { translate: false }, art.name)));
   }
 
   sketchbook(name, count, color, open, options) {
@@ -184,35 +208,103 @@ export class Home {
         options?.();
       },
     }, h("span", { className: "spine", style: { background: spine } }),
-    h("span", { className: "book-text" }, h("span", { className: "book-name" }, name),
+    h("span", { className: "book-text" }, h("span", { className: "book-name", translate: name === "Unsorted" }, name),
       h("span", { className: "book-count" }, count === 1 ? "1 artwork" : `${count} artworks`)));
   }
 
   select(id) {
     this.selected = id;
+    this.showingReferences = false;
     this.render();
     window.scrollTo(0, 0);
   }
 
-  renderSketchbook(page, projects, artworks) {
+  async renderSketchbook(page, projects, artworks) {
     const project = projects.find((p) => p.id === this.selected);
     const [cover, spine] = project ? SKETCHBOOK_COLORS[project.color % SKETCHBOOK_COLORS.length] : [OAT, COCOA];
     const text = project ? "#FFFFFF" : ESPRESSO;
     const inside = artworks.filter((a) => a.projectId === this.selected);
+    const references = await this.store.references(this.selected).catch(() => []);
     page.append(h("div", { className: "cover", style: { background: cover, color: text } },
       h("span", { className: "cover-spine", style: { background: spine } }),
       h("div", { className: "cover-text" },
-        h("div", { className: "serif cover-name" }, project ? project.name : "Unsorted"),
-        h("div", {}, `${inside.length === 1 ? "1 artwork" : `${inside.length} artworks`} · 0 references`)),
+        h("div", { className: "serif cover-name", translate: !project }, project ? project.name : "Unsorted"),
+        h("div", {}, [
+          inside.length === 1 ? "1 artwork" : `${inside.length} artworks`,
+          references.length === 1 ? "1 reference" : `${references.length} references`,
+        ].join(" · "))),
       project && creamChip("Edit", false, () => this.projectOptions(project)),
       creamChip("Back", false, () => this.select(ALL))));
-    page.append(h("div", { className: "tabs" }, creamChip("Artworks", true, () => {}),
-      creamChip("References", false, () => say("References come to the web soon"))));
+    const show = (references) => {
+      this.showingReferences = references;
+      this.render();
+    };
+    page.append(h("div", { className: "tabs" },
+      creamChip("Artworks", !this.showingReferences, () => show(false)),
+      creamChip("References", !!this.showingReferences, () => show(true))));
+    if (this.showingReferences) {
+      await this.renderReferences(page, references);
+      return;
+    }
     if (inside.length === 0) {
       page.append(h("div", { className: "empty" }, "Start your first artwork here."));
       return;
     }
     this.searchableGrid(page, inside, 240, null);
+  }
+
+  async renderReferences(page, all) {
+    const project = this.selected;
+    page.append(h("div", { className: "tabs" }, creamChip("Add references", false, () => {
+      const input = h("input", { type: "file", accept: "image/*", multiple: true });
+      input.addEventListener("change", async () => {
+        for (const file of input.files) await this.store.addReference(project, file).catch(() => null);
+        this.render();
+      });
+      input.click();
+    })));
+    if (!all.length) {
+      page.append(h("div", { className: "empty" }, "Collect the images that inspire this sketchbook."));
+      return;
+    }
+    const notes = await this.store.referenceNotes(project);
+    const boards = referenceBoards(notes);
+    if (this.referenceFilter && this.referenceFilter !== STARRED_FILTER && !boards.includes(this.referenceFilter)) this.referenceFilter = "";
+    const filters = [["All", ""], ["★", STARRED_FILTER], ...boards.map((board) => [board, board])];
+    page.append(h("div", { className: "tabs scroll" }, filters.map(([name, value]) =>
+      creamChip(name, (this.referenceFilter || "") === value, () => {
+        this.referenceFilter = value;
+        this.render();
+      }))));
+    const shown = new Set(filterReferences(all.map((reference) => reference.name), notes, this.referenceFilter || ""));
+    page.append(h("div", { className: "home-references" }, all.filter((reference) => shown.has(reference.name)).map((reference) => {
+      const note = notes[reference.name];
+      const options = () => referenceOptions(this.store, project, reference.name, {
+        changed: () => this.render(),
+        moved: () => this.render(),
+        remove: () => confirmSheet("Delete this reference?", "You can't undo this.", async () => {
+          await this.store.deleteReference(project, reference.name);
+          this.render();
+        }),
+      });
+      let timer = 0;
+      const cell = h("div", {
+        className: "home-reference", role: "button", tabIndex: 0, ariaLabel: "Reference",
+        onContextmenu: (event) => {
+          event.preventDefault();
+          clearTimeout(timer);
+          options();
+        },
+        onPointerdown: () => {
+          timer = setTimeout(options, 500);
+        },
+      }, h("img", { src: referencePreview(project, reference), alt: "" }),
+      note?.board && h("span", { className: "block" }, note.board),
+      note?.starred && h("span", { className: "star" }, "★"));
+      for (const type of ["pointerup", "pointerleave", "pointercancel"]) cell.addEventListener(type, () => clearTimeout(timer));
+      return cell;
+    })));
+    page.append(h("div", { className: "empty small-note" }, "Hold a reference to star, sort, move, or delete it."));
   }
 
   // A grid with a quiet magnifier. The field only appears when asked for.
@@ -258,7 +350,7 @@ export class Home {
         this.artworkOptions(art);
       },
     }, h("div", { className: "card-image", style: { height: `${Math.floor(width * 2 / 3)}px` } }, this.thumbnail(art, false), this.moreButton(art)),
-    h("div", { className: "card-name" }, art.name),
+    h("div", { className: "card-name", translate: false }, art.name),
     h("div", { className: "card-time" }, relativeTime(art.updated)));
   }
 
@@ -290,7 +382,75 @@ export class Home {
     if (!canChooseFolder) {
       choices.push({ label: "Folders need Chrome or Edge", icon: "gallery", run: () => {} });
     }
+    choices.push(
+      { label: "Save a backup file", icon: "export", run: () => this.saveBackup() },
+      { label: "Restore from a backup file", icon: "copy", run: () => this.restoreBackup() },
+      { label: "Language", icon: "rename", run: () => this.chooseLanguage() },
+    );
     choiceSheet("Backup", choices, note);
+  }
+
+  chooseLanguage() {
+    choiceSheet("Language", LANGUAGES.map(([code, label]) => ({
+      label,
+      run: () => {
+        if (code === language) return;
+        saveLanguage(code);
+        location.reload();
+      },
+    })));
+  }
+
+  // Saves everything as one zip, the same file the Android app makes and restores.
+  async saveBackup() {
+    let target = null;
+    if (typeof window.showSaveFilePicker === "function") {
+      try {
+        target = await window.showSaveFilePicker({
+          suggestedName: "Cappuccino backup.zip",
+          types: [{ description: "Backup", accept: { "application/zip": [".zip"] } }],
+        });
+      } catch (error) {
+        if (error.name === "AbortError") return;
+      }
+    }
+    say("Saving your backup");
+    try {
+      const zip = await this.store.backup();
+      if (target) {
+        const writable = await target.createWritable();
+        await writable.write(zip);
+        await writable.close();
+      } else {
+        const link = h("a", { href: URL.createObjectURL(zip), download: "Cappuccino backup.zip" });
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+      }
+      say("Backup saved", { long: true });
+    } catch (error) {
+      console.error(error);
+      say("Couldn't save your backup", { long: true });
+    }
+  }
+
+  restoreBackup() {
+    const input = h("input", { type: "file", accept: ".zip,application/zip" });
+    input.addEventListener("change", async () => {
+      const file = input.files[0];
+      if (!file) return;
+      say("Restoring your work");
+      try {
+        await this.store.restore(file);
+        say("Backup restored", { long: true });
+      } catch (error) {
+        console.error(error);
+        say("Couldn't restore this backup", { long: true });
+      }
+      this.render();
+    });
+    input.click();
   }
 
   async chooseFolder() {
@@ -467,7 +627,7 @@ export class Home {
       },
     });
     paint();
-    const wide = window.innerWidth >= 620;
+    const wide = viewWidth() >= 620;
     const body = h("div", { className: "sheet-body book-body" },
       h("div", { className: "row" }, h("div", { className: "grow" }, serif("New sketchbook", 26)), creamChip("Cancel", false, () => close())),
       h("div", { className: wide ? "row top gap18" : "column gap18" }, book,
@@ -526,7 +686,7 @@ export class Home {
       },
     }, svg(icon, danger ? "#D85A30" : COCOA), h("span", {}, label));
     const size = art.layers === 1 ? `${art.width} x ${art.height} pixels · 1 layer` : `${art.width} x ${art.height} pixels · ${art.layers} layers`;
-    const wide = window.innerWidth >= 620;
+    const wide = viewWidth() >= 620;
     const preview = h("div", { className: "sheet-preview" }, this.thumbnail(art, true));
     const facts = h("div", { className: "facts" },
       serif(art.name, 26),
@@ -663,4 +823,31 @@ export function warmupPicker(look, suggested, current, pick) {
   body.append(h("div", { className: "end gap18" }, creamChip("Not now", false, () => close())));
   close = sheet(body);
   requestAnimationFrame(() => new Companion(face, { look }));
+}
+
+// A small flattened picture of a PSD's visible layers on white, for its card.
+async function psdThumbnail(image) {
+  const width = THUMBNAIL_WIDTH;
+  const height = thumbnailHeight(image.width, image.height);
+  const surface = new OffscreenCanvas(width, height);
+  const c = surface.getContext("2d");
+  c.fillStyle = "#FFFFFF";
+  c.fillRect(0, 0, width, height);
+  const page = new OffscreenCanvas(image.width, image.height);
+  const pageContext = page.getContext("2d");
+  for (const layer of image.layers.filter((it) => it.visible)) {
+    const pixels = new Uint8ClampedArray(layer.rgba.length);
+    for (let i = 0; i < pixels.length; i += 4) {
+      const alpha = layer.rgba[i + 3];
+      const scale = alpha ? 255 / alpha : 0;
+      pixels[i] = layer.rgba[i] * scale;
+      pixels[i + 1] = layer.rgba[i + 1] * scale;
+      pixels[i + 2] = layer.rgba[i + 2] * scale;
+      pixels[i + 3] = alpha;
+    }
+    pageContext.putImageData(new ImageData(pixels, image.width, image.height), 0, 0);
+    c.globalAlpha = layer.opacity;
+    c.drawImage(page, 0, 0, width, height);
+  }
+  return surface.convertToBlob({ type: "image/png" });
 }
