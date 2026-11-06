@@ -315,6 +315,26 @@ export class ArtworkStore {
     return copy;
   }
 
+  // --- Time-lapse frames, as timelapse/000000.jpg on Android --------------------------------
+
+  async addTimelapseFrame(doc, pixels, width, height) {
+    const dir = await directory(doc.dir, "timelapse");
+    let count = 0;
+    for await (const _ of dir.keys()) count++;
+    const surface = new OffscreenCanvas(width, height);
+    surface.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+    const blob = await surface.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+    await writeFile(dir, `${String(count).padStart(6, "0")}.jpg`, blob);
+  }
+
+  async timelapseFrames(doc) {
+    const dir = await directory(doc.dir, "timelapse");
+    const files = [];
+    for await (const [name, handle] of dir.entries()) if (handle.kind === "file") files.push([name, handle]);
+    files.sort((a, b) => a[0].localeCompare(b[0]));
+    return Promise.all(files.map(([, handle]) => handle.getFile()));
+  }
+
   // --- What the companion remembers, as snapshot.json and first-snapshot.json --------------------
 
   async snapshot(doc) {
@@ -484,6 +504,41 @@ export class ArtworkStore {
       if ((name.startsWith("layer-") || name.startsWith("pack-")) && !used.has(name)) unused.push(name);
     }
     for (const name of unused) await remove(dir, name);
+  }
+
+  // Saves an exported file: into Exports in the chosen folder, or as a download from the browser.
+  // Returns where it went, for the companion to say.
+  async saveExport(fileName, blob) {
+    if (this.folderName) {
+      const exports = await directory(this.root, "Exports");
+      await writeFile(exports, fileName, blob);
+      return `${this.folderName}/Exports`;
+    }
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = fileName;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 10000);
+    return "your downloads";
+  }
+
+  // Turns a read PSD into an artwork, its layers bottom first, as ArtworkStore.importPsd() does.
+  async importPsd(image, name, projectId, thumbnail) {
+    const doc = await this.create(name, projectId, image.width, image.height);
+    const base = doc.manifest.layers[0];
+    doc.manifest.layers = image.layers.map((layer, index) => ({
+      ...base, id: index + 1, name: layer.name, opacity: layer.opacity, visible: layer.visible,
+      blend: layer.blend, clip: layer.clipped, group: layer.group,
+    }));
+    doc.manifest.groups = image.groups.map((group, index) => ({ id: index + 1, name: group, visible: true, opacity: 1, collapsed: false }));
+    doc.manifest.nextGroupId = image.groups.length + 1;
+    doc.manifest.activeLayer = image.layers.length;
+    doc.manifest.nextLayerId = image.layers.length + 1;
+    const regions = new Map(image.layers.map((layer, index) => [index + 1, { left: 0, top: 0, width: image.width, height: image.height, pixels: layer.rgba }]));
+    await this.save(doc, regions, thumbnail, null);
+    return doc.id;
   }
 
   // A new artwork's folder and manifest, as MainActivity.openDocument() starts one.

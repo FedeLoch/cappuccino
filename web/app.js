@@ -17,7 +17,9 @@ import { analyzeArtwork, clearestAtASmallSize, finishNote, progressNote, without
 import { psdFolder, withPsdGroups, writePsd } from "./psd.js";
 import { WARMUPS, WARMUP_TOPICS } from "./warmups.js";
 import { WarmupLayout, WarmupWork, drawWarmupGuide, singleSun, warmupReview } from "./practice.js";
-import { askSheet, h, say as sayNote, sheet, svg } from "./ui.js";
+import {
+  applyUiScale, askSheet, choiceSheet, h, pixelRatio, say as sayNote, sheet, svg, toUi, uiScale, viewHeight, viewWidth,
+} from "./ui.js";
 import { Home, warmupPicker } from "./home.js";
 import {
   ArtworkStore, PREVIEW_WIDTH, THUMBNAIL_WIDTH, TILE_SIZE, previewHeight, thumbnailHeight,
@@ -189,6 +191,9 @@ function flipCanvas() {
 }
 
 function resize() {
+  applyUiScale();
+  canvas.style.zoom = String(1 / uiScale());
+  overlay.style.zoom = String(1 / uiScale());
   dpr = window.devicePixelRatio || 1;
   const width = Math.round(window.innerWidth * dpr);
   const height = Math.round(window.innerHeight * dpr);
@@ -463,7 +468,7 @@ function beginToolGesture(kind, event) {
   const x = toCanvasX(event.clientX * dpr);
   const y = toCanvasY(event.clientY * dpr);
   toolGesture = { kind, startX: x, startY: y, count: 0 };
-  if (kind.mode === "lasso") addLassoPoint(event);
+  if (kind.mode === "lasso" || kind.mode === "select") addLassoPoint(event);
 }
 
 function moveToolGesture(event) {
@@ -521,6 +526,9 @@ function endToolGesture(cancelled) {
       recordStroke();
       markUnsaved();
     }
+  } else if (gesture.kind.mode === "select") {
+    drawOverlay();
+    if (!cancelled) finishLasso(gesture.count);
   } else {
     drawOverlay();
     if (!cancelled && gesture.count >= 3) {
@@ -614,6 +622,16 @@ canvas.addEventListener("pointerdown", (event) => {
     return;
   }
   if ((event.button !== 0 && !barrel) || strokePointer !== -1 || toolGesture) return;
+  if (selectionTool === "wand") {
+    finishWand(Math.floor(toCanvasX(event.clientX * dpr)), Math.floor(toCanvasY(event.clientY * dpr)));
+    return;
+  }
+  if (selectionTool === "lasso") {
+    capture(event);
+    strokePointer = event.pointerId;
+    beginToolGesture({ mode: "select" }, event);
+    return;
+  }
   const eraserEnd = event.pointerType === "pen" && ((event.buttons & 32) !== 0 || (barrel && penButtonAction === 1));
   const kind = eraserEnd ? lastEraser : brush;
   capture(event);
@@ -913,9 +931,16 @@ function selectTool(kind) {
   opacitySlider.set(Math.round(settingsFor(kind).opacity * 1000));
   brushButton.classList.toggle("on", !kind.eraser && !isTool(kind));
   eraserButton.classList.toggle("on", kind.eraser);
-  toolsButton.classList.toggle("on", isTool(kind));
-  const icon = { smudge: "smudge", fill: "fill", gradient: "gradient", lasso: "lasso_fill" }[kind.mode];
-  toolsButton.innerHTML = ICONS[isTool(kind) ? icon : "select"];
+  markTools();
+}
+
+// The tools button shows the tool in use, and stays lit while there's a selection.
+function markTools() {
+  toolsButton.classList.toggle("on", hasSelection || isTool(brush));
+  const icon = { smudge: "smudge", fill: "fill", gradient: "gradient", lasso: "lasso_fill" }[brush.mode];
+  if (selectionTool === "wand") toolsButton.innerHTML = ICONS.wand;
+  else if (selectionTool === "lasso") toolsButton.innerHTML = ICONS.select;
+  else toolsButton.innerHTML = ICONS[isTool(brush) ? icon : "select"];
 }
 
 function setColor(next) {
@@ -980,7 +1005,8 @@ function verticalSlider(element, change) {
   };
   const pick = (event) => {
     const box = element.getBoundingClientRect();
-    set((box.bottom - 20 - event.clientY) / travel() * 1000);
+    const edge = 20 * uiScale();
+    set((box.bottom - edge - event.clientY) / (box.height - edge * 2) * 1000);
     change(value);
   };
   element.addEventListener("pointerdown", (event) => {
@@ -1011,7 +1037,7 @@ const opacitySlider = verticalSlider(document.getElementById("opacity-slider"), 
 
 function placeRecentStrip() {
   const sliders = document.getElementById("sliders");
-  const top = window.innerHeight / 2 + sliders.offsetHeight / 2 + 8;
+  const top = viewHeight() / 2 + sliders.offsetHeight / 2 + 8;
   recentStrip.style.top = `${top}px`;
 }
 
@@ -1021,12 +1047,14 @@ function toggleInterface() {
   for (const element of chrome) element.hidden = interfaceHidden;
   showCompanionState();
   showWarmupBar();
+  refreshAnimationBar();
 }
 
 // Chrome steps back while the pen draws, as fadeChrome() does on Android.
 function fadeChrome(opacity) {
   for (const element of chrome) element.style.opacity = String(opacity);
   warmupBar.style.opacity = String(opacity);
+  animationBar.style.opacity = String(opacity);
   peekCanvas.style.opacity = String(opacity);
   handsCanvas.style.opacity = String(opacity);
   companion.still = opacity < 1;
@@ -1173,7 +1201,7 @@ function eraserPanel() {
 
 function toolGrid(kinds, previewColor, favoritable) {
   return h("div", { className: "grid" }, kinds.map((kind) => {
-    const preview = h("canvas", { width: 130 * dpr, height: 48 * dpr, ariaLabel: `${kind.label} preview` });
+    const preview = h("canvas", { width: 130 * pixelRatio(), height: 48 * pixelRatio(), ariaLabel: `${kind.label} preview` });
     drawBrushPreview(preview, kind, previewColor);
     let held = 0;
     let holdTimer = 0;
@@ -1286,10 +1314,99 @@ function toolsPanel() {
       toolCard("lasso_fill", "Lasso fill", "Fill a shape you draw", brush === TOOLS.lassoFill, pick(TOOLS.lassoFill)))),
     gap(h("div", { className: "caption" }, "Selection")),
     gap(h("div", { className: "tools" },
-      toolCard("select", "Lasso", "Draw around an area", false, null, false),
-      toolCard("wand", "Magic wand", "Pick a color area", false, null, false))),
+      toolCard("select", "Lasso", "Draw around an area", false, () => startSelection("lasso", "Draw around an area with your pen")),
+      toolCard("wand", "Magic wand", "Pick a color area", false, () => startSelection("wand", "Tap a color area with your pen")))),
     gap(h("div", { className: "caption" },
-      "Make a selection to keep painting inside it, or to move part of a layer.")));
+      "Make a selection to keep painting inside it, or to move part of a layer.")),
+    ...selectionControls());
+}
+
+// --- Selection, as MainActivity's lasso, magic wand, and selection actions -----------------------
+
+const FEATHER_SHARE = 4000;
+let selectionTool = "none";
+let hasSelection = false;
+let selectionMode = 0;  // 0 new, 1 add, 2 remove.
+let selectionFeather = 0;
+
+function startSelection(tool, hint) {
+  selectionTool = tool;
+  markTools();
+  closePanel();
+  say(hint);
+}
+
+function markSelection(active) {
+  hasSelection = active;
+  if (!active) selectionMode = 0;
+  markTools();
+}
+
+function finishLasso(count) {
+  selectionTool = "none";
+  engine._cap_set_selection_polygon(count, selectionMode);
+  markSelection(engine._cap_has_selection() === 1);
+  queueCompose();
+}
+
+function finishWand(x, y) {
+  selectionTool = "none";
+  engine._cap_select_color_at(x, y, 40, selectionMode);
+  markSelection(engine._cap_has_selection() === 1);
+  queueCompose();
+}
+
+function clearSelection() {
+  engine._cap_clear_selection();
+  markSelection(false);
+  queueCompose();
+}
+
+// Fades the selection's edge over about twice radius canvas pixels.
+function featherSelection(radius) {
+  engine._cap_set_selection_feather(radius);
+  queueCompose();
+}
+
+function selectionToLayer(cut, transform) {
+  if (layerSlots() >= maxLayers) return sayFull();
+  setEditingMask(false);
+  const id = doc.manifest.nextLayerId++;
+  engineLayers.add(id);
+  engine._cap_copy_selection_to_layer(id, cut ? 1 : 0);
+  editLayers(() => {
+    const index = layers().findIndex((layer) => layer.id === doc.manifest.activeLayer) + 1;
+    layers().splice(index, 0, newLayer(id, `Selection ${id}`));
+    doc.manifest.activeLayer = id;
+  }, { pixels: cut });
+  clearSelection();
+  if (transform) startTransform();
+  else closePanel();
+}
+
+function selectionControls() {
+  if (!hasSelection) return [];
+  const row = (icon, title, detail, click) => gap(h("button", { className: "action-row", onClick: click },
+    svg(icon), h("div", { className: "text" }, h("div", {}, title), detail && h("div", { className: "detail" }, detail))));
+  return [
+    gap(segmented(["New", "Add", "Remove"], selectionMode, (index) => {
+      selectionMode = index;
+      rerender();
+    })),
+    gap(toolSlider("Soft edge", selectionFeather, (value) => {
+      selectionFeather = value;
+      featherSelection(Math.round(value * Math.max(doc.width, doc.height) / FEATHER_SHARE));
+    })),
+    row("transform", "Transform", "Move, scale, or rotate the selection", () => selectionToLayer(true, true)),
+    row("copy", "Copy to layer", null, () => selectionToLayer(false, false)),
+    row("cut", "Cut to layer", null, () => selectionToLayer(true, false)),
+    row("invert", "Invert", null, () => {
+      engine._cap_invert_selection();
+      queueCompose();
+      closePanel();
+    }),
+    row("close", "Clear selection", null, () => clearSelection()),
+  ];
 }
 
 // --- Art direction ---------------------------------------------------------------------------
@@ -1458,10 +1575,10 @@ function colorPicker(pick) {
     const width = holder.clientWidth;
     const height = holder.clientHeight;
     if (!width) return;
-    element.width = width * dpr;
-    element.height = height * dpr;
+    element.width = width * pixelRatio();
+    element.height = height * pixelRatio();
     const c = element.getContext("2d");
-    c.scale(dpr, dpr);
+    c.scale(pixelRatio(), pixelRatio());
     const square = height - barHeight - gapHeight;
     let gradient = c.createLinearGradient(0, 0, width, 0);
     gradient.addColorStop(0, "#FFFFFF");
@@ -1488,7 +1605,7 @@ function colorPicker(pick) {
   };
   const move = (event) => {
     const box = holder.getBoundingClientRect();
-    const square = box.height - barHeight - gapHeight;
+    const square = box.height - (barHeight + gapHeight) * uiScale();
     const x = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
     if (draggingHue) {
       hsv[0] = x * 359.9;
@@ -1502,7 +1619,7 @@ function colorPicker(pick) {
   holder.addEventListener("pointerdown", (event) => {
     holder.setPointerCapture(event.pointerId);
     const box = holder.getBoundingClientRect();
-    draggingHue = event.clientY - box.top > box.height - barHeight - gapHeight;
+    draggingHue = event.clientY - box.top > box.height - (barHeight + gapHeight) * uiScale();
     move(event);
   });
   holder.addEventListener("pointermove", (event) => {
@@ -1717,8 +1834,8 @@ function moveTransformHandles() {
   if (!transformCorners) return;
   [...handleLayer.children].forEach((handle, corner) => {
     const [x, y] = transformedToScreen(transformCorners[corner * 2], transformCorners[corner * 2 + 1]);
-    handle.style.left = `${x - 18}px`;
-    handle.style.top = `${y - 18}px`;
+    handle.style.left = `${toUi(x) - 18}px`;
+    handle.style.top = `${toUi(y) - 18}px`;
   });
 }
 
@@ -2013,8 +2130,6 @@ function actionsPanel() {
     gap(row("export", "PNG image", store.folderName ? `Flattened, saved to ${store.folderName}/Exports` : "Flattened, saved to your downloads", () => { closePanel(); exportPng(); })),
     gap(row("layersfile", "PSD file", "Keeps your layers", () => { closePanel(); exportPsd(); })),
     gap(row("video", "Time-lapse", "A video of your progress", () => { closePanel(); askTimelapseLength(); })),
-    gap(h("div", { className: "caption" }, "Language")),
-    gap(segmented(LANGUAGES.map(([, label]) => label), LANGUAGES.findIndex(([code]) => code === language), (index) => setLanguage(LANGUAGES[index][0]))),
     gap(h("div", { className: "caption" }, "Pen button")),
     gap(segmented(["Pick color", "Eraser", "Undo"], penButtonAction, (action) => {
       penButtonAction = action;
@@ -2270,11 +2385,11 @@ function pickAt(clientX, clientY) {
 
 function showPickRing(next, x, y) {
   if (!pickRing) {
-    pickRing = h("canvas", { className: "pick-ring", width: 96 * dpr, height: 96 * dpr });
+    pickRing = h("canvas", { className: "pick-ring", width: 96 * pixelRatio(), height: 96 * pixelRatio() });
     studioView.append(pickRing);
   }
-  pickRing.style.left = `${x - 48}px`;
-  pickRing.style.top = `${y - 120}px`;
+  pickRing.style.left = `${toUi(x) - 48}px`;
+  pickRing.style.top = `${toUi(y) - 120}px`;
   const c = pickRing.getContext("2d");
   const size = pickRing.width;
   const thickness = size * 0.16;
@@ -2764,6 +2879,264 @@ async function exportFrames() {
   }
 }
 
+// --- Animation, as Animation.kt and MainActivity's animation bar ----------------------------------
+
+const ONION_SHARE = 0.25;
+const ANIMATION_SPEEDS = [4, 8, 12, 24];
+const ANIMATION_SIDE = 1280;
+const ANIMATION_SECONDS = 6;
+let onionSkin = true;
+let playingFrame = -1;
+let playTimer = 0;
+const animationBar = h("div", { className: "tool-bar animation-bar", hidden: true });
+studioView.append(animationBar);
+
+// How much of each frame shows: the current one fully, its neighbors faintly with onion skin.
+function frameShares(count, current, onion) {
+  return Array.from({ length: count }, (_, index) => {
+    if (index === current) return 1;
+    if (onion && Math.abs(index - current) === 1) return ONION_SHARE;
+    return 0;
+  });
+}
+
+function animationShare(layer) {
+  if (!doc?.manifest.animation) return 1;
+  const list = layers();
+  const current = playingFrame >= 0 ? playingFrame : list.findIndex((it) => it.id === doc.manifest.activeLayer);
+  return frameShares(list.length, current, onionSkin && playingFrame < 0)[list.indexOf(layer)] ?? 1;
+}
+
+function setAnimation(on) {
+  stopPlaying();
+  doc.manifest.animation = on;
+  doc.manifest.fps ||= 8;
+  markUnsaved();
+  syncLayers(false);
+  if (on) say("Each layer is a frame now. Add frames with +, and the frames beside this one show faintly.", true);
+  refreshAnimationBar();
+}
+
+function refreshAnimationBar() {
+  const on = !!doc?.manifest.animation && !interfaceHidden;
+  animationBar.hidden = !on;
+  if (!on) return;
+  const list = layers();
+  const current = playingFrame >= 0 ? playingFrame : list.findIndex((it) => it.id === doc.manifest.activeLayer);
+  animationBar.replaceChildren(h("div", { className: "pill-bar scroll-bar" },
+    h("button", { className: playingFrame >= 0 ? "chip-dark on" : "chip-dark", onClick: () => togglePlaying() }, playingFrame >= 0 ? "Stop" : "Play"),
+    ...list.map((layer, index) => h("button", {
+      className: index === current ? "chip frame-chip on" : "chip frame-chip",
+      onClick: () => {
+        stopPlaying();
+        selectLayer(layer);
+        syncLayers(false);
+        refreshLayers();
+        refreshAnimationBar();
+      },
+    }, String(index + 1))),
+    h("button", { className: "chip frame-chip", onClick: () => { addLayer(); refreshAnimationBar(); } }, "+"),
+    h("button", {
+      className: onionSkin ? "chip-dark on" : "chip-dark",
+      onClick: () => {
+        onionSkin = !onionSkin;
+        syncLayers(false);
+        refreshAnimationBar();
+      },
+    }, "Onion skin"),
+    h("button", {
+      className: "chip-dark",
+      onClick: () => {
+        const at = ANIMATION_SPEEDS.indexOf(doc.manifest.fps);
+        doc.manifest.fps = ANIMATION_SPEEDS[(at + 1) % ANIMATION_SPEEDS.length];
+        markUnsaved();
+        if (playingFrame >= 0) {
+          stopPlaying();
+          togglePlaying();
+        }
+        refreshAnimationBar();
+      },
+    }, `${doc.manifest.fps} fps`),
+    h("button", { className: "chip-dark", onClick: () => exportAnimation() }, "Export")));
+}
+
+function togglePlaying() {
+  if (playingFrame >= 0) {
+    stopPlaying();
+    syncLayers(false);
+    refreshAnimationBar();
+    return;
+  }
+  if (layers().length < 2) {
+    say("Add a second frame to make an animation");
+    return;
+  }
+  playingFrame = Math.max(0, layers().findIndex((it) => it.id === doc.manifest.activeLayer));
+  playTimer = setInterval(() => {
+    playingFrame = (playingFrame + 1) % Math.max(1, layers().length);
+    syncLayers(false);
+  }, 1000 / doc.manifest.fps);
+  refreshAnimationBar();
+}
+
+function stopPlaying() {
+  playingFrame = -1;
+  clearInterval(playTimer);
+}
+
+// Renders each frame alone, then plays them a few times in a video.
+async function exportAnimation() {
+  stopPlaying();
+  const list = layers();
+  if (list.length < 2) {
+    say("Add a second frame to make an animation");
+    return;
+  }
+  const scale = Math.min(1, ANIMATION_SIDE / Math.max(doc.width, doc.height));
+  const width = Math.floor(doc.width * scale) & ~1;
+  const height = Math.floor(doc.height * scale) & ~1;
+  const fps = doc.manifest.fps || 8;
+  say("Exporting animation");
+  const frames = [];
+  const size = width * height * 4;
+  const pointer = engine._malloc(size);
+  for (let frame = 0; frame < list.length; frame++) {
+    const shares = frameShares(list.length, frame, false);
+    list.forEach((layer, index) => applyLayerProperties(layer, shares[index]));
+    engine._cap_read_composite(width, height, pointer);
+    frames.push(unpremultipliedImage(engine.HEAPU8.slice(pointer, pointer + size), width, height));
+  }
+  engine._free(pointer);
+  syncLayers(false);
+  const loops = Math.max(1, Math.ceil(ANIMATION_SECONDS * fps / frames.length));
+  const timeline = Array.from({ length: frames.length * loops }, (_, i) => i % frames.length);
+  try {
+    const video = await encodeVideo(frames, width, height, timeline, fps);
+    const where = await store.saveExport(`${safeName(doc.manifest.name)} animation.${video.extension}`, video.blob);
+    say(`Saved to ${where}`, true);
+  } catch (error) {
+    console.error(error);
+    say("Couldn't export this animation", true);
+  }
+}
+
+// --- Videos, as TimelapseEncoder.kt --------------------------------------------------------------
+
+const TIMELAPSE_RATE = 15;
+const HOLD_LAST_FRAMES = 45;
+const OUTRO_DELAY_FRAMES = 5;
+const OUTRO_POP_FRAMES = 8;
+const OUTRO_HEIGHT = 0.11;
+const OUTRO_MARGIN = 0.035;
+
+// Picks evenly spread frames for a video of seconds, or keeps them all, then holds the last one.
+function timelapseTimeline(count, seconds) {
+  if (!count) return [];
+  const wanted = seconds ? Math.min(seconds * TIMELAPSE_RATE, count) : count;
+  const picked = Array.from({ length: wanted }, (_, i) => (wanted === 1 ? count - 1 : Math.floor(i * (count - 1) / (wanted - 1))));
+  return [...picked, ...Array(HOLD_LAST_FRAMES).fill(count - 1)];
+}
+
+// Plays frames in the order of the timeline into a video. Browsers record in real time, so a
+// video takes as long to export as it runs.
+async function encodeVideo(frames, width, height, timeline, frameRate, outro = null) {
+  const surface = h("canvas", { width, height });
+  const c = surface.getContext("2d");
+  const types = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm"];
+  const type = types.find((it) => window.MediaRecorder?.isTypeSupported(it));
+  if (!type) throw new Error("This browser can't record video");
+  const stream = surface.captureStream(0);
+  const track = stream.getVideoTracks()[0];
+  const recorder = new MediaRecorder(stream, { mimeType: type, videoBitsPerSecond: 3_000_000 });
+  const chunks = [];
+  recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+  const stopped = new Promise((resolve) => { recorder.onstop = resolve; });
+  recorder.start();
+  const step = 1000 / frameRate;
+  const start = performance.now();
+  for (const [position, index] of timeline.entries()) {
+    c.fillStyle = "#FFFFFF";
+    c.fillRect(0, 0, width, height);
+    c.drawImage(frames[index], 0, 0, width, height);
+    if (outro && position >= outro.start) outro.draw(c, width, height, position - outro.start);
+    track.requestFrame();
+    const wait = start + (position + 1) * step - performance.now();
+    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  }
+  recorder.stop();
+  await stopped;
+  return { blob: new Blob(chunks, { type: type.split(";")[0] }), extension: type.startsWith("video/mp4") ? "mp4" : "webm" };
+}
+
+// A small dark note in the corner, like the app's own, that grows in with a little bounce.
+function timelapseOutro(start) {
+  const face = new OffscreenCanvas(128, 128);
+  const signature = "Made with Cappuccino";
+  return {
+    start,
+    draw(c, width, height, frame) {
+      const t = (frame + 1) / OUTRO_POP_FRAMES;
+      const pop = t >= 1 ? 1 : 1 + 2.7 * (t - 1) ** 3 + 1.7 * (t - 1) ** 2;
+      const tall = Math.min(width, height) * OUTRO_HEIGHT;
+      c.save();
+      c.font = `${tall * 0.32}px Roboto, "Segoe UI", system-ui, sans-serif`;
+      const wide = tall * 1.05 + c.measureText(signature).width + tall * 0.4;
+      const margin = Math.min(width, height) * OUTRO_MARGIN;
+      const right = width - margin;
+      const bottom = height - margin;
+      const left = right - wide;
+      const top = bottom - tall;
+      c.translate(right, bottom);
+      c.scale(pop, pop);
+      c.translate(-right, -bottom);
+      c.fillStyle = "#3A291F";
+      c.beginPath();
+      c.roundRect(left, top, wide, tall, tall / 2);
+      c.fill();
+      const size = Math.floor(tall * 0.9);
+      const pal = new Companion(face, { look: companionLook, blink: false, still: true });
+      pal.motionTime = frame / TIMELAPSE_RATE;
+      pal.setColor(color);
+      c.drawImage(face, left + tall * 0.12, top + (tall - size) / 2, size, size);
+      c.fillStyle = TEXT_COLOR;
+      c.textBaseline = "middle";
+      c.fillText(signature, left + tall * 1.05, top + tall / 2);
+      c.restore();
+    },
+  };
+}
+
+function askTimelapseLength() {
+  choiceSheet("Time-lapse length", [
+    ...[15, 30, 60].map((seconds) => ({ label: `${seconds} seconds`, run: () => exportTimelapse(seconds) })),
+    { label: "Every saved moment", run: () => exportTimelapse(null) },
+  ]);
+}
+
+async function exportTimelapse(seconds) {
+  await save(false);
+  const files = await store.timelapseFrames(doc).catch(() => []);
+  if (files.length < 2) {
+    say("Draw a little more to build a time-lapse");
+    return;
+  }
+  say("Exporting time-lapse");
+  try {
+    const frames = [];
+    for (const file of files) frames.push(await createImageBitmap(file));
+    const width = THUMBNAIL_WIDTH * 2;
+    const height = thumbnailHeight(doc.width, doc.height) * 2 & ~1;
+    const timeline = timelapseTimeline(frames.length, seconds);
+    const outro = timelapseOutro(timeline.length - HOLD_LAST_FRAMES + OUTRO_DELAY_FRAMES);
+    const video = await encodeVideo(frames, width, height, timeline, TIMELAPSE_RATE, outro);
+    const where = await store.saveExport(`${safeName(doc.manifest.name)} time-lapse.${video.extension}`, video.blob);
+    say(`Saved to ${where}`, true);
+  } catch (error) {
+    console.error(error);
+    say("Couldn't export this time-lapse", true);
+  }
+}
+
 // --- Layers, as MainActivity's layer panel and EditHistory.kt ------------------------------------
 
 const MAX_EDITS = 300;
@@ -2861,10 +3234,10 @@ function setEditingMask(editing) {
   markMaskEditing();
 }
 
-function applyLayerProperties(layer) {
+function applyLayerProperties(layer, share = animationShare(layer)) {
   const group = groupsOf().find((it) => it.id === layer.group);
-  engine._cap_set_layer_properties(layer.id, layer.opacity * (group ? group.opacity : 1),
-    layer.visible && (!group || group.visible) ? 1 : 0, layer.blend || 0, layer.clip ? 1 : 0);
+  engine._cap_set_layer_properties(layer.id, layer.opacity * (group ? group.opacity : 1) * share,
+    layer.visible && (!group || group.visible) && share > 0 ? 1 : 0, layer.blend || 0, layer.clip ? 1 : 0);
   engine._cap_set_layer_mask(layer.id, layer.mask || 0, layer.maskEnabled === false ? 0 : 1);
 }
 
@@ -2878,6 +3251,7 @@ function applyLayerOrder() {
 
 // Sends the document's layers to the engine. Light edits skip the active layer copy.
 function syncLayers(structural) {
+  if (doc?.manifest.animation && typeof refreshAnimationBar === "function") queueMicrotask(refreshAnimationBar);
   if (structural) applyLayerOrder();
   layers().forEach(applyLayerProperties);
   if (structural) engine._cap_set_active_layer(paintTarget());
@@ -2933,6 +3307,10 @@ function selectLayer(layer) {
   markMaskEditing();
   doc.manifest.activeLayer = layer.id;
   engine._cap_set_active_layer(layer.id);
+  if (doc.manifest.animation) {
+    syncLayers(false);
+    refreshAnimationBar();
+  }
   markUnsaved();
 }
 
@@ -3038,6 +3416,7 @@ function addMask() {
   engineLayers.add(id);
   engine._cap_create_mask(layer.id, id);
   engine._cap_clear_selection();
+  markSelection(false);
   editLayers(() => {
     layer.mask = id;
     layer.maskEnabled = true;
@@ -3367,11 +3746,11 @@ function layerRow(layer) {
     row.classList.add("dragging");
   });
   handle.addEventListener("pointermove", (event) => {
-    if (handle.hasPointerCapture(event.pointerId)) row.style.transform = `translateY(${event.clientY - startY}px)`;
+    if (handle.hasPointerCapture(event.pointerId)) row.style.transform = `translateY(${toUi(event.clientY - startY)}px)`;
   });
   const drop = (event, keep) => {
     if (!handle.hasPointerCapture(event.pointerId)) return;
-    const moved = Math.round((event.clientY - startY) / (LAYER_ROW + LAYER_GAP));
+    const moved = Math.round(toUi(event.clientY - startY) / (LAYER_ROW + LAYER_GAP));
     row.style.transform = "";
     row.classList.remove("dragging");
     if (keep && moved !== 0) moveLayerTo(layer.id, layers().findIndex((it) => it.id === layer.id) - moved);
@@ -3394,8 +3773,8 @@ function chooseBlend(anchor, layer) {
       refreshLayers();
     },
   }, name)));
-  list.style.top = `${box.bottom + 4}px`;
-  list.style.right = `${window.innerWidth - box.right}px`;
+  list.style.top = `${toUi(box.bottom) + 4}px`;
+  list.style.right = `${toUi(window.innerWidth - box.right)}px`;
   studioView.append(list);
   const away = (event) => {
     if (!list.contains(event.target)) {
@@ -3458,8 +3837,8 @@ function scheduleNap() {
 
 function placeCompanion() {
   const size = 56;
-  const x = companionX === null ? 12 : Math.min(Math.max(0, companionX), window.innerWidth - size);
-  const y = companionY === null ? window.innerHeight - size - 12 : Math.min(Math.max(0, companionY), window.innerHeight - size);
+  const x = companionX === null ? 12 : Math.min(Math.max(0, companionX), viewWidth() - size);
+  const y = companionY === null ? viewHeight() - size - 12 : Math.min(Math.max(0, companionY), viewHeight() - size);
   companionCanvas.style.left = `${x}px`;
   companionCanvas.style.top = `${y}px`;
   companionCanvas.style.bottom = "auto";
@@ -3540,8 +3919,8 @@ peekCanvas.addEventListener("click", () => setCompanionVisible(true));
   });
   companionCanvas.addEventListener("pointermove", (event) => {
     if (!companionCanvas.hasPointerCapture(event.pointerId)) return;
-    const dx = event.clientX - startX;
-    const dy = event.clientY - startY;
+    const dx = toUi(event.clientX - startX);
+    const dy = toUi(event.clientY - startY);
     if (Math.abs(dx) + Math.abs(dy) > 8) dragged = true;
     if (!dragged) return;
     companionX = originX + dx;
@@ -3920,15 +4299,15 @@ function canvasToScreen(x, y) {
 function drawOverlay() {
   const c = overlayContext;
   c.clearRect(0, 0, overlay.width, overlay.height);
-  if (toolGesture && toolGesture.kind.mode === "lasso") drawLasso();
+  if (toolGesture && (toolGesture.kind.mode === "lasso" || toolGesture.kind.mode === "select")) drawLasso();
   if (liquifyRing) {
     const [x, y, radius] = liquifyRing;
     c.beginPath();
     c.arc(x, y, radius, 0, Math.PI * 2);
-    c.lineWidth = 3 * dpr;
+    c.lineWidth = 3 * dpr * uiScale();
     c.strokeStyle = "rgba(0, 0, 0, 0.43)";
     c.stroke();
-    c.lineWidth = 1 * dpr;
+    c.lineWidth = 1 * dpr * uiScale();
     c.strokeStyle = "#FFFFFF";
     c.stroke();
   }
@@ -3957,22 +4336,23 @@ function drawOverlay() {
       shape.lineTo(...end);
       anchor = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2];
     }
-    c.lineWidth = 4 * dpr;
+    c.lineWidth = 4 * dpr * uiScale();
     c.strokeStyle = "rgba(0, 0, 0, 0.35)";
     c.stroke(shape);
-    c.lineWidth = 2 * dpr;
+    c.lineWidth = 2 * dpr * uiScale();
     c.strokeStyle = "#FFFFFF";
     c.stroke(shape);
-    drawMarkLabel(c, mark.label, anchor[0], anchor[1] + 8 * dpr);
+    drawMarkLabel(c, mark.label, anchor[0], anchor[1] + 8 * dpr * uiScale());
   }
 }
 
 function drawMarkLabel(c, label, x, y) {
-  c.font = `${12 * dpr}px Roboto, "Segoe UI", system-ui, sans-serif`;
-  const padding = 8 * dpr;
+  const unit = dpr * uiScale();
+  c.font = `${12 * unit}px Roboto, "Segoe UI", system-ui, sans-serif`;
+  const padding = 8 * unit;
   const width = c.measureText(label).width + padding * 2;
-  const height = 24 * dpr;
-  const edge = 72 * dpr;
+  const height = 24 * unit;
+  const edge = 72 * unit;
   const left = Math.min(Math.max(edge, x - width / 2), Math.max(edge, overlay.width - width - edge));
   const top = Math.min(Math.max(edge, y), Math.max(edge, overlay.height - height));
   c.fillStyle = "#2C2C2A";
@@ -3987,7 +4367,7 @@ function drawMarkLabel(c, label, x, y) {
 // A loupe ring at a spot: the new color on top and the previous one below, for a moment.
 function flashPickRing(next, x, y) {
   const previous = color;
-  const ring = h("canvas", { className: "pick-ring", width: 96 * dpr, height: 96 * dpr });
+  const ring = h("canvas", { className: "pick-ring", width: 96 * pixelRatio(), height: 96 * pixelRatio() });
   ring.style.left = `${x - 48}px`;
   ring.style.top = `${y - 96}px`;
   const c = ring.getContext("2d");
@@ -4021,9 +4401,9 @@ function placeBubble() {
   const width = panel.offsetWidth;
   const height = panel.offsetHeight;
   const right = x + size + 2;
-  const tailLeft = right + width <= window.innerWidth;
+  const tailLeft = right + width <= viewWidth();
   const left = tailLeft ? right : Math.max(0, x - 2 - width);
-  const top = Math.min(Math.max(0, y + size / 2 - height / 2), Math.max(0, window.innerHeight - height));
+  const top = Math.min(Math.max(0, y + size / 2 - height / 2), Math.max(0, viewHeight() - height));
   panel.style.left = `${left}px`;
   panel.style.top = `${top}px`;
   panel.classList.toggle("tail-left", tailLeft);
@@ -4126,6 +4506,7 @@ function save(withPreview) {
   saving = saving.then(async () => {
     const small = await thumbnail;
     await saveStore.save(target, regions, small.blob, preview && (await preview).blob);
+    await saveStore.addTimelapseFrame(target, small.pixels, THUMBNAIL_WIDTH, thumbnailHeight(target.width, target.height)).catch(() => {});
     await analyze(target, small.pixels, THUMBNAIL_WIDTH, thumbnailHeight(target.width, target.height));
   }).catch((error) => {
     console.error(error);
@@ -4167,6 +4548,10 @@ async function openDocument(next) {
   const ids = [];
   history.clear();
   engineLayers.clear();
+  selectionTool = "none";
+  hasSelection = false;
+  selectionMode = 0;
+  selectionFeather = 0;
   editingMask = false;
   markMaskEditing();
   pickingLayers = false;
@@ -4213,6 +4598,8 @@ async function openDocument(next) {
   previewStale = !!next.fresh;
   queueCompose();
   showWarmupBar();
+  stopPlaying();
+  refreshAnimationBar();
   ready = true;
 }
 
@@ -4253,8 +4640,10 @@ async function leaveStudio() {
   clearTimeout(saveTimer);
   if (unsaved || previewStale || doc?.fresh) save(true);
   await saving;
+  stopPlaying();
   doc = null;
   warmupBar.hidden = true;
+  animationBar.hidden = true;
   studioView.hidden = true;
   homeView.hidden = false;
   await home.render();

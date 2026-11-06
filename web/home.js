@@ -4,7 +4,7 @@
 
 import { Companion } from "./companion.js";
 import {
-  accentChip, askSheet, choiceSheet, confirmSheet, creamChip, h, relativeTime, say, serif, sheet,
+  viewHeight, viewWidth, accentChip, askSheet, choiceSheet, confirmSheet, creamChip, h, relativeTime, say, serif, sheet,
   sheetButton, svg,
 } from "./ui.js";
 import { ArtworkStore, canChooseFolder } from "./storage.js";
@@ -77,7 +77,7 @@ export class Home {
   }
 
   header() {
-    const narrow = window.innerWidth < NARROW;
+    const narrow = viewWidth() < NARROW;
     const buttons = h("div", { className: "home-buttons" },
       creamChip("Backup", false, () => this.backupOptions()),
       creamChip("Import PSD", false, () => this.pickPsd()),
@@ -107,7 +107,7 @@ export class Home {
     const hour = new Date().getHours();
     const hello = hour < 12 ? "Good morning." : hour < 19 ? "Good afternoon." : "Good evening.";
     const row = h("div", { className: "greeting" }, face,
-      h("span", { className: window.innerWidth < NARROW ? "grow" : "" }, `${hello} Ready for another layer?`),
+      h("span", { className: viewWidth() < NARROW ? "grow" : "" }, `${hello} Ready for another layer?`),
       creamChip("Warm up", false, () => this.offerWarmup()));
     requestAnimationFrame(() => new Companion(face, { look: mascot(), outline: COCOA }));
     return row;
@@ -152,7 +152,7 @@ export class Home {
       this.sketchbook("Unsorted", artworks.filter((a) => !a.projectId).length, null, () => this.select("")),
       h("button", { className: "new-book", onClick: () => this.newSketchbook(projects.length) }, "New sketchbook"));
     const books = h("div", { className: "books" }, h("div", { className: "heading" }, "Your sketchbooks"), shelf);
-    const portrait = window.innerHeight > window.innerWidth;
+    const portrait = viewHeight() > viewWidth();
     const top = h("div", { className: portrait ? "home-top portrait" : "home-top" });
     if (artworks[0]) top.append(this.continueCard(artworks[0]));
     top.append(books);
@@ -489,7 +489,7 @@ export class Home {
       },
     });
     paint();
-    const wide = window.innerWidth >= 620;
+    const wide = viewWidth() >= 620;
     const body = h("div", { className: "sheet-body book-body" },
       h("div", { className: "row" }, h("div", { className: "grow" }, serif("New sketchbook", 26)), creamChip("Cancel", false, () => close())),
       h("div", { className: wide ? "row top gap18" : "column gap18" }, book,
@@ -548,7 +548,7 @@ export class Home {
       },
     }, svg(icon, danger ? "#D85A30" : COCOA), h("span", {}, label));
     const size = art.layers === 1 ? `${art.width} x ${art.height} pixels · 1 layer` : `${art.width} x ${art.height} pixels · ${art.layers} layers`;
-    const wide = window.innerWidth >= 620;
+    const wide = viewWidth() >= 620;
     const preview = h("div", { className: "sheet-preview" }, this.thumbnail(art, true));
     const facts = h("div", { className: "facts" },
       serif(art.name, 26),

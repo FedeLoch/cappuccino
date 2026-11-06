@@ -4,12 +4,14 @@
 
 import { Companion } from "./companion.js";
 import {
-  accentChip, askSheet, choiceSheet, confirmSheet, creamChip, h, relativeTime, say, serif, sheet,
+  viewHeight, viewWidth, accentChip, askSheet, choiceSheet, confirmSheet, creamChip, h, relativeTime, say, serif, sheet,
   sheetButton, svg,
 } from "./ui.js";
 import { ArtworkStore, canChooseFolder } from "./storage.js";
 import { WARMUPS, WARMUP_GROUPS, warmupFor } from "./warmups.js";
 import { WarmupLayout, drawWarmupGuide } from "./practice.js";
+import { readPsd } from "./psd.js";
+import { THUMBNAIL_WIDTH, thumbnailHeight } from "./storage.js";
 
 const ALL = "all";
 const NARROW = 600;
@@ -75,10 +77,10 @@ export class Home {
   }
 
   header() {
-    const narrow = window.innerWidth < NARROW;
+    const narrow = viewWidth() < NARROW;
     const buttons = h("div", { className: "home-buttons" },
       creamChip("Backup", false, () => this.backupOptions()),
-      creamChip("Import PSD", false, () => say("Importing PSD files comes to the web soon")),
+      creamChip("Import PSD", false, () => this.pickPsd()),
       accentChip("New artwork", () => this.showNewArtwork()));
     return h("div", { className: narrow ? "home-header narrow" : "home-header" },
       h("div", { className: "wordmark" }, "Cappuccino"), buttons);
@@ -105,10 +107,30 @@ export class Home {
     const hour = new Date().getHours();
     const hello = hour < 12 ? "Good morning." : hour < 19 ? "Good afternoon." : "Good evening.";
     const row = h("div", { className: "greeting" }, face,
-      h("span", { className: window.innerWidth < NARROW ? "grow" : "" }, `${hello} Ready for another layer?`),
+      h("span", { className: viewWidth() < NARROW ? "grow" : "" }, `${hello} Ready for another layer?`),
       creamChip("Warm up", false, () => this.offerWarmup()));
     requestAnimationFrame(() => new Companion(face, { look: mascot(), outline: COCOA }));
     return row;
+  }
+
+  pickPsd() {
+    const input = h("input", { type: "file", accept: ".psd,image/vnd.adobe.photoshop" });
+    input.addEventListener("change", async () => {
+      const file = input.files[0];
+      if (!file) return;
+      const project = this.selected === ALL ? "" : this.selected;
+      say("Importing PSD");
+      try {
+        const image = readPsd(await file.arrayBuffer());
+        if (image.width > MAX_CANVAS_SIDE || image.height > MAX_CANVAS_SIDE) throw new Error("too large");
+        await this.store.importPsd(image, "Imported PSD", project, await psdThumbnail(image));
+      } catch (error) {
+        console.error(error);
+        say("Couldn't import this PSD. Use an 8-bit RGB file.", { long: true });
+      }
+      this.render();
+    });
+    input.click();
   }
 
   offerWarmup() {
@@ -130,7 +152,7 @@ export class Home {
       this.sketchbook("Unsorted", artworks.filter((a) => !a.projectId).length, null, () => this.select("")),
       h("button", { className: "new-book", onClick: () => this.newSketchbook(projects.length) }, "New sketchbook"));
     const books = h("div", { className: "books" }, h("div", { className: "heading" }, "Your sketchbooks"), shelf);
-    const portrait = window.innerHeight > window.innerWidth;
+    const portrait = viewHeight() > viewWidth();
     const top = h("div", { className: portrait ? "home-top portrait" : "home-top" });
     if (artworks[0]) top.append(this.continueCard(artworks[0]));
     top.append(books);
@@ -467,7 +489,7 @@ export class Home {
       },
     });
     paint();
-    const wide = window.innerWidth >= 620;
+    const wide = viewWidth() >= 620;
     const body = h("div", { className: "sheet-body book-body" },
       h("div", { className: "row" }, h("div", { className: "grow" }, serif("New sketchbook", 26)), creamChip("Cancel", false, () => close())),
       h("div", { className: wide ? "row top gap18" : "column gap18" }, book,
@@ -526,7 +548,7 @@ export class Home {
       },
     }, svg(icon, danger ? "#D85A30" : COCOA), h("span", {}, label));
     const size = art.layers === 1 ? `${art.width} x ${art.height} pixels · 1 layer` : `${art.width} x ${art.height} pixels · ${art.layers} layers`;
-    const wide = window.innerWidth >= 620;
+    const wide = viewWidth() >= 620;
     const preview = h("div", { className: "sheet-preview" }, this.thumbnail(art, true));
     const facts = h("div", { className: "facts" },
       serif(art.name, 26),
@@ -663,4 +685,31 @@ export function warmupPicker(look, suggested, current, pick) {
   body.append(h("div", { className: "end gap18" }, creamChip("Not now", false, () => close())));
   close = sheet(body);
   requestAnimationFrame(() => new Companion(face, { look }));
+}
+
+// A small flattened picture of a PSD's visible layers on white, for its card.
+async function psdThumbnail(image) {
+  const width = THUMBNAIL_WIDTH;
+  const height = thumbnailHeight(image.width, image.height);
+  const surface = new OffscreenCanvas(width, height);
+  const c = surface.getContext("2d");
+  c.fillStyle = "#FFFFFF";
+  c.fillRect(0, 0, width, height);
+  const page = new OffscreenCanvas(image.width, image.height);
+  const pageContext = page.getContext("2d");
+  for (const layer of image.layers.filter((it) => it.visible)) {
+    const pixels = new Uint8ClampedArray(layer.rgba.length);
+    for (let i = 0; i < pixels.length; i += 4) {
+      const alpha = layer.rgba[i + 3];
+      const scale = alpha ? 255 / alpha : 0;
+      pixels[i] = layer.rgba[i] * scale;
+      pixels[i + 1] = layer.rgba[i + 1] * scale;
+      pixels[i + 2] = layer.rgba[i + 2] * scale;
+      pixels[i + 3] = alpha;
+    }
+    pageContext.putImageData(new ImageData(pixels, image.width, image.height), 0, 0);
+    c.globalAlpha = layer.opacity;
+    c.drawImage(page, 0, 0, width, height);
+  }
+  return surface.convertToBlob({ type: "image/png" });
 }

@@ -315,6 +315,26 @@ export class ArtworkStore {
     return copy;
   }
 
+  // --- Time-lapse frames, as timelapse/000000.jpg on Android --------------------------------
+
+  async addTimelapseFrame(doc, pixels, width, height) {
+    const dir = await directory(doc.dir, "timelapse");
+    let count = 0;
+    for await (const _ of dir.keys()) count++;
+    const surface = new OffscreenCanvas(width, height);
+    surface.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+    const blob = await surface.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+    await writeFile(dir, `${String(count).padStart(6, "0")}.jpg`, blob);
+  }
+
+  async timelapseFrames(doc) {
+    const dir = await directory(doc.dir, "timelapse");
+    const files = [];
+    for await (const [name, handle] of dir.entries()) if (handle.kind === "file") files.push([name, handle]);
+    files.sort((a, b) => a[0].localeCompare(b[0]));
+    return Promise.all(files.map(([, handle]) => handle.getFile()));
+  }
+
   // --- What the companion remembers, as snapshot.json and first-snapshot.json --------------------
 
   async snapshot(doc) {

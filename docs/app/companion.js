@@ -1,3 +1,5 @@
+import { pixelRatio } from "./ui.js";
+
 // The companion, drawn as CompanionView and CompanionHands in
 // app/src/main/java/art/cappuccino/paint/CompanionView.kt draw it, in a 120 by 120 box.
 
@@ -111,7 +113,7 @@ export class Companion {
   }
 
   resize() {
-    const ratio = window.devicePixelRatio || 1;
+    const ratio = pixelRatio();
     const size = this.canvas.clientWidth || 56;
     this.canvas.width = Math.round(size * ratio);
     this.canvas.height = Math.round((this.canvas.clientHeight || size) * ratio);
@@ -341,7 +343,7 @@ export class Companion {
 
 // Two tiny hands holding the toolbar's corner, drawn above it.
 export function drawHands(canvas, look, bodyColor) {
-  const ratio = window.devicePixelRatio || 1;
+  const ratio = pixelRatio();
   canvas.width = Math.round(canvas.clientWidth * ratio);
   canvas.height = Math.round(canvas.clientHeight * ratio);
   const c = canvas.getContext("2d");

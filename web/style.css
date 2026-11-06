@@ -774,3 +774,6 @@ button:focus-visible, .slider:focus-visible { outline: 2px solid var(--accent); 
 .segmented.light { background: var(--oat); }
 .segmented.light button { color: var(--espresso); min-height: 36px; font-size: 13px; }
 .segmented.light button.on { background: var(--accent); color: #FFFFFF; }
+.animation-bar { max-width: calc(100vw - 32px); }
+.scroll-bar { overflow-x: auto; scrollbar-width: none; padding: 6px 8px; }
+.frame-chip { width: 32px; padding: 4px 0; flex: none; }
