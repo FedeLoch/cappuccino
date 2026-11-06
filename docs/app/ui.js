@@ -188,5 +188,5 @@ export function relativeTime(time) {
   if (days < 7) return `${days} days ago`;
   const date = new Date(time);
   const sameYear = date.getFullYear() === new Date().getFullYear();
-  return date.toLocaleDateString("en-US", sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
+  return date.toLocaleDateString(document.documentElement.lang === "es" ? "es" : "en-US", sameYear ? { month: "short", day: "numeric" } : { month: "short", day: "numeric", year: "numeric" });
 }

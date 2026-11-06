@@ -261,6 +261,15 @@ EMSCRIPTEN_KEEPALIVE void cap_set_view_options(int mode, int guide) {
 }
 
 // Mirrors strokes around (x, y), or around the middle of the canvas when x is negative.
+// Vanishing points as x and y pairs, read from the points buffer.
+EMSCRIPTEN_KEEPALIVE void cap_set_perspective(int count) {
+    renderer->setPerspective(points, count);
+}
+
+EMSCRIPTEN_KEEPALIVE void cap_set_figure(float top, float bottom, float divisions) {
+    renderer->setFigureGuide(top, bottom, divisions);
+}
+
 EMSCRIPTEN_KEEPALIVE void cap_set_symmetry(int mode, float x, float y) {
     if (x < 0) {
         x = canvasWidth / 2.0f;

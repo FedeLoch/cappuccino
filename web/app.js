@@ -6,6 +6,7 @@
 // on the next animation frame. Nothing here allocates per sample or per frame except the arrays
 // the browser itself returns from getCoalescedEvents() and getPredictedEvents().
 
+import { LANGUAGES, language, saveLanguage, translatePage } from "./i18n.js";
 import createEngine from "./engine.js";
 import ICONS from "./icons.js";
 import {
@@ -18,9 +19,15 @@ import { psdFolder, withPsdGroups, writePsd } from "./psd.js";
 import { WARMUPS, WARMUP_TOPICS } from "./warmups.js";
 import { WarmupLayout, WarmupWork, drawWarmupGuide, singleSun, warmupReview } from "./practice.js";
 import {
-  applyUiScale, askSheet, choiceSheet, h, pixelRatio, say as sayNote, sheet, svg, toUi, uiScale, viewHeight, viewWidth,
+  applyUiScale, askSheet, choiceSheet, confirmSheet, h, pixelRatio, say as sayNote, sheet, svg, toUi, uiScale, viewHeight, viewWidth,
 } from "./ui.js";
 import { Home, warmupPicker } from "./home.js";
+import {
+  BOARD_PURPOSES, PURPOSE_LABELS, ReferenceWindow, STARRED_FILTER, chooseBoard, chooseSketchbook, decodeReference,
+  aspectReferences, extractPalette, filterReferences, fitReferenceWidth, referenceBlocks, referenceOptions, referencePreview,
+} from "./references.js";
+import { REFERENCE_PROFILE_SIZE, compareWithReferences, profileImage } from "./match.js";
+import { reshapeShape, shapeAnchors, snapShape } from "./shapes.js";
 import {
   ArtworkStore, PREVIEW_WIDTH, THUMBNAIL_WIDTH, TILE_SIZE, previewHeight, thumbnailHeight,
 } from "./storage.js";
@@ -57,6 +64,7 @@ const statsBox = document.getElementById("stats");
 const message = document.getElementById("message");
 
 for (const button of document.querySelectorAll("[data-icon]")) button.innerHTML = ICONS[button.dataset.icon];
+translatePage();
 
 // Created before the engine asks for it, so it gets the attributes Emscripten can't request.
 const gl = canvas.getContext("webgl2", {
@@ -140,34 +148,53 @@ let opened = false;  // Whether the engine holds an artwork yet.
 let dpr = 1;
 let zoom = 1;
 let flipped = false;
+let rotation = 0;  // Radians the view is turned, by two fingers.
 let panX = 0;
 let panY = 0;
 let composeQueued = false;
 
 function writeView() {
   const heap = engine.HEAPF32;
-  heap[viewOffset] = flipped ? -zoom : zoom;
-  heap[viewOffset + 1] = 0;
+  const [a, b, c, d] = viewLinear();
+  heap[viewOffset] = a;
+  heap[viewOffset + 1] = b;
   heap[viewOffset + 2] = panX;
-  heap[viewOffset + 3] = 0;
-  heap[viewOffset + 4] = zoom;
+  heap[viewOffset + 3] = c;
+  heap[viewOffset + 4] = d;
   heap[viewOffset + 5] = panY;
   heap[viewOffset + 6] = 0;
   heap[viewOffset + 7] = 0;
   heap[viewOffset + 8] = 1;
+  if (guideHandleList.length) positionGuideHandles();
+  for (const [, place] of shapeHandleList) place();
 }
 
-function toCanvasX(x) {
-  return (x - panX) / (flipped ? -zoom : zoom);
+// The view's scale, turn, and flip, as a 2x2 matrix [a b; c d] from canvas to buffer pixels.
+function viewLinear() {
+  const cos = Math.cos(rotation) * zoom;
+  const sin = Math.sin(rotation) * zoom;
+  const fx = flipped ? -1 : 1;
+  return [cos * fx, -sin, sin * fx, cos];
 }
 
-function toCanvasY(y) {
-  return (y - panY) / zoom;
+// Buffer pixels to canvas pixels.
+function toCanvasX(x, y) {
+  const dx = x - panX;
+  const dy = y - panY;
+  const along = (Math.cos(rotation) * dx + Math.sin(rotation) * dy) / zoom;
+  return flipped ? -along : along;
+}
+
+function toCanvasY(x, y) {
+  const dx = x - panX;
+  const dy = y - panY;
+  return (-Math.sin(rotation) * dx + Math.cos(rotation) * dy) / zoom;
 }
 
 function fitView() {
   zoom = Math.min(canvas.width / canvasWidth, canvas.height / canvasHeight) * 0.95;
   flipped = false;
+  rotation = 0;
   panX = (canvas.width - canvasWidth * zoom) / 2;
   panY = (canvas.height - canvasHeight * zoom) / 2;
   writeView();
@@ -185,6 +212,7 @@ function zoomAt(x, y, factor) {
 
 function flipCanvas() {
   flipped = !flipped;
+  rotation = -rotation;
   panX = canvas.width - panX;
   writeView();
   queueCompose();
@@ -361,7 +389,9 @@ function beginStroke(kind) {
     kind.hueJitter, kind.tip ? 1 : 0, alphaLocked() ? 1 : 0,
   );
   strokeKind = kind;
-  warmupPath = doc?.warmup && !kind.eraser ? [] : null;
+  strokePath = kind.eraser ? null : [];
+  pressureTotal = 0;
+  pressureSamples = 0;
   stabilizerFollow = kind.eraser ? 1 : 1 - MAX_SMOOTHING * settings.stabilizer;
   stabilizerStarted = false;
   strokeHadSamples = false;
@@ -370,8 +400,8 @@ function beginStroke(kind) {
 // Writes one pointer sample, in canvas pixels, into the engine's buffer at slot.
 function writeSample(offset, slot, event, stabilize) {
   const heap = engine.HEAPF32;
-  let x = toCanvasX(event.clientX * dpr);
-  let y = toCanvasY(event.clientY * dpr);
+  let x = toCanvasX(event.clientX * dpr, event.clientY * dpr);
+  let y = toCanvasY(event.clientX * dpr, event.clientY * dpr);
   if (stabilize) {
     if (!stabilizerStarted) {
       stabilizedX = x;
@@ -389,18 +419,22 @@ function writeSample(offset, slot, event, stabilize) {
   if (event.pointerType === "pen") {
     if (event.altitudeAngle !== undefined) {
       tilt = Math.PI / 2 - event.altitudeAngle;
-      azimuth = event.azimuthAngle;
+      azimuth = event.azimuthAngle - rotation;
     } else if (event.tiltX || event.tiltY) {
       const tx = Math.tan(event.tiltX * Math.PI / 180);
       const ty = Math.tan(event.tiltY * Math.PI / 180);
       tilt = Math.atan(Math.hypot(tx, ty));
-      azimuth = Math.atan2(ty, tx);
+      azimuth = Math.atan2(ty, tx) - rotation;
     }
   }
   // A mouse draws like a relaxed pen. Browsers report 0.5 for it, but not all of them do.
   let pressure = event.pointerType === "mouse" ? 0.5 : event.pressure;
   if (pressure === 0) pressure = 0.01;
-  if (stabilize && warmupPath) warmupPath.push(x, y);
+  if (stabilize && strokePath) {
+    strokePath.push(x, y);
+    pressureTotal += pressure;
+    pressureSamples++;
+  }
   const i = offset + slot * SAMPLE_FLOATS;
   heap[i] = x;
   heap[i + 1] = y;
@@ -452,11 +486,12 @@ function endStroke() {
   // The lift itself carries no pressure on most pens, so it only closes the stroke.
   engine._cap_draw(0, 0, 1);
   strokePointer = -1;
-  if (warmupPath && warmupPath.length >= 4) {
-    warmupStrokes.push(warmupPath);
+  if (strokePath && strokePath.length >= 4) checkPerspective(strokePath);
+  if (doc?.warmup && strokePath && strokePath.length >= 4) {
+    warmupStrokes.push(strokePath);
     undoneWarmupStrokes.length = 0;
   }
-  warmupPath = null;
+  strokePath = null;
   recordStroke();
   markUnsaved();
   queueCompose();  // Clears any predicted ink left past the real end.
@@ -465,8 +500,8 @@ function endStroke() {
 // --- Gradient and lasso fill -------------------------------------------------------------------
 
 function beginToolGesture(kind, event) {
-  const x = toCanvasX(event.clientX * dpr);
-  const y = toCanvasY(event.clientY * dpr);
+  const x = toCanvasX(event.clientX * dpr, event.clientY * dpr);
+  const y = toCanvasY(event.clientX * dpr, event.clientY * dpr);
   toolGesture = { kind, startX: x, startY: y, count: 0 };
   if (kind.mode === "lasso" || kind.mode === "select") addLassoPoint(event);
 }
@@ -475,7 +510,7 @@ function moveToolGesture(event) {
   if (toolGesture.kind.mode === "gradient") {
     const rgb = hexToRgb(color);
     engine._cap_set_gradient(1, toolGesture.startX, toolGesture.startY,
-      toCanvasX(event.clientX * dpr), toCanvasY(event.clientY * dpr), rgb[0], rgb[1], rgb[2]);
+      toCanvasX(event.clientX * dpr, event.clientY * dpr), toCanvasY(event.clientX * dpr, event.clientY * dpr), rgb[0], rgb[1], rgb[2]);
     queueCompose();
     return;
   }
@@ -488,8 +523,8 @@ function addLassoPoint(event) {
   if (toolGesture.count >= MAX_POINTS) return;
   const heap = engine.HEAPF32;
   const i = pointsOffset + toolGesture.count * 2;
-  heap[i] = toCanvasX(event.clientX * dpr);
-  heap[i + 1] = toCanvasY(event.clientY * dpr);
+  heap[i] = toCanvasX(event.clientX * dpr, event.clientY * dpr);
+  heap[i + 1] = toCanvasY(event.clientX * dpr, event.clientY * dpr);
   toolGesture.count++;
 }
 
@@ -498,11 +533,9 @@ function drawLasso() {
   const c = overlayContext;
   if (!toolGesture || toolGesture.count < 2) return;
   const heap = engine.HEAPF32;
-  const sx = flipped ? -zoom : zoom;
   c.beginPath();
   for (let n = 0; n < toolGesture.count; n++) {
-    const x = heap[pointsOffset + n * 2] * sx + panX;
-    const y = heap[pointsOffset + n * 2 + 1] * zoom + panY;
+    const [x, y] = canvasToScreen(heap[pointsOffset + n * 2], heap[pointsOffset + n * 2 + 1]);
     if (n === 0) c.moveTo(x, y); else c.lineTo(x, y);
   }
   c.lineWidth = 2 * dpr;
@@ -623,7 +656,7 @@ canvas.addEventListener("pointerdown", (event) => {
   }
   if ((event.button !== 0 && !barrel) || strokePointer !== -1 || toolGesture) return;
   if (selectionTool === "wand") {
-    finishWand(Math.floor(toCanvasX(event.clientX * dpr)), Math.floor(toCanvasY(event.clientY * dpr)));
+    finishWand(Math.floor(toCanvasX(event.clientX * dpr, event.clientY * dpr)), Math.floor(toCanvasY(event.clientX * dpr, event.clientY * dpr)));
     return;
   }
   if (selectionTool === "lasso") {
@@ -637,7 +670,7 @@ canvas.addEventListener("pointerdown", (event) => {
   capture(event);
   if (kind.mode === "fill") {
     const rgb = hexToRgb(color);
-    if (engine._cap_fill_at(Math.floor(toCanvasX(event.clientX * dpr)), Math.floor(toCanvasY(event.clientY * dpr)),
+    if (engine._cap_fill_at(Math.floor(toCanvasX(event.clientX * dpr, event.clientY * dpr)), Math.floor(toCanvasY(event.clientX * dpr, event.clientY * dpr)),
       rgb[0], rgb[1], rgb[2])) {
       recordStroke();
       markUnsaved();
@@ -654,6 +687,8 @@ canvas.addEventListener("pointerdown", (event) => {
   clearTimeout(napTimer);
   if (companion.mood === "nap") setCompanionMood(restingMood());
   fadeChrome(0.15);
+  hideShapeHandles();
+  snapAnchor = null;
   beginStroke(kind);
   drawSamples(event, false);
 });
@@ -673,7 +708,12 @@ canvas.addEventListener("pointermove", (event) => {
     return;
   }
   if (event.pointerId === strokePointer) {
-    if (toolGesture) moveToolGesture(event); else drawSamples(event, false);
+    if (toolGesture) {
+      moveToolGesture(event);
+    } else {
+      drawSamples(event, false);
+      waitForSnap(event);
+    }
     return;
   }
   if (event.pointerId === panPointer) {
@@ -713,6 +753,7 @@ function finishPointer(event, cancelled) {
   }
   if (event.pointerId === strokePointer) {
     strokePointer = -1;
+    clearTimeout(snapTimer);
     if (toolGesture) {
       endToolGesture(cancelled);
     } else if (cancelled) {
@@ -760,18 +801,33 @@ function moveGesture() {
   x /= n;
   y /= n;
   const span = n === 2 ? Math.hypot(bx - ax, by - ay) : 0;
+  const angle = n === 2 ? Math.atan2(by - ay, bx - ax) : 0;
   if (gesture && gesture.count === n) {
     panX += x - gesture.x;
     panY += y - gesture.y;
-    if (n === 2 && gesture.span > 0) zoomAt(x, y, span / gesture.span);
+    if (n === 2 && gesture.span > 0) {
+      zoomAt(x, y, span / gesture.span);
+      // Two fingers also turn the canvas around their midpoint, as on Android.
+      let turn = angle - gesture.angle;
+      if (turn > Math.PI) turn -= 2 * Math.PI;
+      if (turn < -Math.PI) turn += 2 * Math.PI;
+      const cos = Math.cos(turn);
+      const sin = Math.sin(turn);
+      const dx = panX - x;
+      const dy = panY - y;
+      panX = x + cos * dx - sin * dy;
+      panY = y + sin * dx + cos * dy;
+      rotation += turn;
+    }
     writeView();
     queueCompose();
   } else {
-    gesture = gesture || { x: 0, y: 0, span: 0, count: 0 };
+    gesture = gesture || { x: 0, y: 0, span: 0, count: 0, angle: 0 };
   }
   gesture.x = x;
   gesture.y = y;
   gesture.span = span;
+  gesture.angle = angle;
   gesture.count = n;
 }
 
@@ -906,8 +962,11 @@ eraserButton.addEventListener("click", () => {
   }
 });
 
-colorButton.addEventListener("click", () => {
-  if (panelKey !== "color") colorBeforePanel = color;
+colorButton.addEventListener("click", async () => {
+  if (panelKey !== "color") {
+    colorBeforePanel = color;
+    savedPalettes = await store.palettes();
+  }
   togglePanel("color", colorPanel);
 });
 
@@ -919,6 +978,10 @@ for (const button of document.querySelectorAll("[data-action]")) {
     else if (action === "tools") togglePanel("tools", toolsPanel);
     else if (action === "layers") togglePanel("layers", layersPanel);
     else if (action === "actions") togglePanel("actions", actionsPanel);
+    else if (action === "references") {
+      if (panelKey === "references") closePanel();
+      else showReferences();
+    }
     else togglePanel(action, () => comingPanel(button.getAttribute("aria-label")));
   });
 }
@@ -953,7 +1016,7 @@ function setColor(next) {
 }
 
 function allBrushes() {
-  return [...BRUSH_FAMILIES.flatMap(([, kinds]) => kinds), ...ERASERS, ...Object.values(TOOLS)];
+  return [...BRUSH_FAMILIES.flatMap(([, kinds]) => kinds), ...customBrushes, ...ERASERS, ...Object.values(TOOLS)];
 }
 
 function rememberColor() {
@@ -1052,6 +1115,7 @@ function toggleInterface() {
 
 // Chrome steps back while the pen draws, as fadeChrome() does on Android.
 function fadeChrome(opacity) {
+  for (const window of references.values()) window.setDrawing(opacity < 1);
   for (const element of chrome) element.style.opacity = String(opacity);
   warmupBar.style.opacity = String(opacity);
   animationBar.style.opacity = String(opacity);
@@ -1079,6 +1143,7 @@ function showPanel(key, build) {
   panelBody.replaceChildren(build());
   panel.hidden = false;
   if (key === "companion") placeBubble();
+  if (key === "view") showViewHandles();
 }
 
 // Builds the open panel again in place, keeping its scroll.
@@ -1092,6 +1157,7 @@ function rerender() {
 
 function closePanel() {
   if (!panelKey) return;
+  hideViewHandles();
   if (panelKey === "color") rememberColor();
   if (panelKey === "companion") showNoteMarks([]);
   if (panelKey === "adjust") {
@@ -1145,10 +1211,12 @@ function comingPanel(title) {
 // --- Brushes and erasers --------------------------------------------------------------------
 
 function brushFamilies() {
-  const all = BRUSH_FAMILIES.flatMap(([, kinds]) => kinds);
+  const all = [...BRUSH_FAMILIES.flatMap(([, kinds]) => kinds), ...customBrushes];
   const families = [];
   if (favorites.size > 0) families.push(["★", all.filter((kind) => favorites.has(kind.id))]);
-  return families.concat(BRUSH_FAMILIES);
+  families.push(...BRUSH_FAMILIES);
+  if (customBrushes.length) families.push(["Mine", customBrushes.slice()]);
+  return families;
 }
 
 function brushPanel() {
@@ -1163,7 +1231,7 @@ function brushPanel() {
       h("div", { className: "title grow" }, "Brushes"),
       h("button", {
         className: "icon", ariaLabel: "New brush", innerHTML: ICONS.add,
-        onClick: () => say("Your own brushes come to the web soon"),
+        onClick: () => openBrushEditor(null),
       })),
     segmented(families.map(([name]) => name), families.indexOf(family), (index) => {
       brushTab = families[index][0];
@@ -1185,7 +1253,19 @@ function brushPanel() {
       toolSlider("Pressure: soft to firm", Math.round((pressureGamma(brush) - 0.4) / 1.2 * 100), (value) => {
         savePreference(`pressure-${brush.id}`, 0.4 + value / 100 * 1.2);
       }),
+      gap(h("div", { className: "small" }, "Snap shapes")),
+      segmented(["Off", "On"], snapShapes ? 1 : 0, (index) => {
+        snapShapes = index === 1;
+        savePreference("snapShapes", snapShapes);
+        rerender();
+      }),
+      gap(h("div", { className: "small" }, "Hold at the end of a stroke for a clean line, ellipse, or box.")),
     );
+    if (brush.custom) {
+      body.append(gap(h("div", { className: "wrap-row" },
+        smallChip("Edit", false, () => openBrushEditor(brush)),
+        smallChip("Delete", false, () => deleteBrush(brush)))));
+    }
   }
   body.append(gap(h("div", { className: "small" }, "Hold a brush to add it to ★.")));
   return body;
@@ -1233,7 +1313,7 @@ function toggleFavorite(kind) {
   rerender();
 }
 
-const tintedTips = new Map();
+const tintedTips = new WeakMap();  // Tip bytes -> tint -> a canvas of that tip in that color.
 
 // Paints a sample stroke with a rough match of the brush, as BrushPreview in Ui.kt does.
 function drawBrushPreview(element, kind, tint) {
@@ -1271,8 +1351,9 @@ function drawBrushPreview(element, kind, tint) {
 }
 
 function tintedTip(kind, tint) {
-  const key = `${kind.id}/${tint}`;
-  let tip = tintedTips.get(key);
+  if (!tintedTips.has(kind.tip)) tintedTips.set(kind.tip, new Map());
+  const cache = tintedTips.get(kind.tip);
+  let tip = cache.get(tint);
   if (tip) return tip;
   tip = document.createElement("canvas");
   tip.width = TIP_SIZE;
@@ -1287,7 +1368,7 @@ function tintedTip(kind, tint) {
     pixels.data[i * 4 + 3] = kind.tip[i];
   }
   c.putImageData(pixels, 0, 0);
-  tintedTips.set(key, tip);
+  cache.set(tint, tip);
   return tip;
 }
 
@@ -1436,23 +1517,477 @@ function viewPanel() {
         apply();
         rerender();
       })))),
+    gap(h("div", { className: "small" }, "Perspective")),
+    segmented(["Off", "1 point", "2 points", "3 points"], (doc?.manifest.perspective || []).length / 2, setPerspectiveCount),
     gap(h("div", { className: "small" }, "Symmetry")),
-    segmented(["Off", "↔", "↕", "✛", "✺"], symmetry, (index) => {
-      symmetry = index;
-      engine._cap_set_symmetry(index, -1, -1);
-      if (doc) {
-        doc.manifest.symmetry = index;
-        doc.manifest.symmetryCenter = [canvasWidth / 2, canvasHeight / 2];
-        markUnsaved();
-      }
-      queueCompose();
+    segmented(["Off", "↔", "↕", "✛", "✺"], symmetry, setSymmetry),
+    gap(h("div", { className: "small" }, "Light direction")),
+    segmented(LIGHTS.map(([label]) => label), Math.max(0, LIGHTS.findIndex(([, name]) => name === (doc?.manifest.light || "OFF"))), (index) => {
+      doc.manifest.light = LIGHTS[index][1];
+      markUnsaved();
       rerender();
     }),
+    gap(h("div", { className: "small" }, "Figure height")),
+    segmented(["Off", "6 heads", "7.5 heads", "8 heads"],
+      Math.max(0, FIGURES.indexOf((doc?.manifest.figure || [])[2] ?? 0)), (index) => setFigure(FIGURES[index])),
+    ((doc?.manifest.perspective || []).length || (doc?.manifest.figure || []).length || symmetry !== 0) &&
+      gap(h("div", { className: "small" }, "Drag the circles to place your guides.")),
     gap(h("button", { className: "action-row", onClick: flipCanvas },
       svg("flip"),
       h("div", { className: "text" }, h("div", {}, "Flip canvas"),
         h("div", { className: "detail" }, "A fresh look at your drawing")))),
     gap(h("div", { className: "small" }, "These change your view only, never your artwork.")));
+}
+
+// --- Guides with handles: perspective, symmetry, and figure height, as in MainActivity -----------
+
+const LIGHTS = [["Off", "OFF"], ["Left", "LEFT"], ["Top", "TOP"], ["Right", "RIGHT"]];
+const FIGURES = [0, 6, 7.5, 8];
+const PERSPECTIVE_TOLERANCE = 4;
+const HANDLE_COLORS = ["#D85A30", "#1D9E75", "#534AB7"];
+const guideHandles = h("div", { className: "handles" });
+studioView.append(guideHandles);
+let guideHandleList = [];  // [element, () => [canvasX, canvasY]]
+
+// Starting vanishing points in canvas coordinates, as x and y pairs.
+function defaultVanishingPoints(count, width, height) {
+  const horizon = height * 0.45;
+  if (count === 0) return [];
+  if (count === 1) return [width * 0.5, horizon];
+  if (count === 2) return [width * 0.12, horizon, width * 0.88, horizon];
+  return [width * 0.12, horizon, width * 0.88, horizon, width * 0.5, height * 0.92];
+}
+
+function setPerspectiveCount(count) {
+  const kept = (doc.manifest.perspective || []).slice(0, count * 2);
+  doc.manifest.perspective = kept.concat(defaultVanishingPoints(count, doc.width, doc.height).slice(kept.length));
+  perspectiveLog.reset();
+  pushPerspective();
+  markUnsaved();
+  rerender();
+  showViewHandles();
+}
+
+function pushPerspective() {
+  const points = doc?.manifest.perspective || [];
+  engine.HEAPF32.set(points, pointsOffset);
+  engine._cap_set_perspective(points.length / 2);
+  queueCompose();
+}
+
+function setSymmetry(index) {
+  symmetry = index;
+  if (doc) {
+    doc.manifest.symmetry = index;
+    if ((doc.manifest.symmetryCenter || []).length !== 2) doc.manifest.symmetryCenter = [canvasWidth / 2, canvasHeight / 2];
+    markUnsaved();
+  }
+  pushSymmetry();
+  rerender();
+  showViewHandles();
+}
+
+function pushSymmetry() {
+  const center = (doc?.manifest.symmetryCenter || []).length === 2 ? doc.manifest.symmetryCenter : [-1, -1];
+  engine._cap_set_symmetry(symmetry, center[0], center[1]);
+  queueCompose();
+}
+
+function setFigure(heads) {
+  const height = doc.height;
+  const figure = doc.manifest.figure || [];
+  doc.manifest.figure = heads <= 0 ? [] : [figure[0] ?? height * 0.08, figure[1] ?? height * 0.92, heads];
+  pushFigure();
+  markUnsaved();
+  rerender();
+  showViewHandles();
+}
+
+function pushFigure() {
+  const figure = doc?.manifest.figure || [];
+  if (figure.length === 3) engine._cap_set_figure(figure[0], figure[1], figure[2]);
+  else engine._cap_set_figure(0, 0, 0);
+  queueCompose();
+}
+
+function pushGuides() {
+  pushPerspective();
+  pushSymmetry();
+  pushFigure();
+}
+
+// A round handle that drags a guide point. place() gives its canvas point, move(x, y) takes one.
+function guideHandle(color, label, place, move) {
+  const handle = h("div", { className: "guide-handle", ariaLabel: label, title: label, style: { background: color } });
+  handle.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      // Moves still arrive while the pointer stays over the handle.
+    }
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    move(toCanvasX(event.clientX * dpr, event.clientY * dpr), toCanvasY(event.clientX * dpr, event.clientY * dpr));
+    positionGuideHandles();
+  });
+  handle.addEventListener("pointerup", () => markUnsaved());
+  guideHandles.append(handle);
+  guideHandleList.push([handle, place]);
+}
+
+function showViewHandles() {
+  hideViewHandles();
+  if (!doc || panelKey !== "view") return;
+  const perspective = doc.manifest.perspective || [];
+  for (let index = 0; index < perspective.length / 2; index++) {
+    guideHandle(HANDLE_COLORS[index], `Vanishing point ${index + 1}`,
+      () => [doc.manifest.perspective[index * 2], doc.manifest.perspective[index * 2 + 1]],
+      (x, y) => {
+        doc.manifest.perspective[index * 2] = x;
+        doc.manifest.perspective[index * 2 + 1] = y;
+        perspectiveLog.reset();
+        pushPerspective();
+      });
+  }
+  if ((doc.manifest.figure || []).length === 3) {
+    for (const index of [0, 1]) {
+      guideHandle("#1D9E75", index === 0 ? "Top of head" : "Bottom of feet",
+        () => [doc.width * 0.95, doc.manifest.figure[index]],
+        (x, y) => {
+          doc.manifest.figure[index] = y;
+          pushFigure();
+        });
+    }
+  }
+  if (symmetry !== 0) {
+    if ((doc.manifest.symmetryCenter || []).length !== 2) doc.manifest.symmetryCenter = [canvasWidth / 2, canvasHeight / 2];
+    guideHandle("#D85A30", "Symmetry center", () => doc.manifest.symmetryCenter, (x, y) => {
+      doc.manifest.symmetryCenter = [x, y];
+      pushSymmetry();
+    });
+  }
+  positionGuideHandles();
+}
+
+function positionGuideHandles() {
+  for (const [handle, place] of guideHandleList) {
+    const [x, y] = canvasToScreen(...place());
+    handle.style.left = `${toUi(x / dpr) - 18}px`;
+    handle.style.top = `${toUi(y / dpr) - 18}px`;
+  }
+}
+
+function hideViewHandles() {
+  guideHandles.replaceChildren();
+  guideHandleList = [];
+}
+
+function lineGap(first, second) {
+  const gap = Math.abs(first - second) % Math.PI;
+  return Math.min(gap, Math.PI - gap) * 180 / Math.PI;
+}
+
+// How many degrees a straight stroke is from the nearest allowed perspective direction, or null
+// when the stroke is short or curved, as strokeDrift() in Perspective.kt.
+function strokeDrift(path, vanishingPoints) {
+  if (!vanishingPoints.length || path.length < 4) return null;
+  const [startX, startY] = path;
+  const endX = path[path.length - 2];
+  const endY = path[path.length - 1];
+  const length = Math.hypot(endX - startX, endY - startY);
+  if (length < 160) return null;
+  for (let index = 0; index < path.length; index += 2) {
+    const offset = Math.abs((endX - startX) * (startY - path[index + 1]) - (startX - path[index]) * (endY - startY));
+    if (offset / length > length * 0.04) return null;
+  }
+  const direction = Math.atan2(endY - startY, endX - startX);
+  const middleX = (startX + endX) / 2;
+  const middleY = (startY + endY) / 2;
+  let best = Infinity;
+  for (let index = 0; index < vanishingPoints.length; index += 2) {
+    best = Math.min(best, lineGap(direction, Math.atan2(vanishingPoints[index + 1] - middleY, vanishingPoints[index] - middleX)));
+  }
+  const pointCount = vanishingPoints.length / 2;
+  if (pointCount <= 2) best = Math.min(best, lineGap(direction, Math.PI / 2));
+  if (pointCount === 1) best = Math.min(best, lineGap(direction, 0));
+  return best;
+}
+
+// Remembers recent straight strokes, so the companion can describe them calmly.
+const perspectiveLog = {
+  drifts: [],
+  driftedLine: null,
+  add(drift, line) {
+    if (drift > PERSPECTIVE_TOLERANCE && line) this.driftedLine = line;
+    this.drifts.push(drift);
+    if (this.drifts.length > 10) this.drifts.shift();
+  },
+  reset() {
+    this.drifts = [];
+    this.driftedLine = null;
+  },
+  summary() {
+    if (!this.drifts.length) return null;
+    const off = this.drifts.filter((drift) => drift > PERSPECTIVE_TOLERANCE);
+    if (!off.length) return `Your last ${this.drifts.length} straight lines follow the guide.`;
+    return `${off.length} of your last ${this.drifts.length} straight lines drift from the guide, up to ${Math.round(Math.max(...off))}°. That can be a deliberate choice.`;
+  },
+};
+
+function checkPerspective(path) {
+  const drift = strokeDrift(path, doc?.manifest.perspective || []);
+  if (drift === null) return;
+  perspectiveLog.add(drift, [path[0], path[1], path[path.length - 2], path[path.length - 1]]);
+  if (drift > PERSPECTIVE_TOLERANCE) {
+    unreadTips = true;
+    setCompanionMood("tip");
+  }
+}
+
+// --- Your own brushes, as openBrushEditor() and brushEditor() in MainActivity ---------------------
+
+let customBrushes = [];
+let editingBrush = null;
+let draftTip = null;
+
+async function loadCustomBrushes() {
+  customBrushes = await store.customBrushes().catch(() => []);
+}
+
+function deleteBrush(kind) {
+  store.deleteBrush(kind.id);
+  customBrushes = customBrushes.filter((other) => other.id !== kind.id);
+  selectTool(DEFAULT_BRUSH);
+  rerender();
+}
+
+function openBrushEditor(base) {
+  editingBrush = base;
+  draftTip = base?.tip || null;
+  closePanel();
+  showPanel("brushEditor", () => brushEditor(base || DEFAULT_BRUSH, !!base));
+}
+
+const BRUSH_SHAPE = [
+  ["Size taper", "minScale", 1], ["Spacing", "spacing", 0.5], ["Flow", "flow", 1], ["Pressure fade", "pressureFlow", 1],
+  ["Hardness", "hardness", 1], ["Grain", "grain", 1], ["Scatter", "scatter", 2], ["Size variation", "sizeJitter", 1],
+  ["Angle variation", "angleJitter", 1], ["Shade variation", "shadeJitter", 1], ["Hue variation", "hueJitter", 1],
+  ["Color per stroke", "strokeJitter", 1],
+];
+
+function draftBrush(source, name, shape) {
+  return {
+    ...source, ...shape,
+    id: editingBrush?.id || crypto.randomUUID(), label: name.trim() || "My brush",
+    size: source.size, eraser: false, mode: "paint", tip: draftTip, custom: true,
+  };
+}
+
+function brushEditor(source, editing) {
+  const shape = Object.fromEntries(BRUSH_SHAPE.map(([, field]) => [field, source[field]]));
+  const name = h("input", { className: "field dark", value: editing ? source.label : "", placeholder: "Brush name" });
+  const preview = h("canvas", { className: "brush-preview", width: 300 * pixelRatio(), height: 64 * pixelRatio(), ariaLabel: "Brush preview" });
+  const refresh = () => {
+    preview.getContext("2d").clearRect(0, 0, preview.width, preview.height);
+    drawBrushPreview(preview, draftBrush(source, name.value, shape), TEXT_COLOR);
+  };
+  const body = h("div", { className: "column" },
+    h("div", { className: "title" }, editing ? "Edit brush" : "New brush"),
+    gap(name), gap(preview));
+  for (const [title, field, range] of BRUSH_SHAPE) {
+    body.append(toolSlider(title, Math.round(shape[field] / range * 100), (value) => {
+      const index = BRUSH_SHAPE.findIndex(([, other]) => other === field);
+      shape[field] = Math.max(index >= 6 ? 0 : 0.02, value / 100 * range);
+      refresh();
+    }));
+  }
+  body.append(gap(h("div", { className: "wrap-row" },
+    smallChip(draftTip ? "Replace tip" : "Import tip", false, () => {
+      const input = h("input", { type: "file", accept: "image/*" });
+      input.addEventListener("change", async () => {
+        const file = input.files[0];
+        if (!file) return;
+        try {
+          draftTip = tipFrom(await createImageBitmap(file));
+        } catch {
+          say("Couldn't read this image");
+          return;
+        }
+        const label = name.value;
+        const saved = { ...shape };
+        showPanel("brushEditor", () => {
+          const next = brushEditor({ ...source, ...saved, label }, editing);
+          next.querySelector("input.field").value = label;
+          return next;
+        });
+      });
+      input.click();
+    }),
+    smallChip("Save", true, async () => {
+      const kind = draftBrush(source, name.value, shape);
+      await store.saveBrush(kind);
+      customBrushes = [...customBrushes.filter((other) => other.id !== kind.id), kind];
+      closePanel();
+      selectTool(kind);
+    }))));
+  requestAnimationFrame(refresh);
+  return body;
+}
+
+// A brush tip from an image: dark, opaque parts paint, as tipFrom() in MainActivity.
+function tipFrom(image) {
+  const surface = new OffscreenCanvas(TIP_SIZE, TIP_SIZE);
+  const c = surface.getContext("2d");
+  c.drawImage(image, 0, 0, TIP_SIZE, TIP_SIZE);
+  const pixels = c.getImageData(0, 0, TIP_SIZE, TIP_SIZE).data;
+  const tip = new Uint8Array(TIP_SIZE * TIP_SIZE);
+  for (let i = 0; i < tip.length; i++) {
+    const [r, g, b, a] = [pixels[i * 4] / 255, pixels[i * 4 + 1] / 255, pixels[i * 4 + 2] / 255, pixels[i * 4 + 3]];
+    const linear = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+    const lum = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+    tip[i] = Math.floor((1 - lum) * a);
+  }
+  return tip;
+}
+
+// --- Snap shapes: holding still at the end of a stroke draws the clean shape it resembles -------
+
+const SNAP_HOLD_MS = 600;
+const SNAP_TRAVEL = 8;
+let snapShapes = loadPreference("snapShapes", true);
+let snapTimer = 0;
+let snapAnchor = null;
+let pressureTotal = 0;
+let pressureSamples = 0;
+let shapeHandleList = [];
+
+function waitForSnap(event) {
+  if (!snapShapes || strokeKind.mode !== "paint" || strokeKind.eraser) return;
+  if (snapAnchor && Math.hypot(event.clientX - snapAnchor[0], event.clientY - snapAnchor[1]) <= SNAP_TRAVEL) return;
+  snapAnchor = [event.clientX, event.clientY];
+  clearTimeout(snapTimer);
+  snapTimer = setTimeout(snapStroke, SNAP_HOLD_MS);
+}
+
+function snapStroke() {
+  if (strokePointer === -1 || !strokePath) return;
+  const shape = snapShape(strokePath, doc?.manifest.perspective || []);
+  if (!shape) return;
+  const kind = strokeKind;
+  const pressure = pressureSamples > 0 ? pressureTotal / pressureSamples : 0.5;
+  strokePointer = -1;  // The pen stays down, but this stroke is finished.
+  snapAnchor = null;
+  engine._cap_cancel_stroke();
+  drawShape(kind, shape, pressure);
+  fadeChrome(1);
+  scheduleNap();
+  showShapeHandles(kind, shape, pressure);
+}
+
+// Draws a shape as one stroke, with the stroke's average pressure all along it.
+function drawShape(kind, shape, pressure) {
+  beginStroke(kind);
+  strokePath = null;
+  const heap = engine.HEAPF32;
+  const count = shape.length / 2;
+  for (let start = 0; start < count; start += MAX_SAMPLES) {
+    const n = Math.min(MAX_SAMPLES, count - start);
+    for (let i = 0; i < n; i++) {
+      const at = samplesOffset + i * SAMPLE_FLOATS;
+      heap.fill(0, at, at + SAMPLE_FLOATS);
+      heap[at] = shape[(start + i) * 2];
+      heap[at + 1] = shape[(start + i) * 2 + 1];
+      heap[at + 2] = pressure;
+    }
+    engine._cap_draw(n, 0, start + n >= count ? 1 : 0);
+  }
+  recordStroke();
+  markUnsaved();
+  queueCompose();
+  checkPerspective(shape);
+}
+
+function hideShapeHandles() {
+  for (const [handle] of shapeHandleList) handle.remove();
+  shapeHandleList = [];
+}
+
+// Two handles that stay on a snapped shape until the next stroke, so it can still be adjusted.
+function showShapeHandles(kind, shape, pressure) {
+  hideShapeHandles();
+  let current = shape;
+  let anchors = shapeAnchors(shape);
+  const place = (handle, end) => {
+    const [x, y] = canvasToScreen(anchors[end], anchors[end + 1]);
+    handle.style.left = `${toUi(x / dpr) - 18}px`;
+    handle.style.top = `${toUi(y / dpr) - 18}px`;
+  };
+  for (const end of [0, 2]) {
+    const handle = h("div", { className: "quiet-handle shape-handle", ariaLabel: "Adjust shape" });
+    handle.addEventListener("pointerdown", (event) => {
+      event.stopPropagation();
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch {
+        // Moves still arrive while the pointer stays over the handle.
+      }
+    });
+    handle.addEventListener("pointermove", (event) => {
+      if (!handle.hasPointerCapture(event.pointerId)) return;
+      anchors = anchors.slice();
+      anchors[end] = toCanvasX(event.clientX * dpr, event.clientY * dpr);
+      anchors[end + 1] = toCanvasY(event.clientX * dpr, event.clientY * dpr);
+      place(handle, end);
+    });
+    handle.addEventListener("pointerup", () => {
+      current = reshapeShape(current, shapeAnchors(current), anchors);
+      undo();
+      drawShape(kind, current, pressure);
+    });
+    guideHandles.append(handle);
+    shapeHandleList.push([handle, () => place(handle, end)]);
+    place(handle, end);
+  }
+}
+
+// --- Print colors, as Cmyk.kt: how cyan, magenta, yellow, and black ink look on coated paper ----
+
+let pickerInks = false;
+let inks = null;  // The last ink amounts set with the CMYK sliders.
+const BLACK_INK = 0.13;
+const DULLER_BY = 0.14;
+const INKS = [
+  [1, 1, 1], [0, 0.68, 0.94], [0.93, 0, 0.55], [0.18, 0.19, 0.57],
+  [1, 0.95, 0], [0, 0.65, 0.32], [0.93, 0.11, 0.14], [0.23, 0.21, 0.21],
+];
+const mix = (a, b, t) => a + (b - a) * t;
+
+function toCmyk(hex) {
+  const [red, green, blue] = hexToRgb(hex);
+  const black = 1 - Math.max(red, green, blue);
+  if (black >= 1) return [0, 0, 0, 1];
+  const left = 1 - black;
+  return [(1 - red - black) / left, (1 - green - black) / left, (1 - blue - black) / left, black];
+}
+
+function inkColor([cyan, magenta, yellow, black]) {
+  const channel = (index) => {
+    const noYellow = mix(mix(INKS[0][index], INKS[1][index], cyan), mix(INKS[2][index], INKS[3][index], cyan), magenta);
+    const withYellow = mix(mix(INKS[4][index], INKS[5][index], cyan), mix(INKS[6][index], INKS[7][index], cyan), magenta);
+    return Math.min(255, Math.max(0, Math.round(mix(noYellow, withYellow, yellow) * mix(1, BLACK_INK, black) * 255)));
+  };
+  return `#${[0, 1, 2].map((index) => channel(index).toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
+const printedColor = (hex) => inkColor(toCmyk(hex));
+
+// True when a color will look clearly different once printed.
+function printsDuller(hex) {
+  const before = hexToRgb(hex);
+  const after = hexToRgb(printedColor(hex));
+  return Math.max(...before.map((value, index) => Math.abs(value - after[index]))) > DULLER_BY;
 }
 
 // --- Color, as MainActivity.colorPanel and ColorPicker.kt ----------------------------------------
@@ -1533,6 +2068,19 @@ function colorPanel() {
   if (colorTab === 0) {
     const current = h("span", { className: "swatch", style: { background: color } });
     const hex = h("span", { className: "hex" }, color);
+    const printed = h("span", { className: "printed" });
+    const printNote = h("div", { className: "print-note" }, printed,
+      h("span", { className: "small grow" }, "Prints duller"),
+      smallChip("Use this", false, () => {
+        setColor(printedColor(color));
+        rerender();
+      }));
+    const show = (value) => {
+      current.style.background = value;
+      hex.textContent = value;
+      printed.style.background = printedColor(value);
+      printNote.style.visibility = printsDuller(value) ? "visible" : "hidden";
+    };
     body.append(gap(h("div", { className: "compare" },
       h("button", {
         className: "swatch", ariaLabel: "Previous color", style: { background: colorBeforePanel },
@@ -1542,11 +2090,29 @@ function colorPanel() {
         },
       }),
       current, hex)));
-    body.append(gap(colorPicker((value) => {
-      setColor(value);
-      current.style.background = value;
-      hex.textContent = value;
+    body.append(gap(segmented(["RGB", "CMYK"], pickerInks ? 1 : 0, (index) => {
+      pickerInks = index === 1;
+      rerender();
     })));
+    if (pickerInks) {
+      const amounts = inks && inkColor(inks) === color ? inks : toCmyk(color);
+      inks = amounts;
+      ["Cyan", "Magenta", "Yellow", "Black"].forEach((name, index) => {
+        body.append(toolSlider(name, Math.round(amounts[index] * 100), (value) => {
+          amounts[index] = value / 100;
+          const next = inkColor(amounts);
+          setColor(next);
+          show(next);
+        }));
+      });
+    } else {
+      body.append(gap(colorPicker((value) => {
+        setColor(value);
+        show(value);
+      })));
+      body.append(gap(printNote));
+      show(color);
+    }
     body.append(gap(h("div", { className: "caption" }, "Values of this hue")), swatchRow(valueScale(color)));
     if (recentColors.length > 0) {
       body.append(gap(h("div", { className: "caption" }, "Recent")), swatchRow(recentColors, true));
@@ -1556,11 +2122,48 @@ function colorPanel() {
       body.append(gap(h("div", { className: "caption" }, name)), swatchRow(colors));
     }
   } else {
+    body.append(gap(h("div", { className: "wrap-row" },
+      smallChip("From artwork", false, paletteFromArtwork),
+      smallChip("From reference", false, () => {
+        const reference = [...references.values()].pop();
+        if (reference) referencePalette(reference);
+        else say("Open a reference first");
+      }),
+      smallChip("Save recent", false, async () => {
+        if (recentColors.length < 2) return say("Use at least two colors first");
+        await store.addPalette("Recent colors", [...recentColors]);
+        savedPalettes = await store.palettes();
+        rerender();
+      }))));
+    for (const palette of savedPalettes) {
+      const row = swatchRow(palette.colors);
+      row.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        confirmSheet(`Delete ${palette.name}?`, null, async () => {
+          await store.deletePalette(palette.id);
+          savedPalettes = await store.palettes();
+          rerender();
+        });
+      });
+      holdToRun(row, () => row.dispatchEvent(new MouseEvent("contextmenu", { cancelable: true })));
+      body.append(gap(h("div", { className: "caption" }, palette.name)), row);
+    }
     for (const [name, colors] of STARTER_PALETTES) {
       body.append(gap(h("div", { className: "caption" }, name)), swatchRow(colors));
     }
   }
   return body;
+}
+
+let savedPalettes = [];
+
+// Calls run after a half-second hold, like a long press on Android.
+function holdToRun(element, run) {
+  let timer = 0;
+  element.addEventListener("pointerdown", () => {
+    timer = setTimeout(run, 500);
+  });
+  for (const type of ["pointerup", "pointerleave", "pointercancel"]) element.addEventListener(type, () => clearTimeout(timer));
 }
 
 // A saturation and value square above a hue bar.
@@ -1660,7 +2263,10 @@ function mapPoint(m, x, y) {
   return [(m[0] * x + m[1] * y + m[2]) / w, (m[3] * x + m[4] * y + m[5]) / w];
 }
 
-const viewMatrix = () => [flipped ? -zoom : zoom, 0, panX, 0, zoom, panY, 0, 0, 1];
+function viewMatrix() {
+  const [a, b, c, d] = viewLinear();
+  return [a, b, panX, c, d, panY, 0, 0, 1];
+}
 const translate3 = (x, y) => [1, 0, x, 0, 1, y, 0, 0, 1];
 const scaleAround = (s, x, y) => [s, 0, x - s * x, 0, s, y - s * y, 0, 0, 1];
 function rotateAround(angle, x, y) {
@@ -1794,7 +2400,8 @@ function showTransformHandles(id) {
 
 function transformedToScreen(x, y) {
   const [lx, ly] = mapPoint(layerMatrix, x, y);
-  return [(lx * (flipped ? -zoom : zoom) + panX) / dpr, (ly * zoom + panY) / dpr];
+  const [sx, sy] = canvasToScreen(lx, ly);
+  return [sx / dpr, sy / dpr];
 }
 
 function transformHandle(corner) {
@@ -1956,8 +2563,8 @@ function showLiquifyRing(event) {
 
 function liquifyPointerEvent(event, type) {
   showLiquifyRing(event);
-  const x = toCanvasX(event.clientX * dpr);
-  const y = toCanvasY(event.clientY * dpr);
+  const x = toCanvasX(event.clientX * dpr, event.clientY * dpr);
+  const y = toCanvasY(event.clientX * dpr, event.clientY * dpr);
   if (type === "down") {
     capture(event);
     liquifyPointer = event.pointerId;
@@ -1971,8 +2578,8 @@ function liquifyPointerEvent(event, type) {
   }
   const events = event.getCoalescedEvents ? event.getCoalescedEvents() : [event];
   for (const sample of events.length ? events : [event]) {
-    const sx = toCanvasX(sample.clientX * dpr);
-    const sy = toCanvasY(sample.clientY * dpr);
+    const sx = toCanvasX(sample.clientX * dpr, sample.clientY * dpr);
+    const sy = toCanvasY(sample.clientX * dpr, sample.clientY * dpr);
     const pressure = sample.pointerType === "mouse" ? 0.5 : sample.pressure;
     const strength = liquifyStrength * Math.min(1, Math.max(0.2, pressure));
     engine._cap_liquify_dab(liquifyLast[0], liquifyLast[1], sx, sy, settingsFor(brush).diameter / 2, strength, liquifyTool);
@@ -2116,7 +2723,7 @@ function actionsPanel() {
       const image = h("img", { className: art.id === doc.id ? "variation-thumb on" : "variation-thumb", alt: `${art.name} preview` });
       store.imageUrl(art.id, false).then((url) => { if (url) image.src = url; });
       return h("button", { className: "variation-cell", onClick: () => { if (art.id !== doc.id) openVariation(art.id); } },
-        image, h("span", { className: "small" }, art.name));
+        image, h("span", { className: "small", translate: false }, art.name));
     }))));
   }
   body.append(
@@ -2130,6 +2737,14 @@ function actionsPanel() {
     gap(row("export", "PNG image", store.folderName ? `Flattened, saved to ${store.folderName}/Exports` : "Flattened, saved to your downloads", () => { closePanel(); exportPng(); })),
     gap(row("layersfile", "PSD file", "Keeps your layers", () => { closePanel(); exportPsd(); })),
     gap(row("video", "Time-lapse", "A video of your progress", () => { closePanel(); askTimelapseLength(); })),
+    gap(h("div", { className: "caption" }, "Language")),
+    gap(segmented(LANGUAGES.map(([, label]) => label), LANGUAGES.findIndex(([code]) => code === language), async (index) => {
+      const [code] = LANGUAGES[index];
+      if (code === language) return;
+      saveLanguage(code);
+      await leaveStudio();
+      location.reload();
+    })),
     gap(h("div", { className: "caption" }, "Pen button")),
     gap(segmented(["Pick color", "Eraser", "Undo"], penButtonAction, (action) => {
       penButtonAction = action;
@@ -2215,7 +2830,7 @@ function addText(text, heightShare) {
     layers().splice(index, 0, { ...newLayer(id, text.split("\n")[0].slice(0, 24)), text, textSize: heightShare, textColor: colorInt(color) });
     doc.manifest.activeLayer = id;
   });
-  startTransform();
+  if (transform) startTransform();
 }
 
 // Swaps in freshly set text where the old text now sits, so editing it keeps your placement.
@@ -2286,6 +2901,15 @@ async function openVariation(id) {
 
 function safeName(name) {
   return (name || "Untitled").replace(/[\\/:*?"<>|]/g, "-").trim() || "Untitled";
+}
+
+function readComposite(width, height) {
+  const size = width * height * 4;
+  const pointer = engine._malloc(size);
+  engine._cap_read_composite(width, height, pointer);
+  const pixels = engine.HEAPU8.slice(pointer, pointer + size);
+  engine._free(pointer);
+  return pixels;
 }
 
 function readFullComposite() {
@@ -2375,8 +2999,8 @@ let pickedColor = null;
 let pickTimer = 0;
 
 function pickAt(clientX, clientY) {
-  const x = Math.floor(toCanvasX(clientX * dpr));
-  const y = Math.floor(toCanvasY(clientY * dpr));
+  const x = Math.floor(toCanvasX(clientX * dpr, clientY * dpr));
+  const y = Math.floor(toCanvasY(clientX * dpr, clientY * dpr));
   if (x < 0 || y < 0 || x >= canvasWidth || y >= canvasHeight) return;
   const value = engine._cap_pick_color(x, y) >>> 0;
   pickedColor = `#${(value & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase()}`;
@@ -3480,7 +4104,7 @@ function importLayerImage() {
   input.click();
 }
 
-function addImage(image, width, height, name) {
+function addImage(image, width, height, name, transform = true) {
   if (layerSlots() >= maxLayers) return sayFull();
   setEditingMask(false);
   const surface = new OffscreenCanvas(doc.width, doc.height);
@@ -3497,7 +4121,7 @@ function addImage(image, width, height, name) {
     layers().splice(index, 0, newLayer(id, name));
     doc.manifest.activeLayer = id;
   });
-  startTransform();
+  if (transform) startTransform();
 }
 
 // The engine keeps layers with premultiplied alpha, as Android's bitmaps do.
@@ -3720,7 +4344,7 @@ function layerRow(layer) {
       renameLayer(layer);
     },
   }, handle, layerThumbnail(layer.id),
-  h("span", { className: "layer-name" }, layer.mask ? `◐ ${layer.name}` : layer.name),
+  h("span", { className: "layer-name", translate: false }, layer.mask ? `◐ ${layer.name}` : layer.name),
   h("button", {
     className: "icon", ariaLabel: "Lock transparency", innerHTML: ICONS[layer.alphaLock ? "lock" : "unlock"],
     onClick: (event) => {
@@ -3810,6 +4434,11 @@ let companionVisible = loadPreference("companion", true);
 let unreadTips = false;
 let report = null;  // The latest analysis of the open artwork.
 let progress = null;  // A note on how far the artwork came since the last sitting.
+let referenceMatch = null;  // How close the artwork is to its references, from match.js.
+let matchedFiles = [];  // The references it was compared with, as {name, file, time}.
+let matchedScope = "NEWEST";
+let matchedBoards = {};
+const referenceProfiles = new Map();  // Reference file name and time -> its profile.
 let tipIndex = 0;
 let ideaIndex = 0;
 let companionSection = 0;  // 1 why, 2 companion settings, 5 idea, 6 comparison.
@@ -3957,12 +4586,21 @@ async function analyze(target, pixels, width, height) {
       earlier = saved;
     }
   }
+  const matched = await matchReferences(target, pixels, width, height).catch((error) => {
+    console.error(error);
+    return null;
+  });
   if (doc !== target) return;
   const note = earlier ? progressNote(earlier, now) : null;
   const changed = JSON.stringify(result.tips.map((tip) => tip.text)) !== JSON.stringify((report?.tips || []).map((tip) => tip.text));
+  const matchChanged = matched?.match?.summary !== referenceMatch?.summary;
   report = result;
   progress = note;
-  if (changed && result.tips.length) unreadTips = true;
+  referenceMatch = matched?.match || null;
+  matchedFiles = matched?.files || [];
+  matchedScope = matched?.scope || "NEWEST";
+  matchedBoards = matched?.boards || {};
+  if ((changed || matchChanged) && result.tips.length) unreadTips = true;
   const topic = result.tips.find((tip) => WARMUP_TOPICS.includes(tip.topic));
   if (topic) savePreference("warmupTopic", topic.topic);
   if (panelKey === "companion") {
@@ -3970,6 +4608,39 @@ async function analyze(target, pixels, width, height) {
   } else {
     setCompanionMood(restingMood());
   }
+}
+
+// Compares the artwork with the references the companion reads, as MainActivity.referenceChoice()
+// and analyze() do.
+async function matchReferences(target, pixels, width, height) {
+  const project = target.manifest.project || "";
+  const all = await store.references(project);
+  if (!all.length) return null;
+  const open = doc === target ? new Set(references.keys()) : new Set();
+  const choice = aspectReferences(all.map((reference) => reference.name), open, await store.referenceNotes(project),
+    await store.boardPurposes(project), target.manifest.followedBoards || []);
+  const byName = new Map(all.map((reference) => [reference.name, reference]));
+  const files = choice.names.map((name) => byName.get(name));
+  const profiles = [];
+  for (const reference of files) {
+    const key = `${reference.name}:${reference.time}`;
+    if (!referenceProfiles.has(key)) {
+      const bitmap = await decodeReference(reference.file, REFERENCE_PROFILE_SIZE).catch(() => null);
+      if (!bitmap) continue;
+      const smallHeight = Math.max(1, Math.round(REFERENCE_PROFILE_SIZE * bitmap.height / bitmap.width));
+      const surface = new OffscreenCanvas(REFERENCE_PROFILE_SIZE, smallHeight);
+      const c = surface.getContext("2d");
+      c.fillStyle = "#FFFFFF";
+      c.fillRect(0, 0, REFERENCE_PROFILE_SIZE, smallHeight);
+      c.drawImage(bitmap, 0, 0, REFERENCE_PROFILE_SIZE, smallHeight);
+      bitmap.close?.();
+      referenceProfiles.set(key, profileImage(c.getImageData(0, 0, REFERENCE_PROFILE_SIZE, smallHeight).data, REFERENCE_PROFILE_SIZE, smallHeight));
+    }
+    profiles.push(referenceProfiles.get(key));
+  }
+  const art = profileImage(pixels, width, height);
+  const match = profiles.length === files.length ? compareWithReferences(art, profiles, choice.aspects) : compareWithReferences(art, profiles);
+  return { match, files, scope: choice.scope, boards: choice.boards };
 }
 
 function mutedNotes() {
@@ -3992,6 +4663,28 @@ function muteNote(tip) {
 function companionTips() {
   const all = [];
   if (progress) all.push({ topic: "Progress", text: progress, why: "", marks: [], action: null });
+  if (referenceMatch) {
+    const match = referenceMatch;
+    const board = matchedBoards[match.weakest]?.[0];
+    all.push({
+      topic: "Your references",
+      text: [match.summary, match.advice, board && `From your ${board} references.`].filter(Boolean).join(" "),
+      why: match.why,
+      marks: match.marksCanvas
+        ? [{ label: "Furthest from your reference", shape: "RING", x1: match.farthest[0], y1: match.farthest[1], x2: 0.07, y2: 0 }]
+        : [],
+      action: "OPEN_REFERENCE",
+    });
+  }
+  const perspectiveNote = perspectiveLog.summary();
+  if (perspectiveNote) {
+    const line = perspectiveLog.driftedLine;
+    all.push({
+      topic: "Perspective", text: perspectiveNote, why: "A straight line counts as drifted when it's over 4° from the guide.",
+      marks: line ? [{ label: "This line drifts", shape: "LINE", x1: line[0] / doc.width, y1: line[1] / doc.height, x2: line[2] / doc.width, y2: line[3] / doc.height }] : [],
+      action: "OPEN_GUIDES",
+    });
+  }
   return withoutMuted(all.concat(report?.tips || []), mutedNotes(), mutedTopics());
 }
 
@@ -4035,6 +4728,7 @@ function companionNote() {
     }));
   }
   if (tip?.why) actions.push(smallChip("Why", companionSection === 1, toggleSection(1)));
+  if (referenceMatch) actions.push(smallChip("Match", companionSection === 3, toggleSection(3)));
   if (report?.ideas?.length) {
     actions.push(smallChip("Idea", companionSection === 5, () => {
       if (companionSection === 5) ideaIndex++;
@@ -4060,8 +4754,46 @@ function companionNote() {
       }))));
     }
   }
+  const match = referenceMatch;
+  if (companionSection === 3 && match) {
+    const scope = {
+      OPEN: "Compared with your open references",
+      BOARDS: `Compared with: ${[...new Set(Object.values(matchedBoards).flat())].join(", ")}`,
+      STARRED: "Compared with your starred references",
+      NEWEST: `Compared with your ${matchedFiles.length} newest references`,
+    }[matchedScope];
+    body.append(gap(h("div", { className: "small" }, scope)));
+    for (const area of match.areas) {
+      body.append(gap(h("div", { className: "match-row" },
+        h("div", { className: "caption match-name" }, area.name),
+        h("div", { className: "match-bar", role: "progressbar", ariaLabel: `${area.name} match`, ariaValueNow: String(Math.round(area.score * 100)) },
+          h("span", { style: { width: `${Math.round(area.score * 100)}%` } })))));
+    }
+    if (match.colors.length) {
+      body.append(gap(h("div", { className: "caption" }, "Colors to try")),
+        h("div", { className: "match-colors" }, match.colors.map((value) => h("button", {
+          ariaLabel: "Use this color", style: { background: value },
+          onClick: (event) => {
+            const box = event.currentTarget.getBoundingClientRect();
+            flashPickRing(value, box.left + box.width / 2, box.top);
+          },
+        }))));
+    }
+  }
   if (companionSection === 1 && tip) {
     body.append(gap(h("div", { className: "caption" }, tip.why)));
+    if (tip.topic === "Your references" && match) {
+      const closest = matchedFiles[match.closest];
+      const pair = h("div", { className: "why-pair" });
+      store.imageUrl(doc.id).then((url) => {
+        if (url) pair.prepend(h("div", { className: "column" }, h("div", { className: "small" }, "Yours"), h("img", { src: url, alt: "Yours" })));
+      }).catch(() => {});
+      if (closest) {
+        pair.append(h("div", { className: "column" }, h("div", { className: "small" }, "Closest reference"),
+          h("img", { src: referencePreview(projectOf(), closest), alt: "Closest reference" })));
+      }
+      body.append(gap(pair));
+    }
     if (report && (tip.topic === "Values" || tip.topic === "Silhouette")) {
       const preview = h("canvas", { className: "why-preview", width: report.width, height: report.height, ariaLabel: "Preview" });
       preview.getContext("2d").putImageData(new ImageData(tip.topic === "Values" ? report.values : report.silhouette, report.width, report.height), 0, 0);
@@ -4111,7 +4843,7 @@ const WARMUP_NOTE_DELAY_MS = 900;
 const warmupBar = document.getElementById("warmup-bar");
 const warmupStrokes = [];
 const undoneWarmupStrokes = [];
-let warmupPath = null;
+let strokePath = null;  // The stroke being drawn, as canvas x and y pairs.
 let warmupBubble = null;
 let lastWarmupNote = null;
 let lastWarmupMarks = [];
@@ -4247,6 +4979,11 @@ function noteChip(tip) {
       if (chalk) selectTool(chalk);
     });
     case "SHADOW_LAYER": return open("Add a shadow layer", () => addLayer({ blend: 1 }));
+    case "OPEN_REFERENCE": {
+      const file = referenceMatch && matchedFiles[referenceMatch.closest];
+      if (!file || references.has(file.name)) return null;
+      return open("Open this reference", () => toggleReference(file));
+    }
     default: return null;
   }
 }
@@ -4293,7 +5030,8 @@ function showNoteMarks(marks) {
 }
 
 function canvasToScreen(x, y) {
-  return [x * (flipped ? -zoom : zoom) + panX, y * zoom + panY];
+  const [a, b, c, d] = viewLinear();
+  return [a * x + b * y + panX, c * x + d * y + panY];
 }
 
 function drawOverlay() {
@@ -4437,6 +5175,319 @@ function fail(text) {
 
 let store = null;
 let waitingFolder = null;
+// --- References, as referencesPanel() and the ReferenceHost in MainActivity ------------------------
+
+const references = new Map();  // File name -> its open ReferenceWindow.
+let referenceFilter = "";
+let pickingReferences = false;
+const pickedReferences = new Set();
+
+const projectOf = () => doc.manifest.project || "";
+
+const referenceHost = {
+  changed: () => rememberReferences(),
+  closed: (window) => {
+    references.delete(window.state.file);
+    window.dismiss();
+    rememberReferences();
+    if (panelKey === "references") showReferences();
+  },
+  pick: (value, x, y) => {
+    pickedColor = value;
+    showPickRing(value, x, y);
+  },
+  pickEnd: () => endPick(),
+  palette: (window) => referencePalette(window),
+  toLayer: (window) => referenceToLayer(window),
+};
+
+function rememberReferences() {
+  doc.manifest.references = [...references.values()].map((window) => ({ ...window.state }));
+  markUnsaved();
+}
+
+function closeReferences() {
+  for (const window of references.values()) window.dismiss();
+  references.clear();
+}
+
+async function restoreReferences() {
+  closeReferences();
+  const opening = doc;
+  for (const state of doc.manifest.references || []) {
+    const file = await store.referenceFile(projectOf(), state.file).catch(() => null);
+    if (!file || doc !== opening) continue;
+    const bitmap = await decodeReference(file).catch(() => null);
+    if (bitmap && doc === opening) openReference({ ...state }, bitmap);
+  }
+}
+
+function openReference(state, bitmap) {
+  const window = new ReferenceWindow(studioView, state, bitmap, referenceHost);
+  references.set(state.file, window);
+}
+
+async function toggleReference(reference) {
+  const open = references.get(reference.name);
+  if (open) return referenceHost.closed(open);
+  const bitmap = await decodeReference(reference.file).catch(() => null);
+  if (!bitmap) return say("Couldn't open this image");
+  const width = fitReferenceWidth(bitmap.width, bitmap.height, viewWidth(), viewHeight());
+  const offset = 32 * references.size;
+  openReference({
+    file: reference.name, x: 90 + offset, y: 90 + offset, width, zoom: 1, panX: 0, panY: 0,
+    grayscale: false, flipped: false, opacity: 1, pinned: false,
+  }, bitmap);
+  rememberReferences();
+}
+
+function referencePalette(window) {
+  const { bitmap } = window;
+  const width = 240;
+  const height = Math.max(1, Math.round(240 * bitmap.height / bitmap.width));
+  const surface = new OffscreenCanvas(width, height);
+  const c = surface.getContext("2d");
+  c.drawImage(bitmap, 0, 0, width, height);
+  savePalette("Reference colors", extractPalette(c.getImageData(0, 0, width, height).data));
+}
+
+function referenceToLayer(window) {
+  const { bitmap } = window;
+  const scale = Math.min(doc.width / bitmap.width, doc.height / bitmap.height);
+  addImage(bitmap, bitmap.width * scale, bitmap.height * scale, `Reference ${doc.manifest.nextLayerId}`, false);
+}
+
+async function savePalette(name, colors) {
+  if (!colors.length) return say("There aren't any colors to collect yet");
+  await store.addPalette(name, colors);
+  savedPalettes = await store.palettes();
+  say("Palette saved");
+  if (panelKey === "color") rerender();
+}
+
+function paletteFromArtwork() {
+  const width = THUMBNAIL_WIDTH;
+  const height = thumbnailHeight(doc.width, doc.height);
+  savePalette(`${doc.manifest.name} colors`, extractPalette(readComposite(width, height)));
+}
+
+function pickReferenceFiles() {
+  const input = h("input", { type: "file", accept: "image/*", multiple: true });
+  const project = projectOf();
+  const block = referenceFilter && referenceFilter !== STARRED_FILTER ? referenceFilter : null;
+  input.addEventListener("change", async () => {
+    for (const file of input.files) {
+      try {
+        const name = await store.addReference(project, file);
+        if (block) await store.updateReferenceNote(project, name, (note) => ({ ...note, board: block }));
+      } catch (error) {
+        console.error(error);
+      }
+    }
+    showReferences();
+  });
+  input.click();
+}
+
+// Reads the library, then shows the panel; the panel itself is built from what was read.
+async function showReferences() {
+  const project = projectOf();
+  const [all, notes, purposes] = await Promise.all([
+    store.references(project), store.referenceNotes(project), store.boardPurposes(project),
+  ]);
+  const build = () => referencesPanel(all, notes, purposes);
+  if (panelKey === "references") {
+    panelBuilder = build;
+    rerender();
+  } else {
+    showPanel("references", build);
+  }
+}
+
+function referencesPanel(all, notes, purposes) {
+  const blocks = referenceBlocks(notes);
+  if (referenceFilter && referenceFilter !== STARRED_FILTER && !blocks.includes(referenceFilter)) referenceFilter = "";
+  const inside = referenceFilter !== "";
+  const project = projectOf();
+  const body = h("div", { className: "column" });
+  const header = h("div", { className: "row header" });
+  if (inside) {
+    header.append(smallChip("‹", false, () => {
+      referenceFilter = "";
+      pickingReferences = false;
+      pickedReferences.clear();
+      showReferences();
+    }));
+    header.lastChild.style.marginRight = "8px";
+  }
+  header.append(h("div", { className: "title grow" },
+    referenceFilter === STARRED_FILTER ? "★" : inside ? referenceFilter : "References"));
+  if (all.length) {
+    header.append(smallChip("Select", pickingReferences, () => {
+      pickingReferences = !pickingReferences;
+      pickedReferences.clear();
+      showReferences();
+    }));
+  }
+  header.append(h("button", { className: "icon", ariaLabel: "Add references", innerHTML: ICONS.add, onClick: pickReferenceFiles }));
+  body.append(header);
+  if (!all.length) {
+    body.append(gap(h("div", { className: "small" }, "Add images, or drop them here from another app.")));
+    return body;
+  }
+  const names = inside
+    ? new Set(filterReferences(all.map((reference) => reference.name), notes, referenceFilter))
+    : new Set(all.filter((reference) => !notes[reference.name]?.board).map((reference) => reference.name));
+  const files = all.filter((reference) => names.has(reference.name));
+  if (!inside) {
+    const full = blocks.filter((block) => all.some((reference) => notes[reference.name]?.board === block));
+    if (full.length) {
+      body.append(gap(h("div", { className: "reference-blocks" }, full.map((block) => {
+        const inBlock = all.filter((reference) => notes[reference.name]?.board === block);
+        return h("button", {
+          className: "reference-block", ariaLabel: block,
+          onClick: () => {
+            referenceFilter = block;
+            showReferences();
+          },
+        },
+        h("div", { className: "peeks" }, inBlock.slice(0, 3).map((reference) => h("img", { src: referencePreview(project, reference), alt: "" }))),
+        h("div", { className: "name" }, `${block} · ${inBlock.length}`));
+      }))));
+    }
+    const quiet = [];
+    if (all.some((reference) => notes[reference.name]?.starred)) quiet.push(STARRED_FILTER);
+    quiet.push(...blocks.filter((block) => !full.includes(block)));
+    body.append(gap(h("div", { className: "wrap-row" }, quiet.map((block) => smallChip(block === STARRED_FILTER ? "★" : block, false, () => {
+      referenceFilter = block;
+      showReferences();
+    })))));
+    if (files.length) body.append(gap(h("div", { className: "small" }, "Not sorted")));
+  }
+  if (pickingReferences) body.append(gap(h("div", { className: "wrap-row" }, referencePickActions(files))));
+  if (blocks.includes(referenceFilter)) boardControls(body, referenceFilter, purposes);
+  if (files.length) {
+    body.append(gap(h("div", { className: "reference-grid" }, files.map((reference) => {
+      const open = references.has(reference.name);
+      const marked = pickingReferences ? pickedReferences.has(reference.name) : open;
+      const note = notes[reference.name];
+      const image = h("img", { src: referencePreview(project, reference), alt: open ? "Close reference" : "Open reference" });
+      const cell = h("button", { className: marked ? "reference-cell on" : "reference-cell", ariaLabel: image.alt }, image,
+        note?.board && h("span", { className: "block" }, note.board),
+        note?.starred && h("span", { className: "star" }, "★"));
+      let held = false;
+      let timer = 0;
+      cell.addEventListener("pointerdown", () => {
+        held = false;
+        timer = setTimeout(() => {
+          held = true;
+          manageReference(reference);
+        }, 500);
+      });
+      for (const type of ["pointerup", "pointerleave", "pointercancel"]) cell.addEventListener(type, () => clearTimeout(timer));
+      cell.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+        clearTimeout(timer);
+        if (!held) manageReference(reference);
+        held = true;
+      });
+      cell.addEventListener("click", async () => {
+        if (held) return;
+        if (pickingReferences) {
+          if (!pickedReferences.delete(reference.name)) pickedReferences.add(reference.name);
+        } else {
+          await toggleReference(reference);
+        }
+        showReferences();
+      });
+      return cell;
+    }))));
+  }
+  return body;
+}
+
+// What the companion uses this board for, and whether this artwork follows it.
+function boardControls(body, board, purposes) {
+  const project = projectOf();
+  const uses = purposes[board] || [];
+  body.append(gap(h("div", { className: "small" }, "Your companion reads this block for")));
+  body.append(gap(h("div", { className: "wrap-row" }, BOARD_PURPOSES.map((purpose) =>
+    smallChip(PURPOSE_LABELS[purpose], uses.includes(purpose), async () => {
+      let next;
+      if (uses.includes(purpose)) next = uses.filter((use) => use !== purpose);
+      else if (purpose === "INSPIRATION") next = [purpose];
+      else next = [...uses.filter((use) => use !== "INSPIRATION"), purpose];
+      await store.setBoardPurposes(project, board, next);
+      markUnsaved();
+      showReferences();
+    })))));
+  const followed = doc.manifest.followedBoards || [];
+  const following = followed.includes(board);
+  body.append(gap(h("div", { className: "wrap-row" }, smallChip("Only for this artwork", following, () => {
+    doc.manifest.followedBoards = following ? followed.filter((name) => name !== board) : [...followed, board];
+    markUnsaved();
+    showReferences();
+  }))));
+}
+
+function referencePickActions(files) {
+  const picked = files.filter((reference) => pickedReferences.has(reference.name)).map((reference) => reference.name);
+  const project = projectOf();
+  const finish = () => {
+    pickingReferences = false;
+    pickedReferences.clear();
+    showReferences();
+  };
+  const actions = [smallChip("All", false, () => {
+    for (const reference of files) pickedReferences.add(reference.name);
+    showReferences();
+  })];
+  if (!picked.length) return actions;
+  actions.push(smallChip("★", false, async () => {
+    for (const name of picked) await store.updateReferenceNote(project, name, (note) => ({ ...note, starred: true }));
+    finish();
+  }));
+  actions.push(smallChip("Block", false, () => chooseBoard(store, project, picked, finish)));
+  actions.push(smallChip("Move", false, () => chooseSketchbook(store, project, picked, () => {
+    for (const name of picked) references.get(name)?.dismiss();
+    for (const name of picked) references.delete(name);
+    rememberReferences();
+    finish();
+  })));
+  actions.push(smallChip("Delete", false, () => confirmSheet(`Delete ${picked.length} references?`,
+    "They're removed from this project and every artwork using them.", async () => {
+      for (const name of picked) {
+        references.get(name)?.dismiss();
+        references.delete(name);
+        await store.deleteReference(project, name);
+      }
+      rememberReferences();
+      finish();
+    })));
+  return actions;
+}
+
+function manageReference(reference) {
+  const project = projectOf();
+  const forget = () => {
+    references.get(reference.name)?.dismiss();
+    references.delete(reference.name);
+    rememberReferences();
+  };
+  referenceOptions(store, project, reference.name, {
+    changed: showReferences,
+    moved: () => {
+      forget();
+      showReferences();
+    },
+    remove: () => confirmSheet("Delete this reference?", "It's removed from this project and every artwork using it.", async () => {
+      forget();
+      await store.deleteReference(project, reference.name);
+      showReferences();
+    }),
+  });
+}
+
 let home = null;
 let doc = null;  // The open artwork: {id, dir, manifest, width, height, fresh}.
 let ready = false;
@@ -4534,6 +5585,8 @@ async function openDocument(next) {
   unreadTips = false;
   tipIndex = 0;
   comparison = null;
+  referenceMatch = null;
+  matchedFiles = [];
   canvasWidth = next.width;
   canvasHeight = next.height;
   showStudio();
@@ -4589,8 +5642,8 @@ async function openDocument(next) {
   }
   engine._cap_set_active_layer(manifest.activeLayer || ids[0]);
   symmetry = manifest.symmetry || 0;
-  const center = manifest.symmetryCenter && manifest.symmetryCenter.length === 2 ? manifest.symmetryCenter : [-1, -1];
-  engine._cap_set_symmetry(symmetry, center[0], center[1]);
+  perspectiveLog.reset();
+  pushGuides();
   viewMode = 0;
   guide = 0;
   engine._cap_set_view_options(0, 0);
@@ -4601,6 +5654,9 @@ async function openDocument(next) {
   stopPlaying();
   refreshAnimationBar();
   ready = true;
+  referenceFilter = "";
+  pickingReferences = false;
+  restoreReferences();
 }
 
 async function openArtwork(id) {
@@ -4641,6 +5697,8 @@ async function leaveStudio() {
   if (unsaved || previewStale || doc?.fresh) save(true);
   await saving;
   stopPlaying();
+  closeReferences();
+  hideShapeHandles();
   doc = null;
   warmupBar.hidden = true;
   animationBar.hidden = true;
@@ -4658,6 +5716,7 @@ window.addEventListener("beforeunload", (event) => {
 function setStore(next, waiting) {
   store = next;
   waitingFolder = waiting;
+  loadCustomBrushes();
 }
 
 // --- Start -------------------------------------------------------------------------------------
@@ -4666,6 +5725,20 @@ window.addEventListener("resize", () => {
   resize();
   placeRecentStrip();
   placeCompanion();
+  for (const window of references.values()) window.refit();
+});
+
+// Images dropped on the studio join the sketchbook's references, as sharing them does on Android.
+studioView.addEventListener("dragover", (event) => {
+  if ([...event.dataTransfer.items].some((item) => item.type.startsWith("image/"))) event.preventDefault();
+});
+studioView.addEventListener("drop", async (event) => {
+  const files = [...event.dataTransfer.files].filter((file) => file.type.startsWith("image/"));
+  if (!files.length || !doc) return;
+  event.preventDefault();
+  for (const file of files) await store.addReference(projectOf(), file).catch(() => null);
+  say(files.length === 1 ? "Added to references" : `Added ${files.length} references`);
+  showReferences();
 });
 resize();
 setColor(color);
@@ -4674,6 +5747,7 @@ showRecentColors();
 setStats(statsOn);
 
 ({ store, waiting: waitingFolder } = await ArtworkStore.open());
+await loadCustomBrushes();
 home = new Home(homeView, {
   get store() { return store; },
   get waiting() { return waitingFolder; },
@@ -4688,4 +5762,4 @@ window.addEventListener("resize", () => {
 });
 
 // Exposed for checking the page from the console and from automated tests.
-window.cappuccino = { engine, fitView, undo, redo, selectTool, setColor, leaveStudio, get store() { return store; } };
+window.cappuccino = { engine, fitView, undo, redo, selectTool, setColor, leaveStudio, save: () => { markUnsaved(); return save(true); }, get store() { return store; } };

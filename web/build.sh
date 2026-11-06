@@ -33,5 +33,6 @@ em++ "${OPT[@]}" -std=c++20 -Wall -Wextra \
     -o "$OUT/engine.js"
 
 python3 web/tools/icons.py app/src/main/res/drawable "$OUT/icons.js"
-cp web/index.html web/style.css web/app.js web/brushes.js web/companion.js web/ui.js web/home.js web/storage.js web/analysis.js web/warmups.js web/practice.js web/psd.js "$OUT/"
+python3 web/tools/translations.py app/src/main/java/art/cappuccino/paint/Translations.kt "$OUT/translations.js"
+cp web/index.html web/style.css web/app.js web/brushes.js web/companion.js web/ui.js web/home.js web/storage.js web/analysis.js web/warmups.js web/practice.js web/psd.js web/references.js web/match.js web/zip.js web/i18n.js web/shapes.js "$OUT/"
 echo "Built $OUT: $(du -sh "$OUT" | cut -f1)"
