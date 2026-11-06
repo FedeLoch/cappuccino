@@ -53,6 +53,9 @@ val CANVAS_PRESETS = listOf(
     CanvasPreset("Phone story", 1920, 1080, tall = true),
 )
 
+/** Stands for the book cover choice in the preset grid; its size comes from the book's options. */
+private val BOOK_PRESET = CanvasPreset("Book cover", 2, 3, tall = true)
+
 /** Returns a size turned to the orientation asked for. */
 fun orientedSize(width: Int, height: Int, portrait: Boolean) =
     if (portrait) min(width, height) to max(width, height) else max(width, height) to min(width, height)
@@ -117,9 +120,14 @@ class NewArtworkSheet(
     private val activity: Activity,
     private val projects: List<Project>,
     private var project: String,
-    private val create: (Int, Int, String, String) -> Unit,
+    private val create: (Int, Int, String, String, PrintSetup?) -> Unit,
 ) {
     private var preset: CanvasPreset? = CANVAS_PRESETS.first()
+    private var book = false
+    private var trim = BOOK_TRIMS[2]
+    private var wrap = false
+    private var pages = ""
+    private var paper = BOOK_PAPERS.first()
     private var portrait = false
     private var name = ""
     private var customWidth = ""
@@ -138,7 +146,17 @@ class NewArtworkSheet(
         dialog.show()
     }
 
+    private fun printSetup(): PrintSetup? {
+        if (!book) return null
+        val spine = if (wrap) spineWidth(pages.toIntOrNull() ?: return null, paper) else 0f
+        return PrintSetup(trim.width, trim.height, spine, wrap)
+    }
+
     private fun size(): Pair<Int, Int>? {
+        if (book) {
+            val setup = printSetup() ?: return null
+            return if (setup.pixelWidth <= MAX_CANVAS_SIDE && setup.pixelHeight <= MAX_CANVAS_SIDE) setup.pixelWidth to setup.pixelHeight else null
+        }
         preset?.let { return orientedSize(it.width, it.height, portrait) }
         val width = customWidth.toIntOrNull() ?: return null
         val height = customHeight.toIntOrNull() ?: return null
@@ -148,8 +166,12 @@ class NewArtworkSheet(
     private fun refreshSummary() {
         val chosen = size()
         createButton?.alpha = if (chosen == null) 0.4f else 1f
-        summary?.text = if (chosen == null) {
+        summary?.text = if (chosen == null && book) {
+            if (wrap && pages.toIntOrNull() == null) tr("Enter the page count to size the spine") else tr("This book is too large for one canvas")
+        } else if (chosen == null) {
             tr("Use sizes from 64 to %1 pixels", MAX_CANVAS_SIDE)
+        } else if (book) {
+            tr("%1 x %2 pixels with bleed, at 300 dpi · up to %3 layers", chosen.first, chosen.second, layerLimit(chosen.first, chosen.second, memory))
         } else {
             tr("%1 x %2 pixels · up to %3 layers", chosen.first, chosen.second, layerLimit(chosen.first, chosen.second, memory))
         }
@@ -166,7 +188,9 @@ class NewArtworkSheet(
             },
         )
         body.addView(presetGrid(), LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) })
-        if (preset == null) {
+        if (book) {
+            bookOptions()
+        } else if (preset == null) {
             body.addView(
                 LinearLayout(this).apply {
                     fun field(text: String, hintText: String, change: (String) -> Unit) = fieldStyle(EditText(this@with), hintText).apply {
@@ -244,7 +268,7 @@ class NewArtworkSheet(
                 createButton = chip(tr("Create"), true) {
                     size()?.let { (width, height) ->
                         dialog.dismiss()
-                        create(width, height, name.trim(), project)
+                        create(width, height, name.trim(), project, printSetup())
                     }
                 }
                 addView(createButton)
@@ -258,6 +282,64 @@ class NewArtworkSheet(
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) }
     }
 
+    /** Trim size, front or full wrap, and for a wrap the pages and paper that set the spine. */
+    private fun bookOptions(): Unit = with(activity) {
+        fun chips(content: List<View>) = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(
+                LinearLayout(context).apply {
+                    content.forEach { addView(it, LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) }) }
+                },
+            )
+        }
+        body.addView(heading(tr("Trim size")))
+        body.addView(
+            chips(BOOK_TRIMS.map { option -> creamChip(option.label, option === trim) { trim = option; render() } }),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) },
+        )
+        body.addView(heading(tr("Cover")))
+        body.addView(
+            chips(
+                listOf(
+                    creamChip(tr("Front cover"), !wrap) { wrap = false; render() },
+                    creamChip(tr("Back, spine, and front"), wrap) { wrap = true; render() },
+                ),
+            ),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(6) },
+        )
+        if (wrap) {
+            body.addView(
+                LinearLayout(this).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(
+                        fieldStyle(EditText(this@with), tr("Pages")).apply {
+                            inputType = InputType.TYPE_CLASS_NUMBER
+                            setText(pages)
+                            addTextChangedListener(object : TextWatcher {
+                                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+                                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) = Unit
+                                override fun afterTextChanged(s: Editable?) {
+                                    pages = s.toString()
+                                    refreshSummary()
+                                }
+                            })
+                        },
+                        LinearLayout.LayoutParams(dp(110), -2),
+                    )
+                    addView(
+                        chips(BOOK_PAPERS.map { option -> creamChip(tr(option.label), option === paper) { paper = option; render() } }),
+                        LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) },
+                    )
+                },
+                LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) },
+            )
+        }
+        body.addView(
+            label(tr("Adds 0.125 in of bleed on every side. Guides show the trim, the safe area, and the spine."), 12f, COCOA),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
+        )
+    }
+
     private fun turn(toPortrait: Boolean) {
         portrait = toPortrait
         render()
@@ -266,11 +348,11 @@ class NewArtworkSheet(
     private fun presetGrid(): GridLayout = with(activity) {
         GridLayout(this).apply {
             columnCount = PRESET_COLUMNS
-            val options = CANVAS_PRESETS + null
+            val options = CANVAS_PRESETS + BOOK_PRESET + null
             val inner = min(dp(SHEET_MAX_WIDTH), resources.displayMetrics.widthPixels - dp(SHEET_MARGIN)) - dp(44)
             val cell = inner / PRESET_COLUMNS - dp(6)
             options.forEach { option ->
-                val chosen = option === preset
+                val chosen = if (option === BOOK_PRESET) book else !book && option === preset
                 val tall = if (chosen) portrait else option?.tall == true
                 val (shownWidth, shownHeight) = option?.let { orientedSize(it.width, it.height, tall) } ?: (0 to 0)
                 addView(
@@ -291,10 +373,18 @@ class NewArtworkSheet(
                         val text = if (chosen) Color.WHITE else ESPRESSO
                         addView(label(option?.let { tr(it.label) } ?: tr("Custom size"), 13f, text).apply { gravity = Gravity.CENTER })
                         addView(
-                            label(if (option != null) "$shownWidth x $shownHeight" else tr("Your own"), 11f, if (chosen) Color.WHITE else COCOA)
+                            label(
+                                when {
+                                    option === BOOK_PRESET -> tr("For print")
+                                    option != null -> "$shownWidth x $shownHeight"
+                                    else -> tr("Your own")
+                                },
+                                11f, if (chosen) Color.WHITE else COCOA,
+                            )
                                 .apply { gravity = Gravity.CENTER },
                         )
                         setOnClickListener {
+                            book = option === BOOK_PRESET
                             preset = option
                             portrait = option?.tall == true
                             render()

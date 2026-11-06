@@ -351,13 +351,14 @@ class GalleryActivity : Activity() {
         NewArtworkSheet(this, store.projects(), project, ::openNew).show()
     }
 
-    private fun openNew(width: Int, height: Int, name: String, project: String) {
+    private fun openNew(width: Int, height: Int, name: String, project: String, print: PrintSetup?) {
         startActivity(
             Intent(this, MainActivity::class.java)
                 .putExtra(MainActivity.EXTRA_PROJECT, project)
                 .putExtra(MainActivity.EXTRA_NAME, name)
                 .putExtra(MainActivity.EXTRA_WIDTH, width)
-                .putExtra(MainActivity.EXTRA_HEIGHT, height),
+                .putExtra(MainActivity.EXTRA_HEIGHT, height)
+                .putExtra(MainActivity.EXTRA_PRINT, print?.toJson()?.toString()),
         )
     }
 

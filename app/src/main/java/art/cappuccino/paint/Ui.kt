@@ -18,6 +18,7 @@ import android.view.ViewGroup
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.TextView
 import java.nio.ByteBuffer
@@ -119,7 +120,14 @@ fun Context.iconTile(icon: Int, title: String, selected: Boolean = false, onClic
         contentDescription = title
         setOnClickListener { onClick() }
         addView(ImageView(context).apply { setImageResource(icon) }, LinearLayout.LayoutParams(dp(20), dp(20)))
-        addView(label(title, 10f).apply { maxLines = 1 }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(3) })
+        addView(
+            label(title, 10f).apply {
+                maxLines = 1
+                gravity = Gravity.CENTER
+                setAutoSizeTextTypeUniformWithConfiguration(7, 10, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+            },
+            LinearLayout.LayoutParams(-1, dp(14)).apply { topMargin = dp(3) },
+        )
     }
 
 fun Context.tileGrid(tiles: List<View>, columns: Int = 4) = LinearLayout(this).apply {
@@ -169,6 +177,19 @@ fun Context.toolCard(icon: Int, title: String, detail: String, selected: Boolean
         addView(label(title, 13f), LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(6) })
         addView(label(detail, 11f, if (selected) TEXT_COLOR else MUTED_TEXT))
     }
+
+/** A scroll area that stops growing at [maxHeight]. */
+class BoundedScrollView(context: Context) : ScrollView(context) {
+    var maxHeight = Int.MAX_VALUE
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val limit = when (MeasureSpec.getMode(heightMeasureSpec)) {
+            MeasureSpec.UNSPECIFIED -> maxHeight
+            else -> minOf(maxHeight, MeasureSpec.getSize(heightMeasureSpec))
+        }
+        super.onMeasure(widthMeasureSpec, MeasureSpec.makeMeasureSpec(limit, MeasureSpec.AT_MOST))
+    }
+}
 
 fun Context.iconButton(icon: Int, description: String, onClick: (View) -> Unit) =
     ImageButton(this).apply {

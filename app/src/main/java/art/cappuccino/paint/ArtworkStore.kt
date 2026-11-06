@@ -18,6 +18,7 @@ import java.util.zip.InflaterInputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import kotlin.math.roundToInt
 
 class ArtworkDocument(
     val id: String,
@@ -45,6 +46,8 @@ class ArtworkDocument(
     /** Every layer is a frame of an animation, played at [fps] frames a second. */
     var animation: Boolean = false,
     var fps: Int = DEFAULT_FPS,
+    /** Set for a book cover: its trim, bleed, and spine, for guides and print-ready files. */
+    var print: PrintSetup? = null,
 ) {
     val thumbnailHeight get() = ArtworkStore.thumbnailHeight(width, height)
 }
@@ -386,6 +389,7 @@ class ArtworkStore(context: Context) {
                 item.optDouble("textSize", 0.0).toFloat(),
                 item.optInt("textColor"),
                 item.optBoolean("sticker"),
+                TextStyle.fromJson(item.optJSONObject("textStyle")),
             )
         }.toMutableList()
         return ArtworkDocument(
@@ -432,6 +436,7 @@ class ArtworkStore(context: Context) {
             }.orEmpty(),
             manifest.optBoolean("animation"),
             manifest.optInt("fps", DEFAULT_FPS),
+            PrintSetup.fromJson(manifest.optJSONObject("print")),
         )
     }
 
@@ -484,6 +489,7 @@ class ArtworkStore(context: Context) {
         item.getBoolean("flipped"),
         item.getDouble("opacity").toFloat(),
         item.getBoolean("pinned"),
+        item.optDouble("rotation", 0.0).toFloat(),
     )
 
     private fun referenceJson(state: ReferenceState) = JSONObject()
@@ -498,6 +504,7 @@ class ArtworkStore(context: Context) {
         .put("flipped", state.flipped)
         .put("opacity", state.opacity.toDouble())
         .put("pinned", state.pinned)
+        .put("rotation", state.rotation.toDouble())
 
     fun readLayer(artworkId: String, file: String, width: Int, height: Int): ByteBuffer {
         val buffer = pixelBuffer(width, height)
@@ -548,6 +555,7 @@ class ArtworkStore(context: Context) {
                     .put("textSize", layer.textSize.toDouble())
                     .put("textColor", layer.textColor)
                     .put("sticker", layer.sticker)
+                    .put("textStyle", layer.textStyle.toJson())
                     .put("maskTiles", tiles[layer.maskId]?.let { tileJson(it, packs) } ?: JSONObject.NULL),
             )
         }
@@ -583,6 +591,7 @@ class ArtworkStore(context: Context) {
             .put("followedBoards", JSONArray(document.followedBoards))
             .put("animation", document.animation)
             .put("fps", document.fps)
+            .put("print", document.print?.toJson())
             .put("symmetryCenter", JSONArray(document.symmetryCenter.map { it.toDouble() }))
             .put("activeLayer", snapshot.activeLayer)
             .put("nextLayerId", snapshot.nextLayerId)
@@ -763,10 +772,60 @@ class ArtworkStore(context: Context) {
         return true
     }
 
+    /**
+     * Writes one page the size of the art in inches, for printers that ask for a PDF.
+     * The image is kept losslessly and lies on white, since paper has no transparency.
+     */
+    fun exportPdf(name: String, image: Bitmap, widthInches: Float, heightInches: Float): Boolean {
+        val pageWidth = (widthInches * POINTS_PER_INCH).roundToInt()
+        val pageHeight = (heightInches * POINTS_PER_INCH).roundToInt()
+        val pdf = android.graphics.pdf.PdfDocument()
+        try {
+            val page = pdf.startPage(android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, 1).create())
+            page.canvas.drawColor(android.graphics.Color.WHITE)
+            page.canvas.drawBitmap(
+                image, null, android.graphics.RectF(0f, 0f, pageWidth.toFloat(), pageHeight.toFloat()),
+                android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG),
+            )
+            pdf.finishPage(page)
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, "$name.pdf")
+                put(MediaStore.Downloads.MIME_TYPE, "application/pdf")
+                put(MediaStore.Downloads.RELATIVE_PATH, "Download/Cappuccino")
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
+            val output = resolver.openOutputStream(uri) ?: return false
+            output.use { pdf.writeTo(it) }
+            return true
+        } finally {
+            pdf.close()
+        }
+    }
+
+    /** Saves a JPEG to Pictures, the format online book stores ask for. */
+    fun exportJpeg(name: String, image: Bitmap): Boolean {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "$name.jpg")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Cappuccino")
+        }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return false
+        val output = resolver.openOutputStream(uri) ?: return false
+        // JPEG has no transparency, so the art goes on white first.
+        val flat = Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888)
+        android.graphics.Canvas(flat).apply {
+            drawColor(android.graphics.Color.WHITE)
+            drawBitmap(image, 0f, 0f, null)
+        }
+        val written = output.use { flat.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, it) }
+        flat.recycle()
+        return written
+    }
+
     /** Packs all artworks, references, projects, and palettes into one zip file. */
     fun backup(output: OutputStream) {
         ZipOutputStream(output.buffered()).use { zip ->
-            listOf(artworks, references, projectsFile, palettesFile, brushesFile).forEach { item ->
+            listOf(artworks, references, projectsFile, palettesFile, brushesFile, File(root, "fonts")).forEach { item ->
                 item.walkTopDown().filter { it.isFile && !it.name.endsWith(".tmp") }.forEach { file ->
                     zip.putNextEntry(ZipEntry(file.relativeTo(root).path))
                     file.inputStream().use { it.copyTo(zip) }
@@ -800,7 +859,7 @@ class ArtworkStore(context: Context) {
         val savedPalettes = palettes()
         val addedPalettes = readPalettes(File(incoming, palettesFile.name))
             .filter { palette -> savedPalettes.none { it.id == palette.id } }
-        listOf("artworks", "references").forEach { name ->
+        listOf("artworks", "references", "fonts").forEach { name ->
             File(incoming, name).takeIf { it.exists() }?.copyRecursively(File(root, name), overwrite = false) { _, error ->
                 if (error is FileAlreadyExistsException) OnErrorAction.SKIP else throw error
             }
@@ -831,6 +890,8 @@ class ArtworkStore(context: Context) {
 
     companion object {
         const val THUMBNAIL_WIDTH = 480
+        private const val POINTS_PER_INCH = 72f
+        private const val JPEG_QUALITY = 95
         private const val MANIFEST = "manifest.json"
         private const val PREVIOUS_MANIFEST = "manifest.prev.json"
         private const val THUMBNAIL = "thumbnail.png"

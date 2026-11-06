@@ -5,6 +5,7 @@ import kotlin.math.min
 
 private const val MAX_WIDTH_SHARE = 0.4f
 private const val MAX_HEIGHT_SHARE = 0.7f
+private const val SNAP_DEGREES = 6f
 
 data class ReferenceState(
     val file: String,
@@ -18,6 +19,7 @@ data class ReferenceState(
     var flipped: Boolean = false,
     var opacity: Float = 1f,
     var pinned: Boolean = false,
+    var rotation: Float = 0f,
 )
 
 /** Picks a starting width that shows a whole reference, even a very tall one, on screen. */
@@ -36,3 +38,13 @@ fun clampReferencePan(pan: Float, zoom: Float, viewSize: Int): Float {
 /** Keeps part of a window reachable, so it can't be lost off screen. */
 fun clampReferencePosition(position: Int, windowSize: Int, screenSize: Int, visible: Int): Int =
     position.coerceIn(visible - windowSize, screenSize - visible)
+
+/** Turns that land within a few degrees of a quarter turn settle on it. */
+fun snapReferenceRotation(degrees: Float): Float {
+    val turned = ((degrees % 360f) + 360f) % 360f
+    val quarter = Math.round(turned / 90f) * 90f
+    return if (kotlin.math.abs(turned - quarter) < SNAP_DEGREES) quarter % 360f else turned
+}
+
+/** True when the image lies on its side, so its window swaps width and height. */
+fun referenceSideways(degrees: Float): Boolean = Math.round(degrees / 90f).mod(2) == 1

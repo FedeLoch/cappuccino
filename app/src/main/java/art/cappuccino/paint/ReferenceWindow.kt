@@ -51,7 +51,9 @@ class ReferenceWindow(
     val bitmap: Bitmap,
     private val host: ReferenceHost,
 ) {
-    private val ratio = bitmap.height / bitmap.width.toFloat()
+    private val imageRatio = bitmap.height / bitmap.width.toFloat()
+    // Follows the image's quarter turns, so a reference on its side gets a window on its side.
+    private var ratio = if (referenceSideways(state.rotation)) 1f / imageRatio else imageRatio
     private val toolButtons = ArrayList<ImageButton>()
     private val image = ReferenceImage()
     private val bar: View = createBar()
@@ -174,13 +176,8 @@ class ReferenceWindow(
                 image.invalidate()
                 host.onReferenceChanged()
             },
-            Triple(R.drawable.ic_fit, tr("Fit")) {
-                state.zoom = 1f
-                state.panX = 0f
-                state.panY = 0f
-                image.invalidate()
-                host.onReferenceChanged()
-            },
+            Triple(R.drawable.ic_rotate, tr("Rotate")) { rotateQuarter() },
+            Triple(R.drawable.ic_fit, tr("Fit")) { fit() },
             Triple(R.drawable.ic_pin, tr("Pin for tracing")) { pin() },
             Triple(R.drawable.ic_palette, tr("Save its palette")) { host.onReferencePalette(this) },
             Triple(R.drawable.ic_layersfile, tr("Add as layer")) { host.onReferenceToLayer(this) },
@@ -229,6 +226,26 @@ class ReferenceWindow(
         }
     }
 
+    /** Shows the whole image again in the window's current size. */
+    private fun fit() {
+        state.zoom = 1f
+        state.panX = 0f
+        state.panY = 0f
+        image.invalidate()
+        host.onReferenceChanged()
+    }
+
+    private fun rotateQuarter() {
+        state.rotation = snapReferenceRotation(Math.round(state.rotation / 90f) * 90f + 90f)
+        val sideways = referenceSideways(state.rotation)
+        ratio = if (sideways) 1f / imageRatio else imageRatio
+        state.panX = 0f
+        state.panY = 0f
+        refit()
+        image.limitPan()
+        host.onReferenceChanged()
+    }
+
     private fun pin() {
         state.pinned = true
         bar.visibility = View.GONE
@@ -245,6 +262,8 @@ class ReferenceWindow(
         private val inverse = Matrix()
         private var lastX = 0f
         private var lastY = 0f
+        private var lastAngle = 0f
+        private var twisting = false
 
         private val scale = ScaleGestureDetector(
             activity,
@@ -260,6 +279,11 @@ class ReferenceWindow(
         private val press = GestureDetector(
             activity,
             object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDoubleTap(event: MotionEvent): Boolean {
+                    fit()
+                    return true
+                }
+
                 override fun onSingleTapConfirmed(event: MotionEvent): Boolean {
                     bar.visibility = if (bar.visibility == VISIBLE) GONE else VISIBLE
                     return true
@@ -284,13 +308,18 @@ class ReferenceWindow(
         }
 
         private fun updateMatrix() {
-            val base = width / bitmap.width.toFloat() * state.zoom
-            drawMatrix.setScale(base, base)
-            drawMatrix.postTranslate(
-                width / 2f - bitmap.width * base / 2f + state.panX,
-                height / 2f - bitmap.height * base / 2f + state.panY,
-            )
-            if (state.flipped) drawMatrix.postScale(-1f, 1f, width / 2f, height / 2f)
+            // Fits the turned image inside the window, then zooms and pans from there.
+            val radians = Math.toRadians(state.rotation.toDouble())
+            val cos = kotlin.math.abs(kotlin.math.cos(radians)).toFloat()
+            val sin = kotlin.math.abs(kotlin.math.sin(radians)).toFloat()
+            val turnedWidth = bitmap.width * cos + bitmap.height * sin
+            val turnedHeight = bitmap.width * sin + bitmap.height * cos
+            val base = minOf(width / turnedWidth, height / turnedHeight) * state.zoom
+            drawMatrix.setTranslate(-bitmap.width / 2f, -bitmap.height / 2f)
+            drawMatrix.postScale(base, base)
+            drawMatrix.postRotate(state.rotation)
+            if (state.flipped) drawMatrix.postScale(-1f, 1f)
+            drawMatrix.postTranslate(width / 2f + state.panX, height / 2f + state.panY)
         }
 
         private fun pickColor(x: Float, y: Float): Int {
@@ -301,6 +330,13 @@ class ReferenceWindow(
             val pixelY = point[1].toInt().coerceIn(0, bitmap.height - 1)
             return bitmap.getPixel(pixelX, pixelY) or Color.BLACK
         }
+
+        private fun angle(event: MotionEvent): Float = Math.toDegrees(
+            kotlin.math.atan2(
+                (event.getY(1) - event.getY(0)).toDouble(),
+                (event.getX(1) - event.getX(0)).toDouble(),
+            ),
+        ).toFloat()
 
         override fun onDraw(canvas: Canvas) {
             updateMatrix()
@@ -323,17 +359,39 @@ class ReferenceWindow(
                 return true
             }
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_UP -> {
+                MotionEvent.ACTION_DOWN -> {
                     lastX = event.rawX
                     lastY = event.rawY
                 }
-                MotionEvent.ACTION_MOVE -> if (event.pointerCount == 1 && !scale.isInProgress) {
+                MotionEvent.ACTION_POINTER_DOWN -> if (event.pointerCount == 2) {
+                    lastAngle = angle(event)
+                    twisting = true
+                }
+                MotionEvent.ACTION_POINTER_UP -> {
+                    lastX = event.rawX
+                    lastY = event.rawY
+                    if (twisting && event.pointerCount == 2) {
+                        twisting = false
+                        state.rotation = snapReferenceRotation(state.rotation)
+                        invalidate()
+                    }
+                }
+                MotionEvent.ACTION_MOVE -> if (event.pointerCount >= 2 && twisting) {
+                    // Two fingers turn the image, while the pinch between them zooms it.
+                    val now = angle(event)
+                    var turn = now - lastAngle
+                    if (turn > 180f) turn -= 360f
+                    if (turn < -180f) turn += 360f
+                    lastAngle = now
+                    state.rotation = ((state.rotation + turn) % 360f + 360f) % 360f
+                    invalidate()
+                } else if (event.pointerCount == 1 && !scale.isInProgress) {
                     val dx = event.rawX - lastX
                     val dy = event.rawY - lastY
                     lastX = event.rawX
                     lastY = event.rawY
                     if (state.zoom > 1.01f) {
-                        state.panX += if (state.flipped) -dx else dx
+                        state.panX += dx
                         state.panY += dy
                         limitPan()
                     } else {

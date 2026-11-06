@@ -632,6 +632,12 @@ class CanvasView(
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                 if (lasso) {
+                    // Every sample the pen sent, so a quick loop stays round instead of turning into corners.
+                    for (index in 0 until event.historySize) {
+                        val past = screenToCanvas(event.getHistoricalX(index), event.getHistoricalY(index))
+                        rememberPath(floatArrayOf(past[0], past[1], 0f, 0f, 0f))
+                        onLassoMove(event.getHistoricalX(index), event.getHistoricalY(index))
+                    }
                     rememberPath(floatArrayOf(spot[0], spot[1], 0f, 0f, 0f))
                     onLassoMove(event.x, event.y)
                 } else {

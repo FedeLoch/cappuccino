@@ -32,4 +32,20 @@ class ReferenceGeometryTest {
         assertEquals(1900, clampReferencePosition(5000, 400, 2000, 100))
         assertEquals(-300, clampReferencePosition(-5000, 400, 2000, 100))
     }
+
+    @Test
+    fun turnsNearAQuarterSettleOnIt() {
+        assertEquals(90f, snapReferenceRotation(86f), 0.001f)
+        assertEquals(0f, snapReferenceRotation(357f), 0.001f)
+        assertEquals(40f, snapReferenceRotation(40f), 0.001f)
+        assertEquals(270f, snapReferenceRotation(-90f), 0.001f)
+    }
+
+    @Test
+    fun aReferenceOnItsSideSwapsItsWindow() {
+        assertEquals(false, referenceSideways(0f))
+        assertEquals(true, referenceSideways(90f))
+        assertEquals(false, referenceSideways(180f))
+        assertEquals(true, referenceSideways(270f))
+    }
 }

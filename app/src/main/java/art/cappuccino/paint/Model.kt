@@ -204,6 +204,7 @@ data class LayerInfo(
     var textSize: Float = 0f,
     var textColor: Int = 0,
     var sticker: Boolean = false,
+    var textStyle: TextStyle = TextStyle(),
 )
 
 data class LayerGroup(

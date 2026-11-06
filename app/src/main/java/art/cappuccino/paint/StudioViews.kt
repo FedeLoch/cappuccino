@@ -11,7 +11,7 @@ import android.view.View
 import kotlin.math.hypot
 import kotlin.math.max
 
-/** Shows the lasso path while it's being drawn, above the canvas. */
+/** Shows the lasso path while it's being drawn, above the canvas, with a faint line back to where it closes. */
 class LassoOverlay(context: Context) : View(context) {
     private val path = Path()
     private val base = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -23,11 +23,26 @@ class LassoOverlay(context: Context) : View(context) {
         color = ACCENT
         pathEffect = DashPathEffect(floatArrayOf(14f, 10f), 0f)
     }
+    private val closing = Paint(dashes).apply { alpha = 120 }
+    private val start = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ACCENT }
+    private val startRing = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private var started = false
+    private var startX = 0f
+    private var startY = 0f
+    private var lastX = 0f
+    private var lastY = 0f
 
     fun add(x: Float, y: Float) {
-        if (started) path.lineTo(x, y) else path.moveTo(x, y)
+        if (started) {
+            path.lineTo(x, y)
+        } else {
+            path.moveTo(x, y)
+            startX = x
+            startY = y
+        }
         started = true
+        lastX = x
+        lastY = y
         invalidate()
     }
 
@@ -38,8 +53,13 @@ class LassoOverlay(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        if (!started) return
+        canvas.drawLine(lastX, lastY, startX, startY, closing)
         canvas.drawPath(path, base)
         canvas.drawPath(path, dashes)
+        val radius = context.dp(4).toFloat()
+        canvas.drawCircle(startX, startY, radius + context.dp(1), startRing)
+        canvas.drawCircle(startX, startY, radius, start)
     }
 }
 
@@ -181,5 +201,73 @@ class NoteOverlay(
     private companion object {
         const val FADE_MS = 180L
         const val TOOL_MARGIN_DP = 72
+    }
+}
+
+/** Book cover guides over the canvas: the bleed shaded past the trim, the safe areas, and the spine folds. */
+class PrintGuideOverlay(
+    context: Context,
+    private val setup: PrintSetup,
+    private val canvasWidth: Int,
+    private val canvasHeight: Int,
+    private val toScreen: (Float, Float) -> FloatArray,
+) : View(context) {
+    private val bleed = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 40, 30, 25) }
+    private val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = context.dp(3).toFloat()
+        color = Color.argb(90, 0, 0, 0)
+    }
+    private val trimLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = context.dp(1).toFloat() * 1.5f
+        color = Color.WHITE
+    }
+    private val safeLine = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = context.dp(1).toFloat()
+        color = ACCENT
+        pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
+    }
+    private val caption = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = ACCENT
+        textSize = context.dp(11).toFloat()
+        textAlign = Paint.Align.CENTER
+    }
+
+    private fun quad(left: Float, top: Float, right: Float, bottom: Float) = Path().apply {
+        val corners = listOf(left to top, right to top, right to bottom, left to bottom).map { toScreen(it.first, it.second) }
+        moveTo(corners[0][0], corners[0][1])
+        corners.drop(1).forEach { lineTo(it[0], it[1]) }
+        close()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val trim = setup.trim()
+        val trimPath = quad(trim[0], trim[1], trim[2], trim[3])
+        val bleedPath = quad(0f, 0f, canvasWidth.toFloat(), canvasHeight.toFloat()).apply {
+            fillType = Path.FillType.EVEN_ODD
+            addPath(trimPath)
+        }
+        canvas.drawPath(bleedPath, bleed)
+        canvas.drawPath(trimPath, shadow)
+        canvas.drawPath(trimPath, trimLine)
+        setup.folds()?.forEach { x ->
+            val fold = quad(x, trim[1], x, trim[3])
+            canvas.drawPath(fold, shadow)
+            canvas.drawPath(fold, trimLine)
+        }
+        val areas = setup.safeAreas()
+        val names = when (areas.size) {
+            3 -> listOf(tr("Back cover"), tr("Spine"), tr("Front"))
+            2 -> listOf(tr("Back cover"), tr("Front"))
+            else -> emptyList()
+        }
+        areas.forEachIndexed { index, area ->
+            canvas.drawPath(quad(area[0], area[1], area[2], area[3]), safeLine)
+            val name = names.getOrNull(index) ?: return@forEachIndexed
+            val spot = toScreen((area[0] + area[2]) / 2f, area[1])
+            canvas.drawText(name, spot[0], spot[1] - context.dp(6), caption)
+        }
     }
 }
