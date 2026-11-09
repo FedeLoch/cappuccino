@@ -212,6 +212,21 @@ export class ArtworkStore {
     if (addedPalettes.length) await this.writePalettes([...palettes, ...addedPalettes]);
   }
 
+  // --- Fonts you imported for text layers, in fonts/ as on Android -----------------------------
+
+  async fonts() {
+    const dir = await directory(this.root, "fonts");
+    const list = [];
+    for await (const [name, handle] of dir.entries()) {
+      if (handle.kind === "file" && /\.(ttf|otf)$/i.test(name)) list.push([name, await (await handle.getFile()).arrayBuffer()]);
+    }
+    return list;
+  }
+
+  async saveFont(name, data) {
+    await writeFile(await directory(this.root, "fonts"), name, new Blob([data]));
+  }
+
   // --- Backup files, the same zip ArtworkStore.backup() writes on Android ------------------------
 
   // Packs all artworks, references, sketchbooks, palettes, and brushes into one zip file.
@@ -224,7 +239,7 @@ export class ArtworkStore {
         else entries.push([`${path}${name}`, await handle.getFile()]);
       }
     };
-    for (const folder of ["artworks", "references"]) await walk(await directory(this.root, folder), `${folder}/`);
+    for (const folder of ["artworks", "references", "fonts"]) await walk(await directory(this.root, folder), `${folder}/`);
     for (const name of ["projects.json", "palettes.json", "brushes.json"]) {
       const file = await readFile(this.root, name);
       if (file) entries.push([name, file]);
@@ -245,7 +260,8 @@ export class ArtworkStore {
     };
     for (const [path, bytes] of entries) {
       const parts = path.split("/");
-      if (!["artworks", "references"].includes(parts[0]) || parts.length < 3) continue;
+      const fonts = parts[0] === "fonts" && parts.length === 2;
+      if (!fonts && (!["artworks", "references"].includes(parts[0]) || parts.length < 3)) continue;
       if (parts.some((part) => part === "" || part === "." || part === "..")) throw new Error("Invalid backup");
       let dir = this.root;
       for (const part of parts.slice(0, -1)) dir = await directory(dir, part);
@@ -790,7 +806,7 @@ export class ArtworkStore {
   }
 
   // A new artwork's folder and manifest, as MainActivity.openDocument() starts one.
-  async create(name, projectId, width, height) {
+  async create(name, projectId, width, height, print = null) {
     const id = crypto.randomUUID();
     const dir = await this.artworkDir(id, true);
     const manifest = {
@@ -798,6 +814,7 @@ export class ArtworkStore {
       groups: [], nextGroupId: 1, light: "OFF", figure: [], variationOf: "", journalSequence: 0,
       symmetry: 0, followedBoards: [], animation: false, fps: 8, symmetryCenter: [],
       activeLayer: 1, nextLayerId: 2, updated: Date.now(), packs: [], perspective: [], references: [],
+      ...(print ? { print } : {}),
       layers: [{
         id: 1, name: "Layer 1", opacity: 1, visible: true, blend: 0, alphaLock: false, clip: false,
         group: 0, file: "", tiles: null, mask: 0, maskEnabled: true, maskFile: "", text: "",

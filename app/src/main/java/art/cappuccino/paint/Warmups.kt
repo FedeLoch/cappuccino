@@ -22,7 +22,7 @@ private const val MORE_COLOR_SINCE_START = 0.15f
 enum class WarmupKind {
     STRAIGHT_LINES, HATCHING, ELLIPSES, TRACING, SILHOUETTES, SPHERE_LIGHT, CUBE_SHADOW,
     THREE_VALUES, VALUE_SCALE, ONE_HUE, WARM_COOL, HUE_SHIFT, FACE_EYE, FACE_NOSE, FACE_LIPS,
-    PERSPECTIVE, GRADIENT, MIRROR,
+    PERSPECTIVE, GRADIENT, MIRROR, LETTERING,
 }
 
 /**
@@ -37,6 +37,7 @@ internal val WARMUPS = listOf(
     Warmup(WarmupKind.ELLIPSES, "Lines and precision", "Next step", "Ellipses", "Draw an ellipse in each box, in one stroke, touching all four sides.", "Ellipses hide in cups, wheels, eyes, and every round form seen at an angle. Fitting them to a box trains proportion."),
     Warmup(WarmupKind.TRACING, "Lines and precision", "Next step", "Steady tracing", "Trace each gray path as closely as you can, slowly and in one stroke.", "Slow tracing builds precise hand control, which makes curves and contours easier when you draw freely."),
     Warmup(WarmupKind.PERSPECTIVE, "Lines and precision", "Perspective", "Two-point boxes", "Each gray line is a box's front corner. Draw the boxes, sending every side edge to one of the two dots on the horizon.", "Two-point perspective makes rooms, streets, and furniture sit believably in space. Aiming each edge trains your eye for it."),
+    Warmup(WarmupKind.LETTERING, "Lines and precision", "Next step", "Lettering", "Letter each word on its lines. Small letters reach the dashed line, tall ones the top line, and every letter sits on the baseline.", "Even letters make titles and labels look designed rather than written. It trains rhythm and a steady baseline."),
     Warmup(WarmupKind.MIRROR, "Shapes", "Silhouette", "Mirror it", "Draw the other half of the shape on the right, as its mirror image across the dashed line.", "Symmetry is hard to judge by eye. Mirroring a curve trains you to compare distances and spot what's off."),
     Warmup(WarmupKind.SILHOUETTES, "Shapes", "Silhouette", "Silhouettes", "Turn each stick figure into a solid black silhouette. Keep the pose easy to read.", "A pose that reads as a silhouette reads at any size. It trains clear gesture and shape design."),
     Warmup(WarmupKind.SPHERE_LIGHT, "Light and shadow", "Light", "Spheres in the sun", "Each sphere has its own sun. Paint the side facing it, a core shadow, and a cast shadow on the ground.", "The sphere is the simplest form that shows light turning. Once it works, heads, fruit, and clouds follow."),
@@ -131,7 +132,7 @@ fun drawWarmupGuide(kind: WarmupKind, width: Int, height: Int, layout: WarmupLay
             val construction = Paint(paint).apply { strokeWidth = side * 0.005f; color = 0xFFC9C2B8.toInt() }
             feature(kind, layout)?.let { drawFeature(canvas, it, featureSun(kind, layout), width.toFloat(), height.toFloat(), construction) }
         }
-        WarmupKind.PERSPECTIVE, WarmupKind.GRADIENT, WarmupKind.MIRROR -> drawExtraGuide(canvas, kind, layout, width.toFloat(), height.toFloat(), paint)
+        WarmupKind.PERSPECTIVE, WarmupKind.GRADIENT, WarmupKind.MIRROR, WarmupKind.LETTERING -> drawExtraGuide(canvas, kind, layout, width.toFloat(), height.toFloat(), paint)
         WarmupKind.ELLIPSES -> layout.ellipseBoxes.forEach { canvas.drawRect(x(it[0]), y(it[1]), x(it[2]), y(it[3]), paint) }
         WarmupKind.SILHOUETTES -> {
             val joint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFB9B2A8.toInt() }
@@ -223,6 +224,7 @@ fun warmupFeedback(kind: WarmupKind, work: WarmupWork): String = when (kind) {
     WarmupKind.PERSPECTIVE -> perspectiveReview(work).text
     WarmupKind.GRADIENT -> gradientReview(work).text
     WarmupKind.MIRROR -> mirrorReview(work).text
+    WarmupKind.LETTERING -> letteringReview(work).text
 }
 
 private fun FloatArray.length(): Float {
@@ -678,6 +680,7 @@ fun warmupMarks(kind: WarmupKind, work: WarmupWork): List<NoteMark> {
         WarmupKind.PERSPECTIVE -> return perspectiveReview(work).marks
         WarmupKind.GRADIENT -> return gradientReview(work).marks
         WarmupKind.MIRROR -> return mirrorReview(work).marks
+        WarmupKind.LETTERING -> return letteringReview(work).marks
         WarmupKind.VALUE_SCALE -> {
             val boxes = work.layout.valueBoxes.map { area -> meanIn(work, { x, y -> x in area[0] + 0.02f..area[2] - 0.02f && y in area[1] + 0.02f..area[3] - 0.02f }, work::luminance) ?: 1f }
             if (boxes.all { it > 0.95f }) return marks

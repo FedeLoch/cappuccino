@@ -70,7 +70,7 @@ Export PNG, layered PSD, time-lapse videos, and animations.
 **Graphics:**
 - Feature graphic (1024 × 500): `marketing/banner-1024x500.png`
 - Screenshots: `docs/screenshots/` (use landscape tablet shots for the 10-inch tablet slot)
-- App icon (512 × 512): still to export from the launcher icon
+- App icon (512 × 512): `marketing/icon-512.png`
 
 ## Data safety answers
 

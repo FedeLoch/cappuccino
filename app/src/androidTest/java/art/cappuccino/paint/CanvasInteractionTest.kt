@@ -114,6 +114,85 @@ class CanvasInteractionTest {
         assertFalse("holding did not keep undoing", hasInk(x, rows[1]))
     }
 
+    @Test
+    fun droppingAColorFillsTheArea() {
+        onStudio { it.dropColorAt(Color.BLACK, width / 2f, height / 2f) }
+        settle()
+        assertTrue("the drop did not fill", hasInk(width / 2f, height / 2f))
+    }
+
+    @Test
+    fun aLassoSelectionKeepsItsActionsAtHand() {
+        onStudio { it.startSelection(SelectionTool.LASSO) }
+        val down = SystemClock.uptimeMillis()
+        val corners = listOf(0.3f to 0.3f, 0.6f to 0.3f, 0.6f to 0.6f, 0.3f to 0.6f, 0.3f to 0.31f)
+        injectPen(MotionEvent.ACTION_DOWN, width * 0.3f, height * 0.3f, down, down)
+        corners.forEachIndexed { index, (x, y) ->
+            injectPen(MotionEvent.ACTION_MOVE, width * x, height * y, down, down + (index + 1) * 30L)
+        }
+        injectPen(MotionEvent.ACTION_UP, width * 0.3f, height * 0.31f, down, down + 200L)
+        settle()
+        var shown = false
+        scenario.onActivity { shown = it.selectionBarShown }
+        assertTrue("the selection bar should open with a selection", shown)
+        onStudio { it.clearSelection() }
+        scenario.onActivity { shown = it.selectionBarShown }
+        assertFalse("the selection bar should close with the selection", shown)
+    }
+
+    @Test
+    fun aLayerIsRenamedInPlace() {
+        onStudio {
+            it.openLayers()
+            it.startRename(it.activeLayer()!!)
+        }
+        onStudio {
+            it.renameField!!.setText("Sky")
+            it.finishRename()
+        }
+        var name = ""
+        scenario.onActivity { name = it.activeLayer()!!.name }
+        assertEquals("Sky", name)
+    }
+
+    @Test
+    fun styledTextLandsOnTheCanvas() {
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.addText("HELLO", 0.2f, TextStyle(font = "serif", bold = true, tracking = 0.1f))
+            it.finishTransform(keep = true)
+        }
+        settle()
+        val shot = screenshot()
+        var dark = 0
+        for (x in (width * 0.3f).toInt() until (width * 0.7f).toInt() step 2) {
+            for (y in (height * 0.45f).toInt() until (height * 0.55f).toInt() step 2) {
+                if (Color.red(shot.getPixel(x, y)) < 100) dark++
+            }
+        }
+        assertTrue("the title was not drawn", dark > 50)
+    }
+
+    @Test
+    fun printPdfIsTheCoverSizeWithBleed() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val setup = PrintSetup(6f, 9f)
+        val image = Bitmap.createBitmap(setup.pixelWidth, setup.pixelHeight, Bitmap.Config.ARGB_8888)
+        val file = java.io.File(context.cacheDir, "cover.pdf")
+        file.outputStream().use {
+            ArtworkStore(context).writePdf(it, image, setup.trimmedWidth + setup.bleed * 2, setup.trimHeight + setup.bleed * 2)
+        }
+        val descriptor = android.os.ParcelFileDescriptor.open(file, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+        android.graphics.pdf.PdfRenderer(descriptor).use { renderer ->
+            assertEquals(1, renderer.pageCount)
+            renderer.openPage(0).use { page ->
+                // 6.25 by 9.25 inches, at 72 points an inch.
+                assertEquals(450, page.width)
+                assertEquals(666, page.height)
+            }
+        }
+    }
+
     private fun onStudio(action: (MainActivity) -> Unit) {
         scenario.onActivity(action)
         settle()

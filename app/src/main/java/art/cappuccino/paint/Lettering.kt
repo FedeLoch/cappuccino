@@ -25,6 +25,13 @@ data class TextStyle(
     val leading: Float = 1f,
     /** 0 left, 1 center, 2 right. */
     val align: Int = 1,
+    /** 0 upright, 90 reading down a spine, -90 reading up it. */
+    val turn: Int = 0,
+    /** Outline width as a share of the text size; 0 for none. */
+    val outline: Float = 0f,
+    val outlineColor: Int = android.graphics.Color.BLACK,
+    /** A soft drop shadow under the letters. */
+    val shadow: Boolean = false,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("font", font)
@@ -33,6 +40,10 @@ data class TextStyle(
         .put("tracking", tracking.toDouble())
         .put("leading", leading.toDouble())
         .put("align", align)
+        .put("turn", turn)
+        .put("outline", outline.toDouble())
+        .put("outlineColor", outlineColor)
+        .put("shadow", shadow)
 
     companion object {
         fun fromJson(item: JSONObject?): TextStyle = if (item == null) {
@@ -45,6 +56,10 @@ data class TextStyle(
                 item.optDouble("tracking", 0.0).toFloat(),
                 item.optDouble("leading", 1.0).toFloat(),
                 item.optInt("align", 1),
+                item.optInt("turn"),
+                item.optDouble("outline", 0.0).toFloat(),
+                item.optInt("outlineColor", android.graphics.Color.BLACK),
+                item.optBoolean("shadow"),
             )
         }
     }
@@ -136,13 +151,42 @@ fun textLayout(context: Context, text: String, style: TextStyle, size: Float, co
         .build()
 }
 
-/** Paints the text centered on ([centerX], [centerY]), shrunk if needed so no line runs off the canvas. */
+/**
+ * Paints the text centered on ([centerX], [centerY]), turned for a spine if asked, and shrunk if
+ * needed so no line runs off the canvas.
+ */
 fun drawLettering(context: Context, canvas: Canvas, text: String, style: TextStyle, size: Float, color: Int, centerX: Float, centerY: Float) {
-    val room = canvas.width * FIT_SHARE
-    var layout = textLayout(context, text, style, size, color)
-    if (layout.width > room) layout = textLayout(context, text, style, size * room / layout.width, color)
+    val sideways = style.turn != 0
+    val room = (if (sideways) canvas.height else canvas.width) * FIT_SHARE
+    var fitted = size
+    var layout = textLayout(context, text, style, fitted, color)
+    if (layout.width > room) {
+        fitted = size * room / layout.width
+        layout = textLayout(context, text, style, fitted, color)
+    }
     canvas.save()
-    canvas.translate(centerX - layout.width / 2f, centerY - layout.height / 2f)
+    canvas.translate(centerX, centerY)
+    if (sideways) canvas.rotate(style.turn.toFloat())
+    canvas.translate(-layout.width / 2f, -layout.height / 2f)
+    val paint = layout.paint
+    if (style.shadow) {
+        // The shadow rides on the lowest pass, so it sits under the outline too.
+        paint.setShadowLayer(fitted * SHADOW_BLUR, fitted * SHADOW_OFFSET, fitted * SHADOW_OFFSET * 1.4f, SHADOW_COLOR)
+    }
+    if (style.outline > 0f) {
+        paint.style = android.graphics.Paint.Style.STROKE
+        paint.strokeJoin = android.graphics.Paint.Join.ROUND
+        paint.strokeWidth = fitted * style.outline * 2f
+        paint.color = style.outlineColor
+        layout.draw(canvas)
+        paint.clearShadowLayer()
+        paint.style = android.graphics.Paint.Style.FILL
+        paint.color = color
+    }
     layout.draw(canvas)
     canvas.restore()
 }
+
+private const val SHADOW_BLUR = 0.08f
+private const val SHADOW_OFFSET = 0.03f
+private const val SHADOW_COLOR = 0x73000000

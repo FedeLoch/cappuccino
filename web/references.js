@@ -105,12 +105,25 @@ const TAP_TRAVEL = 8;
 
 // A floating image that can be moved, resized, zoomed, and checked while drawing.
 // host: {changed(), closed(window), pick(color, clientX, clientY), pickEnd(), palette(window), toLayer(window)}
+const SNAP_DEGREES = 6;
+
+// Turns that land within a few degrees of a quarter turn settle on it, as in ReferenceGeometry.kt.
+export function snapRotation(degrees) {
+  const turned = ((degrees % 360) + 360) % 360;
+  const quarter = Math.round(turned / 90) * 90;
+  return Math.abs(turned - quarter) < SNAP_DEGREES ? quarter % 360 : turned;
+}
+
+const sideways = (degrees) => ((Math.round(degrees / 90) % 2) + 2) % 2 === 1;
+
 export class ReferenceWindow {
   constructor(parent, state, bitmap, host) {
     this.state = state;
     this.bitmap = bitmap;
     this.host = host;
-    this.ratio = bitmap.height / bitmap.width;
+    this.imageRatio = bitmap.height / bitmap.width;
+    // Follows the image's quarter turns, so a reference on its side gets a window on its side.
+    this.ratio = sideways(state.rotation || 0) ? 1 / this.imageRatio : this.imageRatio;
     this.image = h("canvas", { className: "reference-image", ariaLabel: "Floating reference" });
     this.bar = this.createBar();
     this.bar.hidden = true;
@@ -168,15 +181,18 @@ export class ReferenceWindow {
     }
   }
 
+  // Fits the turned image inside the window, then zooms and pans from there.
   matrix() {
     const { state, bitmap } = this;
-    const width = this.state.width;
+    const width = state.width;
     const height = this.height;
-    const scale = width / bitmap.width * state.zoom;
-    let left = width / 2 - bitmap.width * scale / 2 + state.panX;
-    const top = height / 2 - bitmap.height * scale / 2 + state.panY;
-    if (state.flipped) left = width - left - bitmap.width * scale;
-    return { scale, left, top };
+    const angle = (state.rotation || 0) * Math.PI / 180;
+    const cos = Math.abs(Math.cos(angle));
+    const sin = Math.abs(Math.sin(angle));
+    const turnedWidth = bitmap.width * cos + bitmap.height * sin;
+    const turnedHeight = bitmap.width * sin + bitmap.height * cos;
+    const scale = Math.min(width / turnedWidth, height / turnedHeight) * state.zoom;
+    return { scale, angle, centerX: width / 2 + state.panX, centerY: height / 2 + state.panY };
   }
 
   draw() {
@@ -193,17 +209,14 @@ export class ReferenceWindow {
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.clearRect(0, 0, width, height);
     const unit = width / state.width;
-    const { scale, left, top } = this.matrix();
+    const { scale, angle, centerX, centerY } = this.matrix();
     c.filter = state.grayscale ? "grayscale(1)" : "none";
     c.imageSmoothingQuality = "high";
-    if (state.flipped) {
-      c.translate(width, 0);
-      c.scale(-1, 1);
-      const unflippedLeft = state.width - left - bitmap.width * scale;
-      c.drawImage(bitmap, unflippedLeft * unit, top * unit, bitmap.width * scale * unit, bitmap.height * scale * unit);
-    } else {
-      c.drawImage(bitmap, left * unit, top * unit, bitmap.width * scale * unit, bitmap.height * scale * unit);
-    }
+    c.translate(centerX * unit, centerY * unit);
+    if (state.flipped) c.scale(-1, 1);
+    c.rotate(angle);
+    c.scale(scale * unit, scale * unit);
+    c.drawImage(bitmap, -bitmap.width / 2, -bitmap.height / 2);
   }
 
   limitPan() {
@@ -216,11 +229,14 @@ export class ReferenceWindow {
   // The image's color under a point in the window, in interface units.
   pickColor(x, y) {
     const { bitmap, state } = this;
-    const { scale, left, top } = this.matrix();
-    let pixelX = (x - left) / scale;
-    if (state.flipped) pixelX = bitmap.width - 1 - pixelX;
+    const { scale, angle, centerX, centerY } = this.matrix();
+    let dx = x - centerX;
+    const dy = y - centerY;
+    if (state.flipped) dx = -dx;
+    const pixelX = (dx * Math.cos(-angle) - dy * Math.sin(-angle)) / scale + bitmap.width / 2;
+    const pixelY = (dx * Math.sin(-angle) + dy * Math.cos(-angle)) / scale + bitmap.height / 2;
     const px = Math.min(bitmap.width - 1, Math.max(0, Math.floor(pixelX)));
-    const py = Math.min(bitmap.height - 1, Math.max(0, Math.floor((y - top) / scale)));
+    const py = Math.min(bitmap.height - 1, Math.max(0, Math.floor(pixelY)));
     if (!this.sampler) {
       const surface = new OffscreenCanvas(bitmap.width, bitmap.height);
       const c = surface.getContext("2d", { willReadFrequently: true });
@@ -247,13 +263,8 @@ export class ReferenceWindow {
         this.draw();
         this.host.changed();
       }],
-      ["fit", "Fit", () => {
-        state.zoom = 1;
-        state.panX = 0;
-        state.panY = 0;
-        this.draw();
-        this.host.changed();
-      }],
+      ["rotate", "Rotate", () => this.rotateQuarter()],
+      ["fit", "Fit", () => this.fit()],
       ["pin", "Pin for tracing", () => this.pin()],
       ["palette", "Save its palette", () => this.host.palette(this)],
       ["layersfile", "Add as layer", () => this.host.toLayer(this)],
@@ -281,6 +292,27 @@ export class ReferenceWindow {
     return bar;
   }
 
+  // Shows the whole image again in the window's current size.
+  fit() {
+    const { state } = this;
+    state.zoom = 1;
+    state.panX = 0;
+    state.panY = 0;
+    this.draw();
+    this.host.changed();
+  }
+
+  rotateQuarter() {
+    const { state } = this;
+    state.rotation = snapRotation(Math.round((state.rotation || 0) / 90) * 90 + 90);
+    this.ratio = sideways(state.rotation) ? 1 / this.imageRatio : this.imageRatio;
+    state.panX = 0;
+    state.panY = 0;
+    this.refit();
+    this.limitPan();
+    this.host.changed();
+  }
+
   pin() {
     this.state.pinned = true;
     this.bar.hidden = true;
@@ -305,6 +337,16 @@ export class ReferenceWindow {
       const [a, b] = [...pointers.values()];
       return Math.hypot(a.x - b.x, a.y - b.y);
     };
+    const turnOf = () => {
+      const [a, b] = [...pointers.values()];
+      return Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+    };
+    let lastTurn = 0;
+    image.addEventListener("dblclick", (event) => {
+      event.stopPropagation();
+      this.bar.hidden = true;
+      this.fit();
+    });
     image.addEventListener("pointerdown", (event) => {
       event.stopPropagation();
       try {
@@ -318,6 +360,7 @@ export class ReferenceWindow {
       if (pointers.size === 2) {
         clearTimeout(pickTimer);
         pinch = spread();
+        lastTurn = turnOf();
         return;
       }
       clearTimeout(pickTimer);
@@ -342,6 +385,14 @@ export class ReferenceWindow {
           this.limitPan();
         }
         pinch = next;
+        // Two fingers also turn the image, while the pinch between them zooms it.
+        const now = turnOf();
+        let turn = now - lastTurn;
+        if (turn > 180) turn -= 360;
+        if (turn < -180) turn += 360;
+        lastTurn = now;
+        state.rotation = (((state.rotation || 0) + turn) % 360 + 360) % 360;
+        this.draw();
         return;
       }
       const dx = toUi(event.clientX - last.x);
@@ -350,7 +401,7 @@ export class ReferenceWindow {
       travel += Math.abs(dx) + Math.abs(dy);
       if (travel > TAP_TRAVEL) clearTimeout(pickTimer);
       if (state.zoom > 1.01) {
-        state.panX += state.flipped ? -dx : dx;
+        state.panX += dx;
         state.panY += dy;
         this.limitPan();
       } else {
@@ -376,6 +427,8 @@ export class ReferenceWindow {
         const [rest] = pointers.values();
         last = { ...rest };
         pinch = 0;
+        state.rotation = snapRotation(state.rotation || 0);
+        this.draw();
         return;
       }
       if (event.type === "pointerup" && travel <= TAP_TRAVEL) this.bar.hidden = !this.bar.hidden;

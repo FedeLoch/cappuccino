@@ -777,6 +777,19 @@ class ArtworkStore(context: Context) {
      * The image is kept losslessly and lies on white, since paper has no transparency.
      */
     fun exportPdf(name: String, image: Bitmap, widthInches: Float, heightInches: Float): Boolean {
+        val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, "$name.pdf")
+            put(MediaStore.Downloads.MIME_TYPE, "application/pdf")
+            put(MediaStore.Downloads.RELATIVE_PATH, "Download/Cappuccino")
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
+        val output = resolver.openOutputStream(uri) ?: return false
+        output.use { writePdf(it, image, widthInches, heightInches) }
+        return true
+    }
+
+    /** Writes the one-page PDF to [output]; its page is [widthInches] by [heightInches]. */
+    fun writePdf(output: OutputStream, image: Bitmap, widthInches: Float, heightInches: Float) {
         val pageWidth = (widthInches * POINTS_PER_INCH).roundToInt()
         val pageHeight = (heightInches * POINTS_PER_INCH).roundToInt()
         val pdf = android.graphics.pdf.PdfDocument()
@@ -788,15 +801,7 @@ class ArtworkStore(context: Context) {
                 android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG),
             )
             pdf.finishPage(page)
-            val values = ContentValues().apply {
-                put(MediaStore.Downloads.DISPLAY_NAME, "$name.pdf")
-                put(MediaStore.Downloads.MIME_TYPE, "application/pdf")
-                put(MediaStore.Downloads.RELATIVE_PATH, "Download/Cappuccino")
-            }
-            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
-            val output = resolver.openOutputStream(uri) ?: return false
-            output.use { pdf.writeTo(it) }
-            return true
+            pdf.writeTo(output)
         } finally {
             pdf.close()
         }

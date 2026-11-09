@@ -27,6 +27,11 @@ export const SKETCHBOOK_COLORS = [
 const OAT = "#E9DDCB";
 const COCOA = "#6B4226";
 const ESPRESSO = "#2A1D16";
+import { BOOK_PAPERS, BOOK_TRIMS, pixelHeight, pixelWidth, printSetup, spineWidth } from "./print.js";
+
+// Stands for the book cover choice in the preset grid; its size comes from the book's options.
+const BOOK_PRESET = ["Book cover", 2, 3, true];
+
 const CANVAS_PRESETS = [
   ["Default", 4096, 2732, false], ["Square", 3000, 3000, false], ["A4", 3508, 2480, true],
   ["A3", 4961, 3508, true], ["Wide video", 3840, 2160, false], ["Phone story", 1920, 1080, true],
@@ -511,10 +516,27 @@ export class Home {
     let name = "";
     let customWidth = "";
     let customHeight = "";
+    let book = false;
+    let trim = BOOK_TRIMS[2];
+    let wrap = false;
+    let pages = "";
+    let paperKind = BOOK_PAPERS[0];
     let project = this.selected === ALL ? "" : this.selected;
+    const setup = () => {
+      if (!book) return null;
+      const count = Number.parseInt(pages, 10);
+      if (wrap && !(count > 0)) return null;
+      return printSetup(trim[1], trim[2], wrap ? spineWidth(count, paperKind) : 0, wrap);
+    };
     const body = h("div", { className: "sheet-body new-body" });
     let close;
     const size = () => {
+      if (book) {
+        const chosen = setup();
+        if (!chosen) return null;
+        const [w, hgt] = [pixelWidth(chosen), pixelHeight(chosen)];
+        return w <= MAX_CANVAS_SIDE && hgt <= MAX_CANVAS_SIDE ? [w, hgt] : null;
+      }
       if (preset) return oriented(preset[1], preset[2], portrait);
       const width = Number.parseInt(customWidth, 10);
       const height = Number.parseInt(customHeight, 10);
@@ -522,43 +544,67 @@ export class Home {
     };
     const render = () => {
       const chosen = size();
-      const summary = h("div", { className: "summary grow" }, chosen
-        ? `${chosen[0]} x ${chosen[1]} pixels · up to ${layerLimit(chosen[0], chosen[1])} layers`
-        : `Use sizes from 64 to ${MAX_CANVAS_SIDE} pixels`);
+      const describeSize = (picked) => {
+        if (!picked && book) return wrap && !(Number.parseInt(pages, 10) > 0) ? "Enter the page count to size the spine" : "This book is too large for one canvas";
+        if (!picked) return `Use sizes from 64 to ${MAX_CANVAS_SIDE} pixels`;
+        return book
+          ? `${picked[0]} x ${picked[1]} pixels with bleed, at 300 dpi · up to ${layerLimit(picked[0], picked[1])} layers`
+          : `${picked[0]} x ${picked[1]} pixels · up to ${layerLimit(picked[0], picked[1])} layers`;
+      };
+      const summary = h("div", { className: "summary grow" }, describeSize(chosen));
       const create = accentChip("Create", () => {
         const picked = size();
         if (!picked) return;
         close();
-        this.app.newArtwork(picked[0], picked[1], name.trim(), project);
+        this.app.newArtwork(picked[0], picked[1], name.trim(), project, setup());
       });
       create.style.opacity = chosen ? "1" : "0.4";
       const refresh = () => {
         const picked = size();
-        summary.textContent = picked
-          ? `${picked[0]} x ${picked[1]} pixels · up to ${layerLimit(picked[0], picked[1])} layers`
-          : `Use sizes from 64 to ${MAX_CANVAS_SIDE} pixels`;
+        summary.textContent = describeSize(picked);
         create.style.opacity = picked ? "1" : "0.4";
       };
-      const presets = h("div", { className: "presets" }, [...CANVAS_PRESETS, null].map((option) => {
-        const on = option === preset;
+      const presets = h("div", { className: "presets" }, [...CANVAS_PRESETS, BOOK_PRESET, null].map((option) => {
+        const on = option === BOOK_PRESET ? book : !book && option === preset;
         const tall = on ? portrait : option?.[3] === true;
         const [w, hgt] = option ? oriented(option[1], option[2], tall) : [0, 0];
         return h("button", {
           className: on ? "preset on" : "preset",
           onClick: () => {
+            book = option === BOOK_PRESET;
             preset = option;
             portrait = option?.[3] === true;
             render();
           },
         }, option ? paper(w / hgt, on) : h("span", { className: "plus" }, "+"),
         h("span", { className: "preset-name" }, option ? option[0] : "Custom size"),
-        h("span", { className: "preset-size" }, option ? `${w} x ${hgt}` : "Your own"));
+        h("span", { className: "preset-size" }, option === BOOK_PRESET ? "For print" : option ? `${w} x ${hgt}` : "Your own"));
       }));
       const parts = [
         h("div", { className: "row" }, h("div", { className: "grow" }, serif("New artwork", 26)), creamChip("Cancel", false, () => close())),
         h("div", { className: "gap14" }, presets),
       ];
-      if (!preset) {
+      if (book) {
+        parts.push(h("div", { className: "label gap14" }, "Trim size"),
+          h("div", { className: "row gap6 chips-row scroll" }, BOOK_TRIMS.map((option) =>
+            creamChip(option[0], option === trim, () => { trim = option; render(); }))),
+          h("div", { className: "label gap14" }, "Cover"),
+          h("div", { className: "row gap6 chips-row" },
+            creamChip("Front cover", !wrap, () => { wrap = false; render(); }),
+            creamChip("Back, spine, and front", wrap, () => { wrap = true; render(); })));
+        if (wrap) {
+          parts.push(h("div", { className: "row gap10 chips-row" },
+            h("input", {
+              className: "field pages-field", inputMode: "numeric", placeholder: "Pages", value: pages,
+              onInput: (event) => {
+                pages = event.target.value;
+                refresh();
+              },
+            }),
+            BOOK_PAPERS.map((option) => creamChip(option[0], option === paperKind, () => { paperKind = option; render(); }))));
+        }
+        parts.push(h("div", { className: "summary gap8" }, "Adds 0.125 in of bleed on every side. Guides show the trim, the safe area, and the spine."));
+      } else if (!preset) {
         const field = (value, hint, change) => h("input", {
           className: "field", inputMode: "numeric", placeholder: hint, value,
           onInput: (event) => {

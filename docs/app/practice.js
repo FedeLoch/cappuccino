@@ -4,6 +4,14 @@
 
 import { JavaRandom } from "./brushes.js";
 
+const LETTER_ROWS = 3;
+
+// Words with both tall and small letters, so each row practices both heights.
+const LETTER_WORDS = [
+  "harbor", "quiet", "ember", "lantern", "willow", "drift", "marble", "hollow",
+  "copper", "meadow", "velvet", "orchard", "thistle", "biscuit", "kindle", "hearth",
+];
+
 const PI = Math.PI;
 const GUIDE_GRAY = "#B9B2A8";
 const GUIDE_DOT = "#8C7F72";
@@ -190,6 +198,23 @@ export class WarmupLayout {
         const ease = (1 - Math.cos(f * PI)) / 2;
         return spot(knots[i].x + (knots[i + 1].x - knots[i].x) * ease, knots[i].y + (knots[i + 1].y - knots[i].y) * f);
       });
+    }
+    // Writing lines for lettering, one row per word: left, cap line, x-height, baseline, and right.
+    {
+      const tall = between(0.12, 0.16);
+      const small = tall * between(0.5, 0.62);
+      const gap = (0.78 - LETTER_ROWS * tall) / (LETTER_ROWS - 1);
+      this.letterRows = indices(LETTER_ROWS).map((index) => {
+        const cap = 0.12 + index * (tall + gap);
+        return [0.1, cap, cap + tall - small, cap + tall, 0.9];
+      });
+      // Shuffled the way Collections.shuffle does, so a seed gives the same words as on Android.
+      const words = [...LETTER_WORDS];
+      for (let i = words.length - 1; i > 0; i--) {
+        const j = random.nextInt(i + 1);
+        [words[i], words[j]] = [words[j], words[i]];
+      }
+      this.letterWords = words.slice(0, LETTER_ROWS);
     }
   }
 }
@@ -696,6 +721,22 @@ export function drawWarmupGuide(c, kind, width, height, layout) {
       c.stroke();
       break;
     }
+    case "LETTERING":
+      layout.letterRows.forEach((row, index) => {
+        c.save();
+        c.lineWidth = side * 0.003;
+        line(x(row[0]), y(row[1]), x(row[4]), y(row[1]));
+        c.setLineDash([side * 0.012, side * 0.01]);
+        line(x(row[0]), y(row[2]), x(row[4]), y(row[2]));
+        c.setLineDash([]);
+        c.lineWidth = side * 0.005;
+        line(x(row[0]), y(row[3]), x(row[4]), y(row[3]));
+        c.fillStyle = "#9A8F84";
+        c.font = `${side * 0.03}px Georgia, serif`;
+        c.fillText(layout.letterWords[index], x(row[0]), y(row[1]) - side * 0.012);
+        c.restore();
+      });
+      break;
     case "MIRROR":
       c.save();
       c.lineWidth = side * 0.003;
@@ -1379,6 +1420,36 @@ function gradientReview(work) {
   return { text, marks };
 }
 
+// Reads each letter stroke against its row: on the baseline, and stopping at the x-height or cap line.
+function letteringReview(work) {
+  const rows = work.layout.letterRows;
+  const placed = work.strokes.filter((stroke) => stroke.length >= 4).map((stroke) => {
+    const ys = stroke.filter((_, index) => index % 2 === 1);
+    const xs = stroke.filter((_, index) => index % 2 === 0);
+    const top = Math.min(...ys);
+    const bottom = Math.max(...ys);
+    const middle = (top + bottom) / 2;
+    const row = rows.find((it) => middle >= it[1] - (it[3] - it[1]) * 0.3 && middle <= it[3] + (it[3] - it[1]) * 0.3);
+    if (!row) return null;
+    const tall = row[3] - row[1];
+    if (Math.max(...xs) - Math.min(...xs) > tall * 3) return null;
+    // Descenders reach below on purpose, so only strokes ending near the baseline count there.
+    const base = bottom < row[3] + tall * 0.25 ? Math.abs(bottom - row[3]) : 0;
+    const reach = Math.min(Math.abs(top - row[1]), Math.abs(top - row[2]));
+    return { xs, ys, error: (base + reach) / tall };
+  }).filter(Boolean);
+  if (placed.length < 3) return { text: "Letter a word on its lines first, then ask me again.", marks: [] };
+  const mean = placed.reduce((sum, it) => sum + it.error, 0) / placed.length;
+  const worst = placed.reduce((a, b) => (b.error > a.error ? b : a));
+  const marks = worst.error > 0.15
+    ? [box("Line this one up", [Math.min(...worst.xs) - 0.01, Math.min(...worst.ys) - 0.01, Math.max(...worst.xs) + 0.01, Math.max(...worst.ys) + 0.01])]
+    : [];
+  const text = mean < 0.08 ? "Your letters sit on the baseline and reach their lines evenly. That rhythm is what makes lettering look set."
+    : mean < 0.16 ? "Mostly even. A few letters float off the baseline or stop short of their line."
+      : "Letter heights wander. Slow down and let each letter touch the dashed line or the top line before you lift.";
+  return { text, marks };
+}
+
 function mirrorReview(work) {
   const target = work.layout.mirrorHalf.map((it) => spot(1 - it.x, it.y));
   const points = work.strokes.flatMap(pointsOf).filter((it) => it.x > 0.5);
@@ -1430,6 +1501,7 @@ function warmupFeedback(kind, work) {
     case "PERSPECTIVE": return perspectiveReview(work).text;
     case "GRADIENT": return gradientReview(work).text;
     case "MIRROR": return mirrorReview(work).text;
+    case "LETTERING": return letteringReview(work).text;
     default: return "";
   }
 }
@@ -1491,6 +1563,7 @@ function warmupMarks(kind, work) {
     case "PERSPECTIVE": return perspectiveReview(work).marks;
     case "GRADIENT": return gradientReview(work).marks;
     case "MIRROR": return mirrorReview(work).marks;
+    case "LETTERING": return letteringReview(work).marks;
     case "VALUE_SCALE": {
       const boxes = boxValues(work);
       if (boxes.every((it) => it > 0.95)) return marks;

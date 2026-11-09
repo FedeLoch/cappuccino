@@ -45,8 +45,62 @@ internal fun drawExtraGuide(canvas: Canvas, kind: WarmupKind, layout: WarmupLayo
             layout.mirrorHalf.forEachIndexed { index, spot -> if (index == 0) half.moveTo(x(spot.x), y(spot.y)) else half.lineTo(x(spot.x), y(spot.y)) }
             canvas.drawPath(half, Paint(line).apply { strokeWidth = side * 0.006f; color = 0xFFB9B2A8.toInt() })
         }
+        WarmupKind.LETTERING -> {
+            val guide = Paint(line).apply { strokeWidth = side * 0.003f }
+            val dashed = Paint(guide).apply { pathEffect = DashPathEffect(floatArrayOf(side * 0.012f, side * 0.01f), 0f) }
+            val prompt = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xFF9A8F84.toInt()
+                textSize = side * 0.03f
+                typeface = android.graphics.Typeface.SERIF
+            }
+            layout.letterRows.forEachIndexed { index, row ->
+                canvas.drawLine(x(row[0]), y(row[1]), x(row[4]), y(row[1]), guide)
+                canvas.drawLine(x(row[0]), y(row[2]), x(row[4]), y(row[2]), dashed)
+                canvas.drawLine(x(row[0]), y(row[3]), x(row[4]), y(row[3]), Paint(guide).apply { strokeWidth = side * 0.005f })
+                canvas.drawText(layout.letterWords[index], x(row[0]), y(row[1]) - side * 0.012f, prompt)
+            }
+        }
         else -> Unit
     }
+}
+
+/**
+ * Reads each letter stroke against its row: whether it sits on the baseline and stops at the
+ * x-height or the cap line, whichever it's nearest.
+ */
+internal fun letteringReview(work: WarmupWork): WarmupReview {
+    val rows = work.layout.letterRows
+    class Placed(val stroke: FloatArray, val error: Float)
+    val placed = work.strokes.filter { it.size >= 4 }.mapNotNull { stroke ->
+        val ys = stroke.filterIndexed { index, _ -> index % 2 == 1 }
+        val xs = stroke.filterIndexed { index, _ -> index % 2 == 0 }
+        val top = ys.min()
+        val bottom = ys.max()
+        val middle = (top + bottom) / 2f
+        val row = rows.firstOrNull { middle in it[1] - (it[3] - it[1]) * 0.3f..it[3] + (it[3] - it[1]) * 0.3f } ?: return@mapNotNull null
+        val tall = row[3] - row[1]
+        if (xs.max() - xs.min() > tall * 3f) return@mapNotNull null
+        // Descenders reach below on purpose, so only strokes ending near the baseline count there.
+        val base = if (bottom < row[3] + tall * 0.25f) abs(bottom - row[3]) else 0f
+        val reach = minOf(abs(top - row[1]), abs(top - row[2]))
+        Placed(stroke, (base + reach) / tall)
+    }
+    if (placed.size < 3) return WarmupReview(tr("Letter a word on its lines first, then ask me again."), emptyList())
+    val mean = placed.map { it.error }.average()
+    val worst = placed.maxBy { it.error }
+    val marks = if (worst.error > 0.15f) {
+        val xs = worst.stroke.filterIndexed { index, _ -> index % 2 == 0 }
+        val ys = worst.stroke.filterIndexed { index, _ -> index % 2 == 1 }
+        listOf(NoteMark(tr("Line this one up"), MarkShape.BOX, xs.min() - 0.01f, ys.min() - 0.01f, xs.max() + 0.01f, ys.max() + 0.01f))
+    } else {
+        emptyList()
+    }
+    val text = when {
+        mean < 0.08 -> tr("Your letters sit on the baseline and reach their lines evenly. That rhythm is what makes lettering look set.")
+        mean < 0.16 -> tr("Mostly even. A few letters float off the baseline or stop short of their line.")
+        else -> tr("Letter heights wander. Slow down and let each letter touch the dashed line or the top line before you lift.")
+    }
+    return WarmupReview(text, marks)
 }
 
 private fun degrees(radians: Double) = radians * 180 / PI

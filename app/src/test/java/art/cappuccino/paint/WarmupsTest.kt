@@ -175,4 +175,16 @@ class WarmupsTest {
         val mirrored = layout.mirrorHalf.flatMap { listOf(1f - it.x, it.y) }.toFloatArray()
         assertTrue(warmupFeedback(WarmupKind.MIRROR, WarmupWork(listOf(mirrored), blank(), 64, 64, layout)).startsWith("The two halves match"))
     }
+
+    @Test
+    fun letteringReadsBaselineAndHeights() {
+        val layout = WarmupLayout(5)
+        val row = layout.letterRows.first()
+        fun stem(x: Float, top: Float, bottom: Float) = floatArrayOf(x, top, x, (top + bottom) / 2f, x, bottom)
+        val even = List(6) { index -> stem(0.2f + index * 0.03f, if (index % 2 == 0) row[1] else row[2], row[3]) }
+        assertTrue(warmupFeedback(WarmupKind.LETTERING, WarmupWork(even, blank(), 64, 64, layout)).startsWith("Your letters sit"))
+        val tall = row[3] - row[1]
+        val wandering = List(6) { index -> stem(0.2f + index * 0.03f, row[2] + tall * 0.2f * (index % 3), row[3] - tall * 0.15f) }
+        assertTrue(warmupMarks(WarmupKind.LETTERING, WarmupWork(wandering, blank(), 64, 64, layout)).isNotEmpty())
+    }
 }

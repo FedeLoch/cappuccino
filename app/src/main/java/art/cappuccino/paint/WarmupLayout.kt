@@ -221,8 +221,30 @@ class WarmupLayout(val seed: Int) {
         }
     }
 
+    /** Writing lines for lettering, one row per word: left, cap line, x-height, baseline, and right. */
+    val letterRows: List<FloatArray> = run {
+        val tall = between(0.12f, 0.16f)
+        val small = tall * between(0.5f, 0.62f)
+        val gap = (0.78f - LETTER_ROWS * tall) / (LETTER_ROWS - 1)
+        List(LETTER_ROWS) { index ->
+            val cap = 0.12f + index * (tall + gap)
+            floatArrayOf(0.1f, cap, cap + tall - small, cap + tall, 0.9f)
+        }
+    }
+
+    /** A word to letter on each row. */
+    val letterWords: List<String> = LETTER_WORDS.shuffled(random).take(LETTER_ROWS)
+
     private fun abs(value: Float) = kotlin.math.abs(value)
 }
+
+private const val LETTER_ROWS = 3
+
+/** Words with both tall and small letters, so each row practices both heights. */
+private val LETTER_WORDS = listOf(
+    "harbor", "quiet", "ember", "lantern", "willow", "drift", "marble", "hollow",
+    "copper", "meadow", "velvet", "orchard", "thistle", "biscuit", "kindle", "hearth",
+)
 
 /** Turns a point from a motif's own space, centered on zero, into a place on the page. */
 private fun place(point: Spot, center: Spot, scale: Float, angle: Float) = Spot(

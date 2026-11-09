@@ -19,7 +19,7 @@ import { psdFolder, withPsdGroups, writePsd } from "./psd.js";
 import { WARMUPS, WARMUP_TOPICS } from "./warmups.js";
 import { WarmupLayout, WarmupWork, drawWarmupGuide, singleSun, warmupReview } from "./practice.js";
 import {
-  applyUiScale, askSheet, choiceSheet, confirmSheet, h, pixelRatio, say as sayNote, sheet, svg, toUi, uiScale, viewHeight, viewWidth,
+  applyUiScale, askSheet, choiceSheet, confirmSheet, creamChip, h, pixelRatio, say as sayNote, sheet, svg, toUi, uiScale, viewHeight, viewWidth,
 } from "./ui.js";
 import { Home, warmupPicker } from "./home.js";
 import {
@@ -28,6 +28,10 @@ import {
 } from "./references.js";
 import { REFERENCE_PROFILE_SIZE, compareWithReferences, profileImage } from "./match.js";
 import { reshapeShape, shapeAnchors, snapShape } from "./shapes.js";
+import { DEFAULT_STYLE, SYSTEM_FONTS, cssFont, drawLettering, fontKey, importedFontNames, loadFont } from "./lettering.js";
+import {
+  coverRead, describe, drawPrintGuides, folds, frontBox, makePdf, preflight, trimmedWidth,
+} from "./print.js";
 import {
   ArtworkStore, PREVIEW_WIDTH, THUMBNAIL_WIDTH, TILE_SIZE, previewHeight, thumbnailHeight,
 } from "./storage.js";
@@ -261,7 +265,7 @@ function composeNow() {
   if (!opened) return;
   const start = performance.now();
   engine._cap_compose();
-  if (noteMarks.length) drawOverlay();
+  if (noteMarks.length || printGuidesShown()) drawOverlay();
   if (transformCorners) moveTransformHandles();
   composeIndex = record(composeTimes, composeIndex, performance.now() - start);
 }
@@ -547,7 +551,25 @@ function drawLasso() {
   c.setLineDash([14, 10]);
   c.strokeStyle = "#D85A30";
   c.stroke();
+  // A faint line back to the start, and a dot where it closes.
+  const [startX, startY] = canvasToScreen(heap[pointsOffset], heap[pointsOffset + 1]);
+  const last = toolGesture.count - 1;
+  const [endX, endY] = canvasToScreen(heap[pointsOffset + last * 2], heap[pointsOffset + last * 2 + 1]);
+  c.beginPath();
+  c.moveTo(endX, endY);
+  c.lineTo(startX, startY);
+  c.globalAlpha = 0.47;
+  c.stroke();
+  c.globalAlpha = 1;
   c.setLineDash([]);
+  c.beginPath();
+  c.arc(startX, startY, 5 * dpr, 0, Math.PI * 2);
+  c.fillStyle = "#FFFFFF";
+  c.fill();
+  c.beginPath();
+  c.arc(startX, startY, 4 * dpr, 0, Math.PI * 2);
+  c.fillStyle = "#D85A30";
+  c.fill();
 }
 
 function endToolGesture(cancelled) {
@@ -1054,6 +1076,75 @@ recentDots.forEach((dot, index) => dot.addEventListener("click", () => {
   if (recentColors[index]) setColor(recentColors[index]);
 }));
 
+// Dragging a color out of a swatch and letting go over the canvas fills the area there.
+function dropColorFrom(source, pickColor) {
+  let start = null;
+  let drop = null;
+  let dragged = false;
+  // The drop sits above the finger, so you can see where it lands.
+  const LIFT = 40;
+  const place = (event) => {
+    drop.style.left = `${toUi(event.clientX) - 14}px`;
+    drop.style.top = `${toUi(event.clientY) - LIFT - 14}px`;
+  };
+  source.addEventListener("pointerdown", (event) => {
+    start = { x: event.clientX, y: event.clientY, id: event.pointerId };
+    dragged = false;
+  });
+  source.addEventListener("pointermove", (event) => {
+    if (!start || event.pointerId !== start.id) return;
+    const value = pickColor();
+    if (!value) return;
+    if (!drop && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 12) {
+      try {
+        source.setPointerCapture(event.pointerId);
+      } catch {
+        // Synthetic pointers can't be captured; the drag still follows while over the swatch.
+      }
+      closePanel();
+      dragged = true;
+      drop = h("div", { className: "color-drop", style: { background: value } });
+      studioView.append(drop);
+    }
+    if (drop) place(event);
+  });
+  const end = (event, keep) => {
+    if (!start || event.pointerId !== start.id) return;
+    start = null;
+    if (!drop) return;
+    drop.remove();
+    drop = null;
+    const value = pickColor();
+    const box = canvas.getBoundingClientRect();
+    const x = event.clientX;
+    // LIFT is in interface units; toUi(100) / 100 turns screen pixels into them.
+    const y = event.clientY - LIFT / (toUi(100) / 100);
+    if (!keep || !value || x < box.left || x > box.right || y < box.top || y > box.bottom) return;
+    const canvasX = Math.floor(toCanvasX(x * dpr, y * dpr));
+    const canvasY = Math.floor(toCanvasY(x * dpr, y * dpr));
+    if (canvasX < 0 || canvasY < 0 || canvasX >= canvasWidth || canvasY >= canvasHeight) return;
+    setColor(value);
+    rememberColor();
+    const rgb = hexToRgb(value);
+    if (engine._cap_fill_at(canvasX, canvasY, rgb[0], rgb[1], rgb[2])) {
+      recordStroke();
+      markUnsaved();
+    }
+    queueCompose();
+  };
+  source.addEventListener("pointerup", (event) => end(event, true));
+  source.addEventListener("pointercancel", (event) => end(event, false));
+  // A drag isn't a tap, so it doesn't open the color panel or pick the swatch.
+  source.addEventListener("click", (event) => {
+    if (!dragged) return;
+    dragged = false;
+    event.stopImmediatePropagation();
+  }, true);
+}
+
+dropColorFrom(colorButton, () => color);
+recentDots.forEach((dot, index) => dropColorFrom(dot, () => recentColors[index]));
+
 function showRecentColors() {
   recentStrip.style.visibility = recentColors.length === 0 ? "hidden" : "visible";
   recentDots.forEach((dot, index) => {
@@ -1161,6 +1252,7 @@ function showPanel(key, build) {
   panelKey = key;
   panelBuilder = build;
   panel.className = key === "companion" ? "bubble" : LEFT_PANELS.has(key) ? "left" : "right";
+  if (key === "layers") panel.classList.add("layers");
   panelBody.replaceChildren(build());
   panel.hidden = false;
   if (key === "companion") placeBubble();
@@ -1173,11 +1265,14 @@ function rerender() {
   const scroll = panel.scrollTop;
   panelBody.replaceChildren(panelBuilder());
   panel.scrollTop = scroll;
+  const list = panelBody.querySelector(".layer-list");
+  if (list) list.scrollTop = layerListScroll;
   if (panelKey === "companion") placeBubble();
 }
 
 function closePanel() {
   if (!panelKey) return;
+  if (panelKey === "layers") finishRename(false);
   hideViewHandles();
   if (panelKey === "color") rememberColor();
   if (panelKey === "companion") showNoteMarks([]);
@@ -1404,23 +1499,30 @@ function toolCard(icon, title, detail, selected, click, available = true) {
 
 function toolsPanel() {
   const pick = (kind) => () => {
+    selectionTool = "none";
     selectTool(kind);
     closePanel();
   };
+  const selecting = selectionTool !== "none";
+  const tile = (icon, title, selected, click) => h("button", { className: selected ? "icon-tile on" : "icon-tile", ariaLabel: title, onClick: click },
+    svg(icon), h("span", {}, title));
+  const paintTools = [
+    [TOOLS.smudge, "smudge", "Smudge", "Blend colors"],
+    [TOOLS.fill, "fill", "Fill", "Fill an area"],
+    [TOOLS.gradient, "gradient", "Gradient", "Fade a color"],
+    [TOOLS.lassoFill, "lasso_fill", "Lasso fill", "Fill a shape you draw"],
+  ];
+  // One line on what the tool in use does, instead of a caption on every tile.
+  const detail = selectionTool === "lasso" ? "Draw around an area"
+    : selectionTool === "wand" ? "Pick a color area"
+      : paintTools.find(([kind]) => kind === brush)?.[3];
   return h("div", { className: "column" },
     h("div", { className: "title" }, "Tools"),
-    gap(h("div", { className: "tools" },
-      toolCard("smudge", "Smudge", "Blend colors", brush === TOOLS.smudge, pick(TOOLS.smudge)),
-      toolCard("fill", "Fill", "Fill an area", brush === TOOLS.fill, pick(TOOLS.fill)),
-      toolCard("gradient", "Gradient", "Fade a color", brush === TOOLS.gradient, pick(TOOLS.gradient)),
-      toolCard("lasso_fill", "Lasso fill", "Fill a shape you draw", brush === TOOLS.lassoFill, pick(TOOLS.lassoFill)))),
-    gap(h("div", { className: "caption" }, "Selection")),
-    gap(h("div", { className: "tools" },
-      toolCard("select", "Lasso", "Draw around an area", false, () => startSelection("lasso", "Draw around an area with your pen")),
-      toolCard("wand", "Magic wand", "Pick a color area", false, () => startSelection("wand", "Tap a color area with your pen")))),
-    gap(h("div", { className: "caption" },
-      "Make a selection to keep painting inside it, or to move part of a layer.")),
-    ...selectionControls());
+    gap(h("div", { className: "tile-grid three" },
+      paintTools.map(([kind, icon, title]) => tile(icon, title, !selecting && brush === kind, pick(kind))),
+      tile("select", "Lasso", selectionTool === "lasso", () => startSelection("lasso")),
+      tile("wand", "Magic wand", selectionTool === "wand", () => startSelection("wand")))),
+    detail && gap(h("div", { className: "small" }, detail)));
 }
 
 // --- Selection, as MainActivity's lasso, magic wand, and selection actions -----------------------
@@ -1431,17 +1533,67 @@ let hasSelection = false;
 let selectionMode = 0;  // 0 new, 1 add, 2 remove.
 let selectionFeather = 0;
 
-function startSelection(tool, hint) {
+let lastSelectionTool = "lasso";
+
+function startSelection(tool, mode = 0) {
+  lastSelectionTool = tool;
+  selectionMode = mode;
   selectionTool = tool;
   markTools();
   closePanel();
-  say(hint);
+  showSelectionBar();
+  say(tool === "wand" ? "Tap a color area with your pen" : "Draw around an area with your pen");
+}
+
+// Arms the last selection tool to grow or trim the selection, or puts it away on a second tap.
+function armSelection(mode) {
+  if (selectionTool !== "none" && selectionMode === mode) {
+    selectionTool = "none";
+    selectionMode = 0;
+    markTools();
+    showSelectionBar();
+  } else {
+    startSelection(lastSelectionTool, mode);
+  }
 }
 
 function markSelection(active) {
   hasSelection = active;
-  if (!active) selectionMode = 0;
+  selectionMode = 0;
   markTools();
+  showSelectionBar();
+}
+
+// Keeps what you can do with a selection at hand, under the canvas, while there is one.
+const selectionBar = h("div", { className: "tool-bar", hidden: true });
+studioView.append(selectionBar);
+
+function showSelectionBar() {
+  selectionBar.hidden = !hasSelection;
+  if (!hasSelection) return;
+  const armed = selectionTool !== "none";
+  const button = (icon, title, click, on = false) => h("button", {
+    className: on ? "icon on" : "icon", ariaLabel: title, title, innerHTML: ICONS[icon], onClick: click,
+  });
+  selectionBar.replaceChildren(h("div", { className: "pill-bar" },
+    button("add", "Add to selection", () => armSelection(1), armed && selectionMode === 1),
+    button("subtract", "Remove from selection", () => armSelection(2), armed && selectionMode === 2),
+    h("span", { className: "small" }, "Soft edge"),
+    h("input", {
+      className: "range edge-range", type: "range", min: "0", max: "100", value: String(selectionFeather), ariaLabel: "Soft edge",
+      onInput: (event) => {
+        selectionFeather = Number(event.target.value);
+        featherSelection(Math.round(selectionFeather * Math.max(doc.width, doc.height) / FEATHER_SHARE));
+      },
+    }),
+    button("transform", "Transform", () => selectionToLayer(true, true)),
+    button("copy", "Copy to layer", () => selectionToLayer(false, false)),
+    button("cut", "Cut to layer", () => selectionToLayer(true, false)),
+    button("invert", "Invert", () => {
+      engine._cap_invert_selection();
+      queueCompose();
+    }),
+    button("close", "Clear selection", () => clearSelection())));
 }
 
 function finishLasso(count) {
@@ -1486,31 +1638,6 @@ function selectionToLayer(cut, transform) {
   else closePanel();
 }
 
-function selectionControls() {
-  if (!hasSelection) return [];
-  const row = (icon, title, detail, click) => gap(h("button", { className: "action-row", onClick: click },
-    svg(icon), h("div", { className: "text" }, h("div", {}, title), detail && h("div", { className: "detail" }, detail))));
-  return [
-    gap(segmented(["New", "Add", "Remove"], selectionMode, (index) => {
-      selectionMode = index;
-      rerender();
-    })),
-    gap(toolSlider("Soft edge", selectionFeather, (value) => {
-      selectionFeather = value;
-      featherSelection(Math.round(value * Math.max(doc.width, doc.height) / FEATHER_SHARE));
-    })),
-    row("transform", "Transform", "Move, scale, or rotate the selection", () => selectionToLayer(true, true)),
-    row("copy", "Copy to layer", null, () => selectionToLayer(false, false)),
-    row("cut", "Cut to layer", null, () => selectionToLayer(true, false)),
-    row("invert", "Invert", null, () => {
-      engine._cap_invert_selection();
-      queueCompose();
-      closePanel();
-    }),
-    row("close", "Clear selection", null, () => clearSelection()),
-  ];
-}
-
 // --- Art direction ---------------------------------------------------------------------------
 
 function viewPanel() {
@@ -1553,6 +1680,14 @@ function viewPanel() {
       Math.max(0, FIGURES.indexOf((doc?.manifest.figure || [])[2] ?? 0)), (index) => setFigure(FIGURES[index])),
     ((doc?.manifest.perspective || []).length || (doc?.manifest.figure || []).length || symmetry !== 0) &&
       gap(h("div", { className: "small" }, "Drag the circles to place your guides.")),
+    doc?.manifest.print && gap(h("div", { className: "small" }, "Book cover")),
+    doc?.manifest.print && gap(h("div", { className: "row" },
+      h("div", { className: "grow" }, describe(doc.manifest.print)),
+      smallChip(printGuidesShown() ? "Hide guides" : "Show guides", printGuidesShown(), () => {
+        localStorage.setItem("printGuides", printGuidesShown() ? "off" : "on");
+        drawOverlay();
+        rerender();
+      }))),
     gap(h("button", { className: "action-row", onClick: flipCanvas },
       svg("flip"),
       h("div", { className: "text" }, h("div", {}, "Flip canvas"),
@@ -2710,7 +2845,6 @@ function filterPanel() {
 
 // --- Actions, as MainActivity.actionsPanel() -----------------------------------------------------
 
-const TEXT_SIZES = [0.03, 0.05, 0.09];
 const FINISH_NOTE_DELAY_MS = 3500;
 let penButtonAction = loadPreference("penButton", 0);  // 0 picks a color, 1 erases, 2 undoes.
 let variationFamily = [];
@@ -2755,6 +2889,8 @@ function actionsPanel() {
     gap(h("div", { className: "caption" }, "Export")),
     gap(row("layers", "Design sheet", "All variations on one page", () => { closePanel(); exportSheet(); })),
     gap(row("export", "Frames as PNGs", "One image per thumbnail frame", () => { closePanel(); exportFrames(); })),
+    gap(row("export", "Print-ready PDF", doc.manifest.print ? "With bleed at 300 dpi" : "At 300 dpi", () => { closePanel(); exportPrintPdf(); })),
+    doc.manifest.print && gap(row("export", "Front cover JPEG", "Trimmed, for online stores and ebooks", () => { closePanel(); exportFrontCover(); })),
     gap(row("export", "PNG image", store.folderName ? `Flattened, saved to ${store.folderName}/Exports` : "Flattened, saved to your downloads", () => { closePanel(); exportPng(); })),
     gap(row("layersfile", "PSD file", "Keeps your layers", () => { closePanel(); exportPsd(); })),
     gap(row("video", "Time-lapse", "A video of your progress", () => { closePanel(); askTimelapseLength(); })),
@@ -2786,32 +2922,127 @@ function actionsPanel() {
 
 // --- Text layers ------------------------------------------------------------------------------
 
-function askForText(editing = null) {
-  let size = editing ? Math.max(0, TEXT_SIZES.findIndex((it) => it >= (editing.textSize || 0) - 0.001)) : 1;
-  const input = h("textarea", { className: "field text-field", placeholder: "Your label", value: editing?.text || "", rows: 2 });
-  const sizes = h("div", {});
-  const showSizes = () => sizes.replaceChildren(segmentedLight(["Small", "Medium", "Large"], size, (index) => {
-    size = index;
-    showSizes();
-  }));
-  showSizes();
+let lastTextStyle = { ...DEFAULT_STYLE };
+let fontsLoaded = null;
+
+// Loads the fonts you imported once, so text sheets and layers can use them.
+function loadSavedFonts() {
+  fontsLoaded ||= store.fonts().then((fonts) => Promise.all(fonts.map(([name, data]) => loadFont(name, data).catch(() => {}))));
+  return fontsLoaded;
+}
+
+// Sets text with a live preview: font, weight, size, spacing, alignment, direction, outline, and shadow.
+async function askForText(editing = null) {
+  await loadSavedFonts();
+  const draft = {
+    text: editing?.text || "",
+    style: { ...DEFAULT_STYLE, ...(editing ? editing.textStyle || {} : lastTextStyle) },
+    size: editing?.textSize > 0 ? editing.textSize : 0.05,
+    color: editing ? colorHex(editing.textColor) : color,
+  };
+  const preview = h("canvas", { className: "text-preview" });
+  const refreshPreview = () => {
+    const width = preview.clientWidth || 440;
+    const height = 110;
+    const ratio = window.devicePixelRatio || 1;
+    preview.width = Math.round(width * ratio);
+    preview.height = Math.round(height * ratio);
+    const c = preview.getContext("2d");
+    const text = draft.text.trim() ? draft.text : "Your title";
+    const lines = text.split("\n").length;
+    drawLettering(c, text, draft.style, preview.height * 0.5 / Math.max(1, lines * draft.style.leading), draft.color, preview.width / 2, preview.height / 2);
+  };
+  const input = h("textarea", {
+    className: "field text-field", placeholder: "Your text", value: draft.text, rows: 2,
+    onInput: (event) => {
+      draft.text = event.target.value;
+      refreshPreview();
+    },
+  });
+  const options = h("div", { className: "column" });
+  const slider = (name, min, max, value, show, change) => {
+    const shown = h("span", { className: "slider-value" }, show(value));
+    return h("div", { className: "column gap10" },
+      h("div", { className: "row" }, h("div", { className: "label grow" }, name), shown),
+      h("input", {
+        className: "range light", type: "range", min: String(min), max: String(max), value: String(value),
+        onInput: (event) => {
+          const next = Number(event.target.value);
+          shown.textContent = show(next);
+          change(next);
+          refreshPreview();
+        },
+      }));
+  };
+  const restyle = (change) => {
+    draft.style = { ...draft.style, ...change };
+    refreshPreview();
+    showOptions();
+  };
+  const fontInput = h("input", {
+    type: "file", accept: ".ttf,.otf,font/ttf,font/otf", hidden: true,
+    onChange: async (event) => {
+      const file = event.target.files[0];
+      if (!file) return;
+      if (!/\.(ttf|otf)$/i.test(file.name)) return say("Couldn't read this font. Pick a .ttf or .otf file.");
+      const data = await file.arrayBuffer();
+      try {
+        await loadFont(file.name, data.slice(0));
+        await store.saveFont(file.name, data);
+        restyle({ font: fontKey(file.name) });
+      } catch {
+        say("Couldn't read this font. Pick a .ttf or .otf file.");
+      }
+    },
+  });
+  const showOptions = () => {
+    const fonts = [...SYSTEM_FONTS.map(([key, name]) => [key, name]), ...importedFontNames().map((name) => [fontKey(name), name.replace(/\.(ttf|otf)$/i, "")])];
+    const turns = [0, 90, -90];
+    options.replaceChildren(
+      h("div", { className: "label gap14" }, "Font"),
+      h("div", { className: "row gap6 chips-row scroll" },
+        fonts.map(([key, name]) => {
+          const chip = creamChip(name, draft.style.font === key, () => restyle({ font: key }));
+          chip.style.font = cssFont({ ...DEFAULT_STYLE, font: key }, 14);
+          return chip;
+        }),
+        creamChip("+ Font file", false, () => fontInput.click())),
+      h("div", { className: "row gap10 chips-row" },
+        creamChip("Bold", draft.style.bold, () => restyle({ bold: !draft.style.bold })),
+        creamChip("Italic", draft.style.italic, () => restyle({ italic: !draft.style.italic })),
+        h("div", { className: "grow" }, segmentedLight(["Left", "Center", "Right"], draft.style.align, (index) => restyle({ align: index })))),
+      h("div", { className: "label gap14" }, "Direction"),
+      h("div", { className: "gap6" }, segmentedLight(["Across", "Down the spine", "Up the spine"], Math.max(0, turns.indexOf(draft.style.turn)), (index) => restyle({ turn: turns[index] }))),
+      slider("Size", 10, 300, Math.round(draft.size * 1000), (value) => `${(value / 10).toFixed(1)}%`, (value) => { draft.size = value / 1000; }),
+      slider("Letter spacing", -10, 60, Math.round(draft.style.tracking * 100), (value) => (value >= 0 ? `+${value}` : `${value}`), (value) => { draft.style = { ...draft.style, tracking: value / 100 }; }),
+      slider("Line spacing", 70, 200, Math.round(draft.style.leading * 100), (value) => `${(value / 100).toFixed(2)}×`, (value) => { draft.style = { ...draft.style, leading: value / 100 }; }),
+      slider("Outline", 0, 10, Math.round(draft.style.outline * 100), (value) => (value ? String(value) : "Off"), (value) => { draft.style = { ...draft.style, outline: value / 100 }; }),
+      h("div", { className: "row gap10 chips-row" },
+        [[-16777216, "Dark outline"], [-1, "Light outline"]].map(([tone, name]) =>
+          creamChip(name, draft.style.outline > 0 && draft.style.outlineColor === tone, () => restyle({ outlineColor: tone, outline: draft.style.outline || 0.03 }))),
+        creamChip("Shadow", draft.style.shadow, () => restyle({ shadow: !draft.style.shadow }))));
+  };
+  showOptions();
   let close;
-  const body = h("div", { className: "sheet-body small-body" },
+  const body = h("div", { className: "sheet-body text-body" },
     h("div", { className: "row" }, h("div", { className: "grow" }, serifTitle(editing ? "Edit text" : "Add text")),
       h("button", { className: "chip-cream", onClick: () => close() }, "Cancel")),
     h("div", { className: "gap14" }, input),
-    h("div", { className: "gap14" }, sizes),
+    h("div", { className: "gap10" }, preview),
+    options, fontInput,
     h("div", { className: "end gap16" }, h("button", {
       className: "sheet-button",
       onClick: () => {
         const text = input.value;
         if (!text.trim()) return;
         close();
-        if (editing) replaceText(editing, text, TEXT_SIZES[size]);
-        else addText(text, TEXT_SIZES[size]);
+        lastTextStyle = draft.style;
+        if (editing) replaceText(editing, text, draft.size, draft.style);
+        else addText(text, draft.size, draft.style);
       },
     }, editing ? "Save" : "Add")));
-  close = sheet(body, { small: true });
+  close = sheet(body);
+  requestAnimationFrame(refreshPreview);
   input.focus();
 }
 
@@ -2825,22 +3056,22 @@ function segmentedLight(options, selected, pick) {
     h("button", { className: index === selected ? "on" : "", onClick: () => pick(index) }, option)));
 }
 
-function drawTextPage(text, size, textColor, centerX, centerY) {
+function drawTextPage(text, style, size, textColor, centerX, centerY) {
   const surface = new OffscreenCanvas(doc.width, doc.height);
   const c = surface.getContext("2d");
-  c.fillStyle = textColor;
-  c.font = `${size}px Roboto, "Segoe UI", system-ui, sans-serif`;
-  c.textAlign = "center";
-  const lines = text.split("\n");
-  const top = centerY - lines.length * size / 2;
-  lines.forEach((line, index) => c.fillText(line, centerX, top + (index + 1) * size));
+  drawLettering(c, text, style, size, textColor, centerX, centerY);
   return premultiplied(c.getImageData(0, 0, doc.width, doc.height).data);
 }
 
-function addText(text, heightShare) {
+function addText(text, heightShare, style = { ...DEFAULT_STYLE }) {
   if (layerSlots() >= maxLayers) return sayFull();
   setEditingMask(false);
-  const pixels = drawTextPage(text, doc.height * heightShare, color, doc.width / 2, doc.height / 2);
+  // On a book cover, new text starts where it belongs: the spine for turned text, otherwise the front.
+  const print = doc.manifest.print;
+  const spine = print && style.turn !== 0 ? folds(print) : null;
+  const front = !print ? [0, 0, doc.width, doc.height]
+    : spine ? [spine[0], frontBox(print)[1], spine[1], frontBox(print)[3]] : frontBox(print);
+  const pixels = drawTextPage(text, style, doc.height * heightShare, color, (front[0] + front[2]) / 2, (front[1] + front[3]) / 2);
   const id = doc.manifest.nextLayerId++;
   engineLayers.add(id);
   engine._cap_create_layer(id);
@@ -2848,14 +3079,14 @@ function addText(text, heightShare) {
   engine._cap_mark_layer_dirty(id);
   editLayers(() => {
     const index = layers().findIndex((layer) => layer.id === doc.manifest.activeLayer) + 1;
-    layers().splice(index, 0, { ...newLayer(id, text.split("\n")[0].slice(0, 24)), text, textSize: heightShare, textColor: colorInt(color) });
+    layers().splice(index, 0, { ...newLayer(id, text.split("\n")[0].slice(0, 24)), text, textSize: heightShare, textColor: colorInt(color), textStyle: style });
     doc.manifest.activeLayer = id;
   });
-  if (transform) startTransform();
+  startTransform();
 }
 
 // Swaps in freshly set text where the old text now sits, so editing it keeps your placement.
-function replaceText(layer, text, heightShare) {
+function replaceText(layer, text, heightShare, style = layer.textStyle || { ...DEFAULT_STYLE }) {
   const width = TEXT_FIND_WIDTH;
   const height = Math.max(1, Math.floor(width * doc.height / doc.width));
   const size = width * height * 4;
@@ -2879,7 +3110,7 @@ function replaceText(layer, text, heightShare) {
   const found = right >= 0;
   const centerX = found ? (left + right + 1) / 2 / width * doc.width : doc.width / 2;
   const centerY = found ? (top + bottom + 1) / 2 / height * doc.height : doc.height / 2;
-  const pixels = drawTextPage(text, doc.height * heightShare, colorHex(layer.textColor), centerX, centerY);
+  const pixels = drawTextPage(text, style, doc.height * heightShare, colorHex(layer.textColor), centerX, centerY);
   const id = doc.manifest.nextLayerId++;
   engineLayers.add(id);
   engine._cap_create_layer(id);
@@ -2887,7 +3118,7 @@ function replaceText(layer, text, heightShare) {
   engine._cap_mark_layer_dirty(id);
   editLayers(() => {
     const index = layers().findIndex((it) => it.id === layer.id);
-    layers()[index] = { ...structuredClone(layer), id, name: text.split("\n")[0].slice(0, 24), text, textSize: heightShare, file: "", tiles: null, mask: 0, maskFile: "", maskTiles: null };
+    layers()[index] = { ...structuredClone(layer), id, name: text.split("\n")[0].slice(0, 24), text, textSize: heightShare, textStyle: style, file: "", tiles: null, mask: 0, maskFile: "", maskTiles: null };
     doc.manifest.activeLayer = id;
   });
   refreshLayers();
@@ -2946,6 +3177,104 @@ async function pngBlob(pixels, width, height) {
   const surface = new OffscreenCanvas(width, height);
   surface.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.length), width, height), 0, 0);
   return surface.convertToBlob({ type: "image/png" });
+}
+
+// The art on white, as paper has no transparency. pixels: RGBA bytes. Returns RGB bytes.
+function onWhite(pixels) {
+  const rgb = new Uint8Array(pixels.length / 4 * 3);
+  for (let from = 0, to = 0; from < pixels.length; from += 4, to += 3) {
+    const alpha = pixels[from + 3] / 255;
+    rgb[to] = pixels[from] * alpha + 255 * (1 - alpha);
+    rgb[to + 1] = pixels[from + 1] * alpha + 255 * (1 - alpha);
+    rgb[to + 2] = pixels[from + 2] * alpha + 255 * (1 - alpha);
+  }
+  return rgb;
+}
+
+// The edges of what's drawn on a layer, in canvas pixels, or null if it's empty.
+function layerInkBox(id) {
+  const width = TEXT_FIND_WIDTH;
+  const height = Math.max(1, Math.floor(width * doc.height / doc.width));
+  const size = width * height * 4;
+  const pointer = engine._malloc(size);
+  engine._cap_read_layer_thumbnail(id, width, height, pointer);
+  const small = engine.HEAPU8.slice(pointer, pointer + size);
+  engine._free(pointer);
+  let [left, top, right, bottom] = [width, height, -1, -1];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (small[(y * width + x) * 4 + 3] <= 8) continue;
+      left = Math.min(left, x);
+      right = Math.max(right, x + 1);
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y + 1);
+    }
+  }
+  if (right < 0) return null;
+  const scale = doc.width / width;
+  return { left: left * scale, top: top * scale, right: right * scale, bottom: bottom * scale };
+}
+
+// Checks a book cover for print problems first, and asks before exporting one that has any.
+function exportPrintPdf() {
+  const print = doc.manifest.print;
+  if (!print) return writePrintPdf();
+  const width = 800;
+  const height = Math.max(1, Math.floor(width * doc.height / doc.width));
+  const texts = layers().filter((layer) => layer.visible && layer.text)
+    .map((layer) => ({ name: layer.name, ...layerInkBox(layer.id) }))
+    .filter((box) => box.right !== undefined);
+  const issues = preflight(print, readComposite(width, height), width, height, texts,
+    (r, g, b) => printsDuller(`#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`));
+  if (!issues.length) return writePrintPdf();
+  let close;
+  const body = h("div", { className: "sheet-body small-body" },
+    serifTitle("Before you print"),
+    issues.map((issue) => h("div", { className: "gap10" }, `• ${issue}`)),
+    h("div", { className: "end gap16" },
+      h("button", { className: "chip-cream", onClick: () => close() }, "Fix first"),
+      h("button", { className: "sheet-button", onClick: () => { close(); writePrintPdf(); } }, "Export anyway")));
+  close = sheet(body, { small: true });
+}
+
+// One page at the cover's exact print size, bleed included, or the canvas at 300 dpi.
+async function writePrintPdf() {
+  const print = doc.manifest.print;
+  const widthInches = print ? trimmedWidth(print) + print.bleed * 2 : doc.width / 300;
+  const heightInches = print ? print.trimHeight + print.bleed * 2 : doc.height / 300;
+  say("Making your PDF");
+  try {
+    const pdf = await makePdf(onWhite(readFullComposite()), doc.width, doc.height, widthInches, heightInches);
+    const where = await store.saveExport(`${safeName(doc.manifest.name)}.pdf`, pdf);
+    say(`Saved to ${where}`, true);
+    celebrateFinish();
+  } catch (error) {
+    console.error(error);
+    say("Couldn't export this PDF", true);
+  }
+}
+
+// The front panel alone, trimmed, as shops and ebooks show it.
+async function exportFrontCover() {
+  const print = doc.manifest.print;
+  if (!print) return;
+  const [left, top, right, bottom] = frontBox(print);
+  const pixels = readFullComposite();
+  const surface = new OffscreenCanvas(doc.width, doc.height);
+  surface.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.length), doc.width, doc.height), 0, 0);
+  const crop = new OffscreenCanvas(right - left, bottom - top);
+  const c = crop.getContext("2d");
+  c.fillStyle = "#FFFFFF";
+  c.fillRect(0, 0, crop.width, crop.height);
+  c.drawImage(surface, -left, -top);
+  try {
+    const blob = await crop.convertToBlob({ type: "image/jpeg", quality: 0.95 });
+    const where = await store.saveExport(`${safeName(doc.manifest.name)} front cover.jpg`, blob);
+    say(`Saved to ${where}`, true);
+  } catch (error) {
+    console.error(error);
+    say("Couldn't export this image", true);
+  }
 }
 
 async function exportPng() {
@@ -4041,11 +4370,49 @@ function deleteLayer(layer) {
   refreshLayers();
 }
 
-function renameLayer(layer) {
-  askSheet("Rename layer", layer.name, (name) => {
-    editLayers(() => { layerById(layer.id).name = name; }, { structural: false });
-    refreshLayers();
+let renamingLayer = 0;
+let renameInput = null;
+let layerListScroll = 0;
+
+function renameField(layer) {
+  const input = h("input", {
+    className: "layer-rename", value: layer.name, ariaLabel: "Rename layer", translate: false,
+    onClick: (event) => event.stopPropagation(),
+    onKeydown: (event) => {
+      event.stopPropagation();
+      if (event.key === "Enter") finishRename(true);
+      if (event.key === "Escape") finishRename(false);
+    },
+    onBlur: () => finishRename(true),
   });
+  renameInput = input;
+  requestAnimationFrame(() => {
+    input.focus();
+    input.select();
+  });
+  return input;
+}
+
+function startRename(layer) {
+  if (pickingLayers) return;
+  finishRename(true);
+  renamingLayer = layer.id;
+  refreshLayers();
+}
+
+// Keeps the typed name on Enter or tapping away; Escape or closing the panel without typing drops it.
+function finishRename(keep) {
+  const input = renameInput;
+  const id = renamingLayer;
+  renameInput = null;
+  renamingLayer = 0;
+  if (!id || !input) return;
+  const name = input.value.trim();
+  const layer = layerById(id);
+  if (keep && layer && name && name !== layer.name) {
+    editLayers(() => { layerById(id).name = name; }, { structural: false });
+  }
+  refreshLayers();
 }
 
 function setClip(layer, clip) {
@@ -4198,7 +4565,7 @@ function layersPanel() {
         },
       }),
       h("button", { className: "icon", ariaLabel: "Add layer", innerHTML: ICONS.add, onClick: () => addLayer() })));
-  const list = h("div", { className: "column gap layer-list" });
+  const list = h("div", { className: "column gap layer-list", onScroll: (event) => { layerListScroll = event.target.scrollTop; } });
   let shownGroup = 0;
   for (const layer of [...layers()].reverse()) {
     const group = groupsOf().find((it) => it.id === layer.group);
@@ -4215,39 +4582,42 @@ function layersPanel() {
     return body;
   }
   if (!active) return body;
-  body.append(gap(h("div", { className: "small" }, "Opacity")),
+  // The list scrolls on its own, so the layer's tools stay in reach however many layers there are.
+  body.append(gap(h("div", { className: "layer-divider" })));
+  const blendChip = smallChip(`${BLEND_MODES[active.blend || 0]} ▾`, false, () => chooseBlend(blendChip, active));
+  body.append(gap(h("div", { className: "row" },
+    h("div", { className: "small" }, "Opacity"),
     h("input", {
-      className: "range", type: "range", min: "0", max: "100", value: String(Math.round(active.opacity * 100)), ariaLabel: "Layer opacity",
+      className: "range grow", type: "range", min: "0", max: "100", value: String(Math.round(active.opacity * 100)), ariaLabel: "Layer opacity",
       onInput: (event) => {
         const value = Number(event.target.value) / 100;
         editLayers(() => { layerById(active.id).opacity = value; }, { mergeKey: `opacity${active.id}`, structural: false });
       },
-    }));
-  const blendChip = smallChip(`${BLEND_MODES[active.blend || 0]} ▾`, false, () => chooseBlend(blendChip, active));
-  body.append(gap(h("div", { className: "row" }, h("div", { className: "small grow" }, "Blend"), blendChip)));
+    }),
+    blendChip)));
   const tile = (icon, title, click, selected = false) => h("button", { className: selected ? "icon-tile on" : "icon-tile", ariaLabel: title, onClick: click },
     svg(icon), h("span", {}, title));
-  body.append(gap(h("div", { className: "tile-grid" },
+  body.append(gap(h("div", { className: "tile-grid six" },
     tile("transform", "Transform", () => startTransform()),
     tile("liquify", "Liquify", () => startLiquify()),
     tile("filter", "Filters", () => openFilters()),
-    tile("mask", "Mask", () => {
-      if (!active.mask) addMask(); else setEditingMask(!editingMask);
-      refreshLayers();
-    }, editingMask),
     tile("adjust", "Adjust", () => {
       setEditingMask(false);
       closePanel();
       showPanel("adjust", adjustPanel);
     }),
+    tile("mask", "Mask", () => {
+      if (!active.mask) addMask(); else setEditingMask(!editingMask);
+      refreshLayers();
+    }, editingMask),
     tile("clip", "Clip", () => {
       setClip(active, !active.clip);
       refreshLayers();
     }, active.clip),
-    tile("references", "Import", () => importLayerImage()),
-    tile("group", active.group ? "Ungroup" : "Group", () => toggleGroup(active)),
     tile("duplicate", "Duplicate", () => duplicateLayer(active)),
     tile("merge", "Merge", () => mergeDown(active)),
+    tile("group", active.group ? "Ungroup" : "Group", () => toggleGroup(active)),
+    tile("references", "Import", () => importLayerImage()),
     tile("trash", "Delete", () => deleteLayer(active)))));
   if (active.mask) {
     body.append(gap(h("div", { className: "chips wrap" },
@@ -4353,6 +4723,7 @@ function layerRow(layer) {
   const row = h("div", {
     className: highlighted ? "layer-row on" : "layer-row", role: "button", tabIndex: 0,
     onClick: () => {
+      finishRename(true);
       if (pickingLayers) {
         if (!pickedLayers.delete(layer.id)) pickedLayers.add(layer.id);
       } else {
@@ -4362,10 +4733,18 @@ function layerRow(layer) {
     },
     onContextmenu: (event) => {
       event.preventDefault();
-      renameLayer(layer);
+      startRename(layer);
     },
   }, handle, layerThumbnail(layer.id),
-  h("span", { className: "layer-name", translate: false }, layer.mask ? `◐ ${layer.name}` : layer.name),
+  renamingLayer === layer.id ? renameField(layer) : h("span", {
+    className: "layer-name", translate: false,
+    // Tapping the name of the layer you're on renames it right there.
+    onClick: (event) => {
+      if (!selected || pickingLayers) return;
+      event.stopPropagation();
+      startRename(layer);
+    },
+  }, layer.mask ? `◐ ${layer.name}` : layer.name),
   h("button", {
     className: "icon", ariaLabel: "Lock transparency", innerHTML: ICONS[layer.alphaLock ? "lock" : "unlock"],
     onClick: (event) => {
@@ -4613,7 +4992,10 @@ async function analyze(target, pixels, width, height) {
   });
   if (doc !== target) return;
   const note = earlier ? progressNote(earlier, now) : null;
-  const changed = JSON.stringify(result.tips.map((tip) => tip.text)) !== JSON.stringify((report?.tips || []).map((tip) => tip.text));
+  const cover = target.manifest.print ? coverRead(target.manifest.print, pixels, width, height) : null;
+  const changed = JSON.stringify(result.tips.map((tip) => tip.text)) !== JSON.stringify((report?.tips || []).map((tip) => tip.text)) ||
+    cover?.text !== coverNote?.text;
+  coverNote = cover;
   const matchChanged = matched?.match?.summary !== referenceMatch?.summary;
   report = result;
   progress = note;
@@ -4681,9 +5063,12 @@ function muteNote(tip) {
   rerender();
 }
 
+let coverNote = null;
+
 function companionTips() {
   const all = [];
   if (progress) all.push({ topic: "Progress", text: progress, why: "", marks: [], action: null });
+  if (coverNote) all.push(coverNote);
   if (referenceMatch) {
     const match = referenceMatch;
     const board = matchedBoards[match.weakest]?.[0];
@@ -5055,9 +5440,13 @@ function canvasToScreen(x, y) {
   return [a * x + b * y + panX, c * x + d * y + panY];
 }
 
+// Book cover guides show unless turned off under Art direction.
+const printGuidesShown = () => Boolean(doc?.manifest?.print) && localStorage.getItem("printGuides") !== "off";
+
 function drawOverlay() {
   const c = overlayContext;
   c.clearRect(0, 0, overlay.width, overlay.height);
+  if (printGuidesShown()) drawPrintGuides(c, doc.manifest.print, canvasWidth, canvasHeight, canvasToScreen, dpr * uiScale());
   if (toolGesture && (toolGesture.kind.mode === "lasso" || toolGesture.kind.mode === "select")) drawLasso();
   if (liquifyRing) {
     const [x, y, radius] = liquifyRing;
@@ -5257,7 +5646,7 @@ async function toggleReference(reference) {
   const offset = 32 * references.size;
   openReference({
     file: reference.name, x: 90 + offset, y: 90 + offset, width, zoom: 1, panX: 0, panY: 0,
-    grayscale: false, flipped: false, opacity: 1, pinned: false,
+    grayscale: false, flipped: false, opacity: 1, pinned: false, rotation: 0,
   }, bitmap);
   rememberReferences();
 }
@@ -5689,8 +6078,8 @@ async function openArtwork(id) {
   await openDocument(loaded);
 }
 
-async function newArtwork(width, height, name, projectId) {
-  await openDocument(await store.create(name, projectId, width, height));
+async function newArtwork(width, height, name, projectId, print = null) {
+  await openDocument(await store.create(name, projectId, width, height, print));
   markUnsaved();
 }
 

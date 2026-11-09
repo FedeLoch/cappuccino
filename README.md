@@ -94,9 +94,9 @@ as you finish. **Not useful** hides a note you don't want, and a topic you keep 
 quiet. **Compare** tells you which variation reads clearest at a small size.
 
 When you export a finished piece, it looks back at how far the piece came since you started it.
-**Warm up** on the home screen opens eighteen short exercises, each starting from a guide that is
+**Warm up** on the home screen opens nineteen short exercises, each starting from a guide that is
 laid out fresh every session, so a warm-up never turns into a copy of yesterday's: dots to join,
-boxes to hatch and fit ellipses in, two-point boxes to draw in perspective, and motifs to trace;
+words to letter on writing lines, boxes to hatch and fit ellipses in, two-point boxes to draw in perspective, and motifs to trace;
 posed mannequins to fill as silhouettes and a curve to mirror; spheres, a cube, and a cylinder,
 each lit by its own sun; an eye, a nose, and lips over construction lines; a landscape, a value
 scale, and a smooth blend for values; and color studies for one main hue, warm light with cool
@@ -126,6 +126,8 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Every brush shape also works as an eraser
 - Low-latency stylus drawing with pressure, and tilt on pens that support it
 - Hold the pen, or press its side button, to pick a color. The side button can erase or undo instead
+- Drag your color, or a recent one, onto the canvas to fill the area where you let go
+- Tap with two fingers to undo and three to redo, quickly in a row or held down to keep going
 - Keyboard shortcuts: B brush, E eraser, [ and ] for size, Tab to hide the interface, Ctrl+Z to undo, Ctrl+Shift+Z or Ctrl+Y to redo
 
 | Brushes | Tools and snapping |
@@ -137,11 +139,12 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 ### Build your image
 
 - Layers with nine blend modes, multi-select, editable text, opacity, layer masks, clipping masks, transparency lock, and groups
+- Tap the name of the layer you're on to rename it in place. The list scrolls on its own, so the layer's tools stay in reach
 - Liquify: push, grow, shrink, and restore parts of a layer
 - Filters: blur, motion blur, sharpen, noise, gradient map, levels, and depth fade
 - Import images as new layers, then move, scale, and rotate them into place
 - Make a sticker from your drawing: a new top layer with a die-cut border and soft shadow, or a transparent PNG
-- Lasso and magic wand selections you can add to or remove from, with a soft edge, plus hue, saturation, and tone adjustments
+- Lasso and magic wand selections you can add to or remove from, with a soft edge, plus hue, saturation, and tone adjustments. A bar under the canvas keeps the selection's actions at hand while it's there
 - Transform with corner handles, or switch to **Distort** and drag each corner on its own to fit a layer into perspective
 - Animation: every layer becomes a frame, with onion skin, playback at 4 to 24 frames a second, and video export
 - One undo history for strokes and layer changes
@@ -169,6 +172,15 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 |---|---|
 | ![Art direction panel with guides and symmetry](docs/screenshots/art-direction.png) | ![Color picker](docs/screenshots/color.png) |
 
+### Make a book cover
+
+- **Book cover** in New artwork sets up a print-ready canvas: pick a trim size, then the front alone or the back, spine, and front together. Enter the page count and paper, and it works out the spine
+- Every side gets 0.125 in of bleed at 300 dpi, and guides show the trim, the safe areas, the spine folds, and where the barcode goes. The guides never print
+- Text layers for titles: seven fonts or your own .ttf or .otf, bold and italic, size, letter and line spacing, alignment, an outline, a soft shadow, and text that runs up or down the spine. New text starts on the front, or on the spine when it's turned
+- Before the PDF, a quick check flags text the cut could clip, anything over the barcode, art that stops at the trim, and colors that print duller
+- Export a print-ready PDF at the cover's exact size, and a trimmed front cover JPEG for online stores
+- The companion shrinks your front cover to store-thumbnail size and tells you when it reads flat there
+
 ### Explore options
 
 - Make lettered variations of an artwork and compare them side by side
@@ -187,7 +199,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Sketchbooks, each with its own reference library
 - Star your best references, sort them into boards, filter by either, and move them between sketchbooks
 - A small tag on each thumbnail shows which block a reference belongs to
-- Floating references you can move, zoom, flip, gray out, or pin over your work for tracing
+- Floating references you can move, zoom, rotate, flip, gray out, or pin over your work for tracing. Double-tap one to fit the whole image again
 - Pick colors from a reference, or turn it into a palette
 - Share images into Cappuccino from other apps
 
@@ -211,7 +223,7 @@ can't recognize your subject or judge your style. Those decisions stay yours.
 - Automatic saving that writes only the tiles you changed, with the previous version kept
 - Finished strokes are written to disk as you draw, and return after a crash
 - CMYK sliders and a print preview that show how colors may change on paper, as a close guide without a printer profile
-- Export to PNG, layered PSD, animation video, and time-lapse video in the length you choose. Time-lapses end with your companion
+- Export to PNG, layered PSD, print-ready PDF, animation video, and time-lapse video in the length you choose. Time-lapses end with your companion
 - Design sheets that put all variations on one page, and a PNG for each thumbnail frame
 - PSD import for 8-bit RGB files
 - Backup and restore of your whole library in one file

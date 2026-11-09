@@ -229,6 +229,7 @@ class PrintGuideOverlay(
         color = ACCENT
         pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
     }
+    private val barcodeFill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(150, 255, 255, 255) }
     private val caption = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = ACCENT
         textSize = context.dp(11).toFloat()
@@ -262,6 +263,13 @@ class PrintGuideOverlay(
             3 -> listOf(tr("Back cover"), tr("Spine"), tr("Front"))
             2 -> listOf(tr("Back cover"), tr("Front"))
             else -> emptyList()
+        }
+        setup.barcode()?.let { box ->
+            val path = quad(box[0], box[1], box[2], box[3])
+            canvas.drawPath(path, barcodeFill)
+            canvas.drawPath(path, safeLine)
+            val spot = toScreen((box[0] + box[2]) / 2f, (box[1] + box[3]) / 2f)
+            canvas.drawText(tr("Barcode"), spot[0], spot[1] + caption.textSize / 3f, caption)
         }
         areas.forEachIndexed { index, area ->
             canvas.drawPath(quad(area[0], area[1], area[2], area[3]), safeLine)

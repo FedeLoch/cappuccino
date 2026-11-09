@@ -1,6 +1,5 @@
 package art.cappuccino.paint
 
-import android.graphics.Color
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -37,7 +36,7 @@ fun inkColor(cmyk: FloatArray): Int {
         val withYellow = lerp(lerp(INKS[4][index], INKS[5][index], cyan), lerp(INKS[6][index], INKS[7][index], cyan), magenta)
         (lerp(noYellow, withYellow, yellow) * lerp(1f, BLACK_INK, black) * 255f).roundToInt().coerceIn(0, 255)
     }
-    return Color.rgb(channel(0), channel(1), channel(2))
+    return (0xFF shl 24) or (channel(0) shl 16) or (channel(1) shl 8) or channel(2)
 }
 
 fun printedColor(color: Int) = inkColor(toCmyk(color))
@@ -46,9 +45,9 @@ fun printedColor(color: Int) = inkColor(toCmyk(color))
 fun printsDuller(color: Int): Boolean {
     val printed = printedColor(color)
     val difference = maxOf(
-        abs(Color.red(color) - Color.red(printed)),
-        abs(Color.green(color) - Color.green(printed)),
-        abs(Color.blue(color) - Color.blue(printed)),
+        abs((color shr 16 and 255) - (printed shr 16 and 255)),
+        abs((color shr 8 and 255) - (printed shr 8 and 255)),
+        abs((color and 255) - (printed and 255)),
     ) / 255f
     return difference > DULLER_BY
 }

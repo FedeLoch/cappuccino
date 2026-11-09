@@ -693,7 +693,22 @@ button:focus-visible, .slider:focus-visible { outline: 2px solid var(--accent); 
 
 /* --- Layers panel ------------------------------------------------------------------------------ */
 
-.layer-list { gap: 4px; }
+.layer-list { gap: 4px; overflow-y: auto; min-height: 120px; flex: 1 1 auto; scrollbar-width: none; }
+.layer-list::-webkit-scrollbar { display: none; }
+#panel.layers { display: flex; flex-direction: column; overflow: hidden; }
+#panel.layers #panel-body, #panel.layers #panel-body > .column { display: flex; flex-direction: column; min-height: 0; flex: 1 1 auto; }
+.layer-divider { height: 1px; background: var(--surface-raised); flex: none; }
+.layer-rename {
+  flex: 1;
+  min-width: 0;
+  margin-left: 8px;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
 .layer-row, .group-row {
   display: flex;
   align-items: center;
@@ -724,6 +739,9 @@ button:focus-visible, .slider:focus-visible { outline: 2px solid var(--accent); 
 .icon-tile svg { width: 20px; height: 20px; }
 .icon-tile span { margin-top: 3px; white-space: nowrap; }
 .icon-tile.on { background: var(--accent); }
+.tile-grid.six { grid-template-columns: repeat(6, 1fr); }
+.tile-grid.six .icon-tile span { font-size: 9px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.tile-grid.three { grid-template-columns: repeat(3, 1fr); }
 .icon.mask-on { background: var(--accent); }
 .small.accent { color: var(--accent); }
 .blend-list {
@@ -742,6 +760,8 @@ button:focus-visible, .slider:focus-visible { outline: 2px solid var(--accent); 
 
 /* --- Transform and liquify --------------------------------------------------------------------- */
 
+.edge-range { width: 120px; }
+.pill-bar .icon.on { background: var(--accent); border-radius: 18px; }
 .tool-bar { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 5; }
 .pill-bar { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 24px; background: var(--surface); }
 .chip-dark { min-height: 40px; padding: 8px 14px; border-radius: 20px; background: var(--surface-raised); font-size: 14px; white-space: nowrap; }
@@ -925,3 +945,19 @@ button:focus-visible, .slider:focus-visible { outline: 2px solid var(--accent); 
 }
 .field.dark::placeholder { color: var(--muted); }
 .brush-preview { width: 100%; height: 64px; display: block; }
+
+/* A color being dragged onto the canvas to fill. */
+.color-drop {
+  position: fixed;
+  width: 28px;
+  height: 28px;
+  border-radius: 14px;
+  border: 2px solid var(--text);
+  pointer-events: none;
+  z-index: 8;
+}
+.pages-field { width: 110px; flex: none; }
+
+/* The text sheet's live preview, painted like the canvas. */
+.text-preview { width: 100%; height: 110px; border-radius: 12px; background: #FFFFFF; display: block; }
+.slider-value { font-size: 12px; color: var(--cocoa, #6B4226); }

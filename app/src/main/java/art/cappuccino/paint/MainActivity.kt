@@ -107,6 +107,8 @@ private const val HIDE_MS = 480L
 private const val HIDE_HOP_DP = 26
 private const val REFERENCE_PROFILE_SIZE = 240
 private const val DEFAULT_TEXT_SIZE = 0.05f
+private const val TEXT_PREVIEW_HEIGHT = 110
+private const val PREFLIGHT_WIDTH = 800
 private const val PICK_FONT = 48
 private const val TEXT_FIND_WIDTH = 512
 private const val BRUSH_TIP_SIZE = 128
@@ -133,6 +135,7 @@ class MainActivity : Activity(), ReferenceHost {
     private var unsaved = false
     private var penDown = false
     private var report: AnalysisReport? = null
+    private var coverNote: Tip? = null
     private var progress: String? = null
     private var earlier: ArtSnapshot? = null
     private var warmup: Warmup? = null
@@ -675,14 +678,16 @@ class MainActivity : Activity(), ReferenceHost {
             }
         }
         val note = earlier?.let { progressNote(it, now) }
+        val cover = document.print?.let { coverRead(it, pixels, ArtworkStore.THUMBNAIL_WIDTH, document.thumbnailHeight) }
         val artProfile = profileImage(pixels, ArtworkStore.THUMBNAIL_WIDTH, document.thumbnailHeight)
         val profiles = referenceProfiles(files)
         val matched = if (profiles.size == files.size) compareWithReferences(artProfile, profiles, choice.aspects) else compareWithReferences(artProfile, profiles)
         runOnUiThread {
             if (isDestroyed) return@runOnUiThread
-            val changed = result.tips.map { it.text } != report?.tips?.map { it.text } ||
+            val changed = result.tips.map { it.text } != report?.tips?.map { it.text } || cover?.text != coverNote?.text ||
                 matched?.summary != referenceMatch?.summary
             report = result
+            coverNote = cover
             progress = note
             referenceMatch = matched
             matchedFiles = files
@@ -817,7 +822,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
-    private fun dropColorAt(color: Int, rawX: Float, rawY: Float) {
+    internal fun dropColorAt(color: Int, rawX: Float, rawY: Float) {
         val origin = IntArray(2).also(canvas::getLocationOnScreen)
         val x = rawX - origin[0]
         val y = rawY - origin[1]
@@ -1361,6 +1366,7 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun allTips(): List<Tip> = listOfNotNull(
         progress?.let { Tip("Progress", it) },
+        coverNote,
         referenceMatch?.let {
             Tip(
                 "Your references",
@@ -1995,7 +2001,7 @@ class MainActivity : Activity(), ReferenceHost {
         detail?.let { gapped(label(it, 12f, MUTED_TEXT)) }
     }
 
-    private fun startSelection(tool: SelectionTool, mode: Int = 0) {
+    internal fun startSelection(tool: SelectionTool, mode: Int = 0) {
         lastSelectionTool = tool
         selectionMode = mode
         canvas.selectionTool = tool
@@ -2018,6 +2024,8 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     /** Keeps what you can do with a selection at hand, under the canvas, while there is one. */
+    internal val selectionBarShown get() = selectionBar?.isShowing == true
+
     private fun showSelectionBar() {
         selectionBar?.dismiss()
         selectionBar = null
@@ -3034,6 +3042,10 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun refreshLayers() = rerender("layers", ::layersPanel)
 
+    internal fun openLayers() = togglePanel("layers", ::layersPanel)
+
+    internal val renameField get() = renameInput
+
     internal fun setClip(layer: LayerInfo, clip: Boolean) {
         editLayers(structural = false) { layer.clip = clip }
     }
@@ -3931,7 +3943,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
-    private fun startRename(layer: LayerInfo) {
+    internal fun startRename(layer: LayerInfo) {
         if (pickingLayers) return
         finishRename()
         renamingLayer = layer.id
@@ -3944,7 +3956,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     /** Keeps the typed name. Called on Done, on tapping elsewhere, and when the panel closes. */
-    private fun finishRename() {
+    internal fun finishRename() {
         val input = renameInput
         val id = renamingLayer
         renameInput = null
@@ -4218,25 +4230,23 @@ class MainActivity : Activity(), ReferenceHost {
     private fun showTextSheet(draft: TextDraft) {
         val dialog = android.app.Dialog(this)
         val light = Color.luminance(draft.color) < 0.5f
-        val preview = android.widget.TextView(this).apply {
-            setTextColor(draft.color)
-            textSize = 26f
-            setPadding(dp(14), dp(12), dp(14), dp(12))
+        val previewWidth = min(dp(480), resources.displayMetrics.widthPixels - dp(72))
+        val previewHeight = dp(TEXT_PREVIEW_HEIGHT)
+        // Painted by the same code as the canvas, so outline, shadow, and turn show as they will land.
+        val preview = android.widget.ImageView(this).apply {
             background = rounded(if (light) FOAM else ESPRESSO, 12)
-            minHeight = dp(84)
-            maxLines = 4
-            ellipsize = android.text.TextUtils.TruncateAt.END
+            clipToOutline = true
         }
+        var shown: Bitmap? = null
         fun refreshPreview() {
-            preview.text = draft.text.ifBlank { tr("Your title") }
-            preview.typeface = typefaceFor(this, draft.style)
-            preview.letterSpacing = draft.style.tracking
-            preview.setLineSpacing(0f, draft.style.leading)
-            preview.gravity = Gravity.CENTER_VERTICAL or when (draft.style.align) {
-                0 -> Gravity.START
-                2 -> Gravity.END
-                else -> Gravity.CENTER_HORIZONTAL
-            }
+            val page = Bitmap.createBitmap(previewWidth, previewHeight, Bitmap.Config.ARGB_8888)
+            val text = draft.text.ifBlank { tr("Your title") }
+            val lines = text.count { it == '\n' } + 1
+            val size = previewHeight * 0.5f / max(1f, lines * draft.style.leading)
+            drawLettering(this, android.graphics.Canvas(page), text, draft.style, size, draft.color, previewWidth / 2f, previewHeight / 2f)
+            preview.setImageBitmap(page)
+            shown?.recycle()
+            shown = page
         }
         val input = EditText(this).apply {
             hint = tr("Your text")
@@ -4308,6 +4318,43 @@ class MainActivity : Activity(), ReferenceHost {
                     )
                 },
             )
+            val turns = listOf(0, 90, -90)
+            options.gapped(label(tr("Direction"), 12f, MUTED_TEXT))
+            options.addView(
+                segmented(listOf(tr("Across"), tr("Down the spine"), tr("Up the spine")), turns.indexOf(draft.style.turn).coerceAtLeast(0)) {
+                    draft.style = draft.style.copy(turn = turns[it])
+                    refreshPreview()
+                    showOptions()
+                },
+            )
+            options.gapped(
+                valueSlider(tr("Outline"), 0, 10, (draft.style.outline * 100).roundToInt(), { if (it == 0) tr("Off") else "$it" }) {
+                    draft.style = draft.style.copy(outline = it / 100f)
+                    refreshPreview()
+                },
+            )
+            options.gapped(
+                LinearLayout(this).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    listOf(Color.BLACK to tr("Dark outline"), Color.WHITE to tr("Light outline")).forEach { (tone, name) ->
+                        addView(
+                            smallChip(name, draft.style.outline > 0f && draft.style.outlineColor == tone) {
+                                draft.style = draft.style.copy(outlineColor = tone, outline = draft.style.outline.takeIf { it > 0f } ?: 0.03f)
+                                refreshPreview()
+                                showOptions()
+                            },
+                            LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(6) },
+                        )
+                    }
+                    addView(
+                        smallChip(tr("Shadow"), draft.style.shadow) {
+                            draft.style = draft.style.copy(shadow = !draft.style.shadow)
+                            refreshPreview()
+                            showOptions()
+                        },
+                    )
+                },
+            )
             options.gapped(
                 valueSlider(tr("Size"), 10, 300, (draft.size * 1000).roundToInt(), { "%.1f%%".format(it / 10f) }) {
                     draft.size = it / 1000f
@@ -4351,8 +4398,10 @@ class MainActivity : Activity(), ReferenceHost {
             )
             gapped(input)
             gapped(preview)
+            (preview.layoutParams as LinearLayout.LayoutParams).height = previewHeight
             gapped(options)
         }
+        dialog.setOnDismissListener { preview.setImageDrawable(null) }
         dialog.setContentView(ScrollView(this).apply { addView(body) })
         dialog.window?.apply {
             setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
@@ -4506,7 +4555,15 @@ class MainActivity : Activity(), ReferenceHost {
         }
         setEditingMask(false)
         val color = canvas.brushColor
-        val pixels = drawTextPage(text, style, document.height * heightShare, color, document.width / 2f, document.height / 2f)
+        // On a book cover, new text starts where it belongs: the spine for turned text, otherwise the front.
+        val print = document.print
+        val folds = print?.folds()
+        val front = when {
+            print == null -> intArrayOf(0, 0, document.width, document.height)
+            style.turn != 0 && folds != null -> print.front().let { intArrayOf(folds[0].toInt(), it[1], folds[1].toInt(), it[3]) }
+            else -> print.front()
+        }
+        val pixels = drawTextPage(text, style, document.height * heightShare, color, (front[0] + front[2]) / 2f, (front[1] + front[3]) / 2f)
         val id = document.nextLayerId++
         engineLayers.add(id)
         canvas.act { engine ->
@@ -4997,8 +5054,94 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
-    /** One page at the cover's exact print size, bleed included, or the canvas at 300 dpi. */
+    /** Checks a book cover for print problems first, and asks before exporting one that has any. */
     private fun exportPrintPdf() {
+        val print = document.print ?: return writePrintPdf()
+        val width = PREFLIGHT_WIDTH
+        val height = max(1, width * document.height / document.width)
+        val texts = document.layers.filter { it.visible && it.text != null }.map { it.id to it.name }
+        val findWidth = TEXT_FIND_WIDTH
+        val findHeight = max(1, findWidth * document.height / document.width)
+        val scale = document.width / findWidth.toFloat()
+        say(tr("Checking your cover for print"))
+        canvas.snapshot { engine ->
+            val composite = ArtworkStore.pixelBuffer(width, height)
+            NativeEngine.readComposite(engine, width, height, composite)
+            val boxes = texts.mapNotNull { (id, name) ->
+                val small = ArtworkStore.pixelBuffer(findWidth, findHeight)
+                NativeEngine.readLayerThumbnail(engine, id, findWidth, findHeight, small)
+                inkBounds(small, findWidth, findHeight)?.let { box ->
+                    PlacedBox(name, box[0] * scale, box[1] * scale, box[2] * scale, box[3] * scale)
+                }
+            }
+            saver.execute {
+                composite.rewind()
+                val raw = composite.order(ByteOrder.LITTLE_ENDIAN).asIntBuffer()
+                val pixels = IntArray(raw.remaining()).also(raw::get)
+                for (index in pixels.indices) {
+                    val value = pixels[index]
+                    pixels[index] = (value and 0xFF000000.toInt()) or
+                        ((value and 0xFF) shl 16) or (value and 0xFF00) or ((value shr 16) and 0xFF)
+                }
+                val issues = preflight(print, pixels, width, height, boxes)
+                runOnUiThread {
+                    if (isDestroyed) return@runOnUiThread
+                    if (issues.isEmpty()) writePrintPdf() else showPreflight(issues)
+                }
+            }
+        }
+    }
+
+    /** The edges of what's drawn in a small copy of a layer: left, top, right, bottom, or null if it's empty. */
+    private fun inkBounds(pixels: java.nio.ByteBuffer, width: Int, height: Int): FloatArray? {
+        pixels.rewind()
+        var left = width
+        var top = height
+        var right = -1
+        var bottom = -1
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                if (pixels.get((y * width + x) * 4 + 3).toInt() and 0xFF <= 8) continue
+                left = min(left, x)
+                right = max(right, x + 1)
+                top = min(top, y)
+                bottom = max(bottom, y + 1)
+            }
+        }
+        return if (right < 0) null else floatArrayOf(left.toFloat(), top.toFloat(), right.toFloat(), bottom.toFloat())
+    }
+
+    private fun showPreflight(issues: List<String>) {
+        val dialog = android.app.Dialog(this)
+        val body = column().apply {
+            background = rounded(SURFACE, 20)
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+            addView(label(tr("Before you print"), 18f))
+            issues.forEach { gapped(label("• $it", 14f)) }
+            gapped(
+                LinearLayout(context).apply {
+                    gravity = Gravity.END
+                    addView(smallChip(tr("Fix first")) { dialog.dismiss() })
+                    addView(
+                        smallChip(tr("Export anyway"), true) {
+                            dialog.dismiss()
+                            writePrintPdf()
+                        },
+                        LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) },
+                    )
+                },
+            )
+        }
+        dialog.setContentView(body)
+        dialog.window?.apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            setLayout(min(dp(480), resources.displayMetrics.widthPixels - dp(32)), ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        dialog.show()
+    }
+
+    /** One page at the cover's exact print size, bleed included, or the canvas at 300 dpi. */
+    private fun writePrintPdf() {
         val name = document.name
         val print = document.print
         val widthInches = print?.let { it.trimmedWidth + it.bleed * 2 } ?: (document.width / PRINT_DPI.toFloat())
