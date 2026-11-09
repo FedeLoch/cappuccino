@@ -73,6 +73,7 @@ private const val PREFERENCES = "studio"
 private const val PANEL_WIDTH = 340
 private const val DROP_SIZE = 28
 private const val DROP_LIFT = 40
+private const val LOCKED_ALPHA = 0.45f
 private const val BUBBLE_WIDTH = 308
 private const val HIDE_BUTTON_DP = 28
 private const val BUBBLE_TAIL_DP = 10
@@ -190,6 +191,8 @@ class MainActivity : Activity(), ReferenceHost {
     private val pickedReferences = LinkedHashSet<String>()
     private var pickingLayers = false
     private var renamingLayer = 0
+    private lateinit var flatWhite: FlatWhiteStore
+    private var pendingFlatWhite = false
     private var lastTextStyle = TextStyle()
     private var textDraft: TextDraft? = null
     private var renameInput: EditText? = null
@@ -298,6 +301,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.pressureGamma = preferences.getFloat("pressureGamma", 0.75f)
         canvas.snapShapes = preferences.getBoolean("snapShapes", true)
         customBrushes.addAll(store.customBrushes())
+        flatWhite = FlatWhiteStore(this, ::flatWhiteChanged).also { it.connect() }
         setContentView(canvas)
         companion = CompanionView(this).apply {
             look = CompanionLook.valueOf(
@@ -1594,15 +1598,28 @@ class MainActivity : Activity(), ReferenceHost {
                         addView(
                             FrameLayout(context).apply {
                                 if (companion.look == look) background = rounded(SURFACE_RAISED, 12)
-                                contentDescription = tr(look.label)
-                                setOnClickListener { chooseCompanion(look) }
+                                val locked = isLocked(look)
+                                contentDescription = if (locked) tr("%1, locked", tr(look.label)) else tr(look.label)
+                                setOnClickListener { if (locked) offerFlatWhite() else chooseCompanion(look) }
                                 val preview = CompanionView(context).also {
                                     it.look = look
                                     it.still = true
                                     it.bodyColor = canvas.brushColor
                                     it.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                                    if (locked) it.alpha = LOCKED_ALPHA
                                 }
                                 addView(preview, FrameLayout.LayoutParams(dp(40), dp(40), Gravity.CENTER))
+                                if (locked) {
+                                    addView(
+                                        ImageView(context).apply {
+                                            setImageResource(R.drawable.ic_lock)
+                                            background = rounded(SURFACE, 9)
+                                            setPadding(dp(2), dp(2), dp(2), dp(2))
+                                            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                                        },
+                                        FrameLayout.LayoutParams(dp(18), dp(18), Gravity.BOTTOM or Gravity.END),
+                                    )
+                                }
                             },
                             LinearLayout.LayoutParams(0, dp(48), 1f),
                         )
@@ -1651,6 +1668,68 @@ class MainActivity : Activity(), ReferenceHost {
             }
             null -> null
         }
+    }
+
+    /** The Flat white waits for its purchase, unless it's already your companion from an earlier version. */
+    private fun isLocked(look: CompanionLook) =
+        look == CompanionLook.FLAT_WHITE && !flatWhite.owned && companion.look != CompanionLook.FLAT_WHITE
+
+    /** Shows the Flat white steaming, and offers it through Google Play. */
+    private fun offerFlatWhite() {
+        val dialog = android.app.Dialog(this)
+        val body = column().apply {
+            background = rounded(SURFACE, 20)
+            setPadding(dp(22), dp(20), dp(22), dp(20))
+            gravity = Gravity.CENTER_HORIZONTAL
+            addView(
+                CompanionView(context).apply {
+                    look = CompanionLook.FLAT_WHITE
+                    bodyColor = canvas.brushColor
+                    importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                },
+                LinearLayout.LayoutParams(dp(96), dp(96)),
+            )
+            gapped(label(tr("Flat white"), 18f).apply { gravity = Gravity.CENTER })
+            gapped(
+                label(tr("A steaming flat white that keeps you company, even while it hides. Buying it supports Cappuccino, which stays free and ad-free for everyone."), 14f, MUTED_TEXT)
+                    .apply { gravity = Gravity.CENTER },
+            )
+            val price = flatWhite.price
+            gapped(
+                LinearLayout(context).apply {
+                    gravity = Gravity.CENTER
+                    addView(smallChip(tr("Not now")) { dialog.dismiss() })
+                    if (price != null) {
+                        addView(
+                            smallChip(tr("Support Cappuccino · %1", price), true) {
+                                dialog.dismiss()
+                                pendingFlatWhite = true
+                                if (!flatWhite.buy(this@MainActivity)) say(tr("Google Play couldn't open the purchase. Try again in a moment."))
+                            },
+                            LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
+                        )
+                    }
+                },
+            )
+            if (price == null) gapped(label(tr("Buying it needs Google Play. Install Cappuccino from the Play Store, then try again."), 12f, MUTED_TEXT).apply { gravity = Gravity.CENTER })
+        }
+        dialog.setContentView(body)
+        dialog.window?.apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            setLayout(min(dp(400), resources.displayMetrics.widthPixels - dp(32)), ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        dialog.show()
+    }
+
+    /** Once Play confirms the purchase, the Flat white joins you right away. */
+    private fun flatWhiteChanged() = runOnUiThread {
+        if (isDestroyed) return@runOnUiThread
+        if (flatWhite.owned && pendingFlatWhite) {
+            pendingFlatWhite = false
+            chooseCompanion(CompanionLook.FLAT_WHITE)
+            say(tr("Thank you for supporting Cappuccino!"), long = true)
+        }
+        rerender("companion", ::companionPanel)
     }
 
     private fun chooseCompanion(look: CompanionLook) {
@@ -5664,6 +5743,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     override fun onDestroy() {
+        flatWhite.close()
         handler.removeCallbacksAndMessages(null)
         hideMotion?.removeAllListeners()
         hideMotion?.cancel()

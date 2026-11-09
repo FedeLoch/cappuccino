@@ -75,16 +75,34 @@ Export PNG, layered PSD, time-lapse videos, and animations.
 ## Data safety answers
 
 - Does the app collect or share user data? **No.**
-- The app has no internet permission, no analytics, and no ads.
+- The app has no internet permission, no analytics, and no ads. The billing library asks for
+  network access, and the app's manifest removes it again, since the purchase happens inside the
+  Play Store app.
 - Files you export go to Pictures, Movies, or Download, which you choose to do.
+- The Flat white purchase goes through Google Play's billing system. The app sends nothing to
+  any server of its own; it only asks Play whether the Flat white is owned. Check Google's
+  current Data safety guidance on Play billing before you submit, in case it asks you to declare
+  purchase history.
 
 ## Content rating
 
-Answer the questionnaire as a drawing tool with no user-to-user communication, no purchases,
-and no violent, sexual, or gambling content. It should rate as Everyone / PEGI 3.
+Answer the questionnaire as a drawing tool with no user-to-user communication, and no violent,
+sexual, or gambling content. Answer **yes** to digital purchases. It should rate as Everyone /
+PEGI 3.
 
-## Later: the Flat white support purchase
+## The Flat white support purchase
 
-The Flat white companion is free for now. Selling it for €2 needs a one-time in-app product in
-Play Console and the Google Play Billing library in the app. That adds the billing permission
-and a network connection to Play, so the data safety answers above would change slightly.
+Everything in Cappuccino is free. The Flat white companion is an optional one-time purchase of
+€2 that supports the app.
+
+1. Set up a payments profile: Play Console → Settings → Payments profile.
+2. Upload a build that includes billing, version code 3 or later, to a testing track. Play only
+   lets you create products after that.
+3. Monetize with Play → Products → One-time products → Create: ID `flat_white` (it must match
+   `FLAT_WHITE_PRODUCT` in `FlatWhiteStore.kt`), name Flat white, price €2. Activate it.
+4. Add testers under Settings → License testing, so their purchases go through without a charge.
+
+In the app, the Flat white shows locked in the companion picker. Tapping it offers the purchase
+with Play's price for your country. Once bought it unlocks for good, and the app checks with
+Play each time the studio opens, so it comes back on a new device and locks again after a
+refund. Anyone who already had the Flat white as their companion keeps it.
