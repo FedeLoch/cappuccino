@@ -89,9 +89,12 @@ void combineSelection(std::vector<uint8_t>& selection, const std::vector<uint8_t
         if (mode != 2) selection = shape;
         return;
     }
+    // Soft shapes, like a layer's own edges, add and take away in proportion.
     for (size_t index = 0; index < shape.size(); ++index) {
         if (shape[index] == 0) continue;
-        selection[index] = mode == 1 ? shape[index] : 0;
+        selection[index] = mode == 1
+            ? std::max(selection[index], shape[index])
+            : static_cast<uint8_t>(selection[index] * (255 - shape[index]) / 255);
     }
 }
 

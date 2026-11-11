@@ -57,7 +57,7 @@ const STARTER_PALETTES = [
   ["Earth tones", ["#3A2E27", "#6B4F3A", "#A47148", "#C9A66B", "#EFE3C8"]],
   ["Skin range", ["#4A2C22", "#8D5A3B", "#C68863", "#E8B896", "#F9DCC4"]],
 ];
-const LEFT_PANELS = new Set(["actions", "references", "view", "tools", "sticker", "variants"]);
+const LEFT_PANELS = new Set(["actions", "references", "view", "tools", "sticker", "variants", "gestures", "history", "versions"]);
 
 const canvas = document.getElementById("canvas");
 const overlay = document.getElementById("overlay");
@@ -122,7 +122,8 @@ let lastBrush = DEFAULT_BRUSH;
 let lastEraser = DEFAULT_ERASER;
 let color = "#2C2C2A";
 let colorBeforePanel = color;
-const recentColors = [];
+const recentColors = loadPreference("recentColors", []);
+let pickFromLayer = loadPreference("pickFromLayer", false);
 const toolSettings = new Map();  // Brush id -> size, opacity, and stabilizer.
 let brushTab = "";
 let brushFeelOpen = false;
@@ -265,7 +266,7 @@ function composeNow() {
   if (!opened) return;
   const start = performance.now();
   engine._cap_compose();
-  if (noteMarks.length || printGuidesShown()) drawOverlay();
+  if (noteMarks.length || printGuidesShown() || shapePreview) drawOverlay();
   if (transformCorners) moveTransformHandles();
   composeIndex = record(composeTimes, composeIndex, performance.now() - start);
 }
@@ -505,14 +506,66 @@ function endStroke() {
 
 // --- Gradient and lasso fill -------------------------------------------------------------------
 
+// How the lasso and lasso fill draw their outline, as LassoShape in CanvasView.kt.
+const LASSO_SHAPES = [["freehand", "Freehand"], ["rectangle", "Rectangle"], ["ellipse", "Ellipse"], ["polygon", "Polygon"]];
+let lassoShape = localStorage.getItem("lassoShape") || "freehand";
+let polygon = [];  // A polygon's corners so far, in canvas pixels, kept between taps.
+let shapePreview = null;  // A shaped outline being drawn, in canvas pixels.
+const ELLIPSE_POINTS = 72;
+const CLOSE_POLYGON = 24;
+
+const isLassoKind = (kind) => kind.mode === "lasso" || kind.mode === "select";
+const shaped = (kind) => isLassoKind(kind) && lassoShape !== "freehand";
+
+function setLassoShape(shape) {
+  lassoShape = shape;
+  localStorage.setItem("lassoShape", shape);
+  polygon = [];
+  shapePreview = null;
+  drawOverlay();
+}
+
+// The corners of a rectangle, or points around an ellipse, fitted between two corners.
+function boxShape(fromX, fromY, toX, toY) {
+  if (lassoShape === "rectangle") return [fromX, fromY, toX, fromY, toX, toY, fromX, toY];
+  const [centerX, centerY] = [(fromX + toX) / 2, (fromY + toY) / 2];
+  const [radiusX, radiusY] = [Math.abs(toX - fromX) / 2, Math.abs(toY - fromY) / 2];
+  const points = [];
+  for (let index = 0; index < ELLIPSE_POINTS; index++) {
+    const angle = index * 2 * Math.PI / ELLIPSE_POINTS;
+    points.push(centerX + radiusX * Math.cos(angle), centerY + radiusY * Math.sin(angle));
+  }
+  return points;
+}
+
+function writePoints(points) {
+  const count = Math.min(MAX_POINTS, points.length / 2);
+  engine.HEAPF32.set(points.slice(0, count * 2), pointsOffset);
+  return count;
+}
+
 function beginToolGesture(kind, event) {
   const x = toCanvasX(event.clientX * dpr, event.clientY * dpr);
   const y = toCanvasY(event.clientX * dpr, event.clientY * dpr);
   toolGesture = { kind, startX: x, startY: y, count: 0 };
-  if (kind.mode === "lasso" || kind.mode === "select") addLassoPoint(event);
+  if (shaped(kind)) {
+    shapePreview = lassoShape === "polygon" ? [...polygon, x, y] : boxShape(x, y, x, y);
+    drawOverlay();
+  } else if (isLassoKind(kind)) {
+    addLassoPoint(event);
+  }
 }
 
 function moveToolGesture(event) {
+  if (shaped(toolGesture.kind)) {
+    const x = toCanvasX(event.clientX * dpr, event.clientY * dpr);
+    const y = toCanvasY(event.clientX * dpr, event.clientY * dpr);
+    toolGesture.endX = x;
+    toolGesture.endY = y;
+    shapePreview = lassoShape === "polygon" ? [...polygon, x, y] : boxShape(toolGesture.startX, toolGesture.startY, x, y);
+    drawOverlay();
+    return;
+  }
   if (toolGesture.kind.mode === "gradient") {
     const rgb = hexToRgb(color);
     engine._cap_set_gradient(1, toolGesture.startX, toolGesture.startY,
@@ -537,11 +590,14 @@ function addLassoPoint(event) {
 // Shows the lasso as you draw it, as LassoOverlay does: a white line under accent dashes.
 function drawLasso() {
   const c = overlayContext;
-  if (!toolGesture || toolGesture.count < 2) return;
   const heap = engine.HEAPF32;
+  // A shaped outline is drawn from its own points; a freehand one from the samples so far.
+  const points = shapePreview || (toolGesture ? heap.subarray(pointsOffset, pointsOffset + toolGesture.count * 2) : []);
+  if (points.length < 4) return;
+  const count = points.length / 2;
   c.beginPath();
-  for (let n = 0; n < toolGesture.count; n++) {
-    const [x, y] = canvasToScreen(heap[pointsOffset + n * 2], heap[pointsOffset + n * 2 + 1]);
+  for (let n = 0; n < count; n++) {
+    const [x, y] = canvasToScreen(points[n * 2], points[n * 2 + 1]);
     if (n === 0) c.moveTo(x, y); else c.lineTo(x, y);
   }
   c.lineWidth = 2 * dpr;
@@ -552,9 +608,8 @@ function drawLasso() {
   c.strokeStyle = "#D85A30";
   c.stroke();
   // A faint line back to the start, and a dot where it closes.
-  const [startX, startY] = canvasToScreen(heap[pointsOffset], heap[pointsOffset + 1]);
-  const last = toolGesture.count - 1;
-  const [endX, endY] = canvasToScreen(heap[pointsOffset + last * 2], heap[pointsOffset + last * 2 + 1]);
+  const [startX, startY] = canvasToScreen(points[0], points[1]);
+  const [endX, endY] = canvasToScreen(points[(count - 1) * 2], points[(count - 1) * 2 + 1]);
   c.beginPath();
   c.moveTo(endX, endY);
   c.lineTo(startX, startY);
@@ -575,6 +630,31 @@ function drawLasso() {
 function endToolGesture(cancelled) {
   const gesture = toolGesture;
   toolGesture = null;
+  if (shaped(gesture.kind)) {
+    if (lassoShape === "polygon") {
+      if (cancelled) return;
+      const x = gesture.endX ?? gesture.startX;
+      const y = gesture.endY ?? gesture.startY;
+      const [firstX, firstY] = polygon.length ? canvasToScreen(polygon[0], polygon[1]) : [0, 0];
+      const [tapX, tapY] = canvasToScreen(x, y);
+      // Tapping the first corner again closes the shape.
+      if (polygon.length >= 6 && Math.hypot(tapX - firstX, tapY - firstY) < CLOSE_POLYGON * dpr * uiScale()) {
+        gesture.count = writePoints(polygon);
+        polygon = [];
+        shapePreview = null;
+      } else {
+        polygon.push(x, y);
+        shapePreview = [...polygon];
+        drawOverlay();
+        return;
+      }
+    } else {
+      const points = boxShape(gesture.startX, gesture.startY, gesture.endX ?? gesture.startX, gesture.endY ?? gesture.startY);
+      const big = Math.abs((gesture.endX ?? gesture.startX) - gesture.startX) > 2 && Math.abs((gesture.endY ?? gesture.startY) - gesture.startY) > 2;
+      gesture.count = cancelled || !big ? 0 : writePoints(points);
+      shapePreview = null;
+    }
+  }
   if (gesture.kind.mode === "gradient") {
     if (cancelled) {
       engine._cap_set_gradient(0, 0, 0, 0, 0, 0, 0, 0);
@@ -646,6 +726,11 @@ canvas.addEventListener("pointerdown", (event) => {
     }
     touches.set(event.pointerId, { x: event.clientX * dpr, y: event.clientY * dpr });
     tapFingers += 1;
+    if (touches.size === 2) {
+      viewGestureStart = event.timeStamp;
+      const [a, b] = [...touches.values()];
+      viewGestureSpan = Math.hypot(b.x - a.x, b.y - a.y);
+    }
     clearTimeout(holdTimer);
     if (tapFingers === 2 || tapFingers === 3) holdTimer = setTimeout(holdRepeat, HOLD_REPEAT_MS);
     gesture = null;
@@ -801,7 +886,9 @@ function finishPointer(event, cancelled) {
     canvas.style.cursor = spaceHeld ? "grab" : "";
     return;
   }
+  const lastGesture = gesture;
   if (!touches.delete(event.pointerId)) return;
+  if (touches.size === 1 && !cancelled && lastGesture) endViewGesture(event, lastGesture);
   gesture = null;
   clearTimeout(holdTimer);
   // Taps with two, three, and four fingers undo, redo, and hide the interface, as on Android.
@@ -828,6 +915,32 @@ canvas.addEventListener("pointercancel", (event) => finishPointer(event, true));
 canvas.addEventListener("lostpointercapture", (event) => {
   if (event.pointerId === strokePointer) finishPointer(event, false);
 });
+
+let viewGestureStart = 0;
+let viewGestureSpan = 0;
+
+// A quick pinch inward fits the whole canvas again. A slower gesture that leaves the canvas nearly
+// straight settles it exactly straight, as endViewGesture() in CanvasView.kt.
+function endViewGesture(event, last) {
+  if (tapTravel < TAP_TRAVEL || last.count !== 2) return;
+  if (event.timeStamp - viewGestureStart < 350 && last.span < viewGestureSpan * 0.6) {
+    fitView();
+    return;
+  }
+  const quarter = Math.PI / 2;
+  const straight = Math.round(rotation / quarter) * quarter;
+  const off = straight - rotation;
+  if (off === 0 || Math.abs(off) >= 6 * Math.PI / 180) return;
+  const cos = Math.cos(off);
+  const sin = Math.sin(off);
+  const dx = panX - last.x;
+  const dy = panY - last.y;
+  panX = last.x + cos * dx - sin * dy;
+  panY = last.y + sin * dx + cos * dy;
+  rotation = straight;
+  writeView();
+  queueCompose();
+}
 
 // One finger pans; two pan and pinch around their midpoint.
 function moveGesture() {
@@ -1032,7 +1145,10 @@ for (const button of document.querySelectorAll("[data-action]")) {
 function selectTool(kind) {
   brush = kind;
   if (kind.eraser) lastEraser = kind;
-  else if (!isTool(kind)) lastBrush = kind;
+  else if (!isTool(kind)) {
+    lastBrush = kind;
+    rememberBrush(kind);
+  }
   sizeSlider.set(sizeProgress());
   opacitySlider.set(Math.round(settingsFor(kind).opacity * 1000));
   brushButton.classList.toggle("on", !kind.eraser && !isTool(kind));
@@ -1067,7 +1183,19 @@ function rememberColor() {
   if (index >= 0) recentColors.splice(index, 1);
   recentColors.unshift(color);
   if (recentColors.length > 8) recentColors.pop();
+  // Kept between visits, so your colors are still there tomorrow.
+  savePreference("recentColors", recentColors);
   showRecentColors();
+}
+
+// The last few brushes you drew with, newest first.
+function recentBrushes() {
+  const all = allBrushes();
+  return loadPreference("recentBrushes", []).map((id) => all.find((kind) => kind.id === id)).filter(Boolean);
+}
+
+function rememberBrush(kind) {
+  savePreference("recentBrushes", [kind.id, ...recentBrushes().map((it) => it.id).filter((id) => id !== kind.id)].slice(0, 4));
 }
 
 const recentStrip = document.getElementById("recent");
@@ -1205,7 +1333,21 @@ function verticalSlider(element, change) {
 const sizeSlider = verticalSlider(document.getElementById("size-slider"), (value) => {
   const share = value / 1000;
   settingsFor(brush).diameter = MIN_BRUSH + (MAX_BRUSH - MIN_BRUSH) * share * share;
+  showSizeRing();
 });
+
+// While the size slider moves, a ring in the middle of the screen shows the brush's real size.
+let sizeRingTimer = 0;
+let sizeRingShown = false;
+function showSizeRing() {
+  sizeRingShown = true;
+  drawOverlay();
+  clearTimeout(sizeRingTimer);
+  sizeRingTimer = setTimeout(() => {
+    sizeRingShown = false;
+    drawOverlay();
+  }, 700);
+}
 const opacitySlider = verticalSlider(document.getElementById("opacity-slider"), (value) => {
   settingsFor(brush).opacity = Math.max(value, 10) / 1000;
 });
@@ -1216,10 +1358,18 @@ function placeRecentStrip() {
   recentStrip.style.top = `${top}px`;
 }
 
+// Hides everything but the canvas, with a small tab to bring the tools back.
+const focusTab = h("button", {
+  className: "focus-tab icon", ariaLabel: "Show the tools", title: "Show the tools", innerHTML: ICONS.view, hidden: true,
+  onClick: () => toggleInterface(),
+});
+studioView.append(focusTab);
+
 function toggleInterface() {
   interfaceHidden = !interfaceHidden;
   closePanel();
   for (const element of chrome) element.hidden = interfaceHidden;
+  focusTab.hidden = !interfaceHidden;
   showCompanionState();
   showWarmupBar();
   refreshAnimationBar();
@@ -1349,10 +1499,15 @@ function brushPanel() {
         className: "icon", ariaLabel: "New brush", innerHTML: ICONS.add,
         onClick: () => openBrushEditor(null),
       })),
-    segmented(families.map(([name]) => name), families.indexOf(family), (index) => {
+    recentBrushes().length > 1 && h("div", { className: "chips scroll" }, recentBrushes().map((kind) =>
+      smallChip(kind.label, kind === brush, () => {
+        selectTool(kind);
+        rerender();
+      }))),
+    gap(segmented(families.map(([name]) => name), families.indexOf(family), (index) => {
       brushTab = families[index][0];
       rerender();
-    }),
+    })),
     gap(toolGrid(family[1], previewColor, true)),
     gap(h("button", {
       className: "feel",
@@ -1522,6 +1677,11 @@ function toolsPanel() {
       paintTools.map(([kind, icon, title]) => tile(icon, title, !selecting && brush === kind, pick(kind))),
       tile("select", "Lasso", selectionTool === "lasso", () => startSelection("lasso")),
       tile("wand", "Magic wand", selectionTool === "wand", () => startSelection("wand")))),
+    gap(h("div", { className: "small" }, "Lasso shape")),
+    gap(segmented(LASSO_SHAPES.map(([, name]) => name), LASSO_SHAPES.findIndex(([key]) => key === lassoShape), (index) => {
+      setLassoShape(LASSO_SHAPES[index][0]);
+      rerender();
+    })),
     detail && gap(h("div", { className: "small" }, detail)));
 }
 
@@ -1536,13 +1696,16 @@ let selectionFeather = 0;
 let lastSelectionTool = "lasso";
 
 function startSelection(tool, mode = 0) {
+  polygon = [];
+  shapePreview = null;
   lastSelectionTool = tool;
   selectionMode = mode;
   selectionTool = tool;
   markTools();
   closePanel();
   showSelectionBar();
-  say(tool === "wand" ? "Tap a color area with your pen" : "Draw around an area with your pen");
+  say(tool === "wand" ? "Tap a color area with your pen" : lassoShape === "polygon" ? "Tap each corner with your pen, then tap the first one again to close"
+    : lassoShape === "freehand" ? "Draw around an area with your pen" : "Drag across an area with your pen");
 }
 
 // Arms the last selection tool to grow or trim the selection, or puts it away on a second tap.
@@ -1607,6 +1770,16 @@ function finishWand(x, y) {
   selectionTool = "none";
   engine._cap_select_color_at(x, y, 40, selectionMode);
   markSelection(engine._cap_has_selection() === 1);
+  queueCompose();
+}
+
+// Selects everything drawn on the layer, so it can be moved, copied, or painted inside.
+function selectWholeLayer(layer) {
+  setEditingMask(false);
+  closePanel();
+  selectionTool = "none";
+  if (engine._cap_select_layer(layer.id, 0) === 1) markSelection(true);
+  else say("This layer is empty");
   queueCompose();
 }
 
@@ -2308,6 +2481,13 @@ function colorPanel() {
       body.append(gap(h("div", { className: "caption" }, name)), swatchRow(colors));
     }
   }
+  body.append(
+    gap(h("div", { className: "small" }, "Eyedropper picks from")),
+    segmented(["Everything", "This layer"], pickFromLayer ? 1 : 0, (index) => {
+      pickFromLayer = index === 1;
+      savePreference("pickFromLayer", pickFromLayer);
+      rerender();
+    }));
   return body;
 }
 
@@ -2886,6 +3066,11 @@ function actionsPanel() {
       closePanel();
       setAnimation(!doc.manifest.animation);
     })),
+    gap(row("transform", "Canvas size", "Crop, extend, or scale, as a new variation", () => showCanvasSize())),
+    gap(row("actions", "History", "Step back through your strokes and changes", () => { closePanel(); showPanel("history", historyPanel); })),
+    gap(row("duplicate", "Earlier versions", "How this artwork looked in past sittings", () => { closePanel(); showPanel("versions", versionsPanel); })),
+    gap(row("view", "Focus mode", "Only the canvas, with a tab to bring the tools back", () => { if (!interfaceHidden) toggleInterface(); })),
+    gap(row("companion", "Gestures and shortcuts", "Every tap, hold, and key the app knows", () => { closePanel(); showPanel("gestures", gesturesPanel); })),
     gap(h("div", { className: "caption" }, "Export")),
     gap(row("layers", "Design sheet", "All variations on one page", () => { closePanel(); exportSheet(); })),
     gap(row("export", "Frames as PNGs", "One image per thumbnail frame", () => { closePanel(); exportFrames(); })),
@@ -3352,7 +3537,9 @@ function pickAt(clientX, clientY) {
   const x = Math.floor(toCanvasX(clientX * dpr, clientY * dpr));
   const y = Math.floor(toCanvasY(clientX * dpr, clientY * dpr));
   if (x < 0 || y < 0 || x >= canvasWidth || y >= canvasHeight) return;
-  const value = engine._cap_pick_color(x, y) >>> 0;
+  // A clear spot on the layer keeps the color you had.
+  const value = pickFromLayer ? engine._cap_pick_layer_color(x, y) >>> 0 : engine._cap_pick_color(x, y) >>> 0;
+  if (pickFromLayer && value === 0) return;
   pickedColor = `#${(value & 0xFFFFFF).toString(16).padStart(6, "0").toUpperCase()}`;
   showPickRing(pickedColor, clientX, clientY);
 }
@@ -4119,7 +4306,13 @@ const LAYER_ROW = 56;
 const LAYER_GAP = 4;
 const THUMBNAIL_WIDTH_DP = 72;
 const THUMBNAIL_HEIGHT_DP = 48;
-const BLEND_MODES = ["Normal", "Multiply", "Screen", "Additive", "Darken", "Lighten", "Soft light", "Subtract", "Exclusion"];
+// In the engine's order. The last nine read the colors underneath.
+const BLEND_MODES = [
+  "Normal", "Multiply", "Screen", "Additive", "Darken", "Lighten", "Soft light", "Subtract", "Exclusion",
+  "Overlay", "Hard light", "Color dodge", "Color burn", "Difference", "Hue", "Saturation", "Color", "Luminosity",
+];
+// How the blend list groups them: darkening, lightening, contrast, difference, and color parts.
+const BLEND_GROUPS = [[0], [1, 4, 12, 7], [2, 5, 11, 3], [9, 6, 10], [13, 8], [14, 15, 16, 17]];
 
 // One timeline for strokes and layer changes, so undo always steps back in drawing order.
 class EditHistory {
@@ -4155,6 +4348,10 @@ class EditHistory {
     this.undoStack.length = 0;
     this.redoStack.length = 0;
   }
+
+  get undoCount() { return this.undoStack.length; }
+
+  get redoCount() { return this.redoStack.length; }
 }
 
 const history = new EditHistory();
@@ -4338,6 +4535,36 @@ function mergeDown(layer) {
     if (below.maskEnabled) below.mask = 0;
     doc.manifest.activeLayer = below.id;
   }, { pixels: true });
+  refreshLayers();
+}
+
+// Merges every visible layer into the lowest one, in drawing order. Hidden layers stay as they are.
+function mergeVisible() {
+  const visible = layers().filter((layer) => layer.visible);
+  if (visible.length < 2) return say("Show at least two layers to merge them");
+  // Hidden layers between them don't change the picture, so the visible ones gather together first.
+  const base = layers().indexOf(visible[0]);
+  visible.slice(1).forEach((layer, offset) => moveLayerTo(layer.id, base + 1 + offset));
+  visible.slice(1).forEach((layer) => {
+    const current = layerById(layer.id);
+    if (current) mergeDown(current);
+  });
+}
+
+// Shows only one layer, or brings the others back when it's already shown alone.
+let soloRestore = null;
+let soloLayer = 0;
+function toggleSolo(layer) {
+  if (soloRestore && soloLayer === layer.id) {
+    const restore = soloRestore;
+    soloRestore = null;
+    editLayers(() => layers().forEach((it) => { it.visible = restore.has(it.id); }), { structural: false });
+  } else {
+    soloRestore = new Set(layers().filter((it) => it.visible).map((it) => it.id));
+    soloLayer = layer.id;
+    editLayers(() => layers().forEach((it) => { it.visible = it.id === layer.id; }), { structural: false });
+    say("Showing only this layer. Tap its picture again to bring the others back.");
+  }
   refreshLayers();
 }
 
@@ -4531,6 +4758,16 @@ function writeLayerPixels(id, pixels) {
 }
 
 // A layer's preview on white, read straight from the engine.
+function soloThumbnail(layer) {
+  const thumbnail = layerThumbnail(layer.id);
+  thumbnail.addEventListener("click", (event) => {
+    event.stopPropagation();
+    finishRename(true);
+    toggleSolo(layer);
+  });
+  return thumbnail;
+}
+
 function layerThumbnail(id) {
   const width = THUMBNAIL_WIDTH_DP * 2;
   const height = THUMBNAIL_HEIGHT_DP * 2;
@@ -4599,6 +4836,7 @@ function layersPanel() {
     svg(icon), h("span", {}, title));
   body.append(gap(h("div", { className: "tile-grid six" },
     tile("transform", "Transform", () => startTransform()),
+    tile("select", "Select", () => selectWholeLayer(active)),
     tile("liquify", "Liquify", () => startLiquify()),
     tile("filter", "Filters", () => openFilters()),
     tile("adjust", "Adjust", () => {
@@ -4635,6 +4873,7 @@ function layersPanel() {
       }))));
   }
   if (active.text) body.append(gap(h("div", { className: "chips" }, smallChip("Edit text", false, () => askForText(active)))));
+  if (layers().filter((layer) => layer.visible).length >= 2) body.append(gap(h("div", { className: "chips" }, smallChip("Merge visible", false, () => mergeVisible()))));
   if (editingMask) body.append(gap(h("div", { className: "small accent" }, "Painting on the mask. Tap Mask to return to the layer.")));
   return body;
 }
@@ -4735,7 +4974,7 @@ function layerRow(layer) {
       event.preventDefault();
       startRename(layer);
     },
-  }, handle, layerThumbnail(layer.id),
+  }, handle, soloThumbnail(layer),
   renamingLayer === layer.id ? renameField(layer) : h("span", {
     className: "layer-name", translate: false,
     // Tapping the name of the layer you're on renames it right there.
@@ -4789,14 +5028,35 @@ function layerRow(layer) {
 function chooseBlend(anchor, layer) {
   document.querySelector(".blend-list")?.remove();
   const box = anchor.getBoundingClientRect();
-  const list = h("div", { className: "blend-list" }, BLEND_MODES.map((name, index) => h("button", {
-    className: index === (layer.blend || 0) ? "on" : "",
-    onClick: () => {
-      list.remove();
-      editLayers(() => { layerById(layer.id).blend = index; }, { structural: false });
-      refreshLayers();
-    },
-  }, name)));
+  const list = h("div", { className: "blend-list" }, BLEND_GROUPS.map((indices, group) => [
+    group > 0 ? h("div", { className: "blend-divider" }) : null,
+    indices.map((index) => h("button", {
+      className: index === (layer.blend || 0) ? "on" : "",
+      onClick: () => {
+        list.remove();
+        editLayers(() => { layerById(layer.id).blend = index; }, { structural: false });
+        refreshLayers();
+      },
+    }, BLEND_MODES[index])),
+  ]).flat(2));
+  // The chip sits low in the layers panel, so the list opens above it when that has more room.
+  const below = toUi(window.innerHeight - box.bottom);
+  const above = toUi(box.top);
+  if (above > below) {
+    list.style.bottom = `${below + toUi(box.height) + 4}px`;
+    list.style.maxHeight = `${above - 16}px`;
+    list.style.right = `${toUi(window.innerWidth - box.right)}px`;
+    studioView.append(list);
+    const awayAbove = (event) => {
+      if (!list.contains(event.target)) {
+        list.remove();
+        document.removeEventListener("pointerdown", awayAbove, true);
+      }
+    };
+    document.addEventListener("pointerdown", awayAbove, true);
+    return;
+  }
+  list.style.maxHeight = `${below - 16}px`;
   list.style.top = `${toUi(box.bottom) + 4}px`;
   list.style.right = `${toUi(window.innerWidth - box.right)}px`;
   studioView.append(list);
@@ -5447,7 +5707,17 @@ function drawOverlay() {
   const c = overlayContext;
   c.clearRect(0, 0, overlay.width, overlay.height);
   if (printGuidesShown()) drawPrintGuides(c, doc.manifest.print, canvasWidth, canvasHeight, canvasToScreen, dpr * uiScale());
-  if (toolGesture && (toolGesture.kind.mode === "lasso" || toolGesture.kind.mode === "select")) drawLasso();
+  if (sizeRingShown && opened) {
+    c.beginPath();
+    c.arc(overlay.width / 2, overlay.height / 2, settingsFor(brush).diameter / 2 * zoom, 0, Math.PI * 2);
+    c.lineWidth = 3 * dpr * uiScale();
+    c.strokeStyle = "rgba(0, 0, 0, 0.43)";
+    c.stroke();
+    c.lineWidth = dpr * uiScale();
+    c.strokeStyle = "#FFFFFF";
+    c.stroke();
+  }
+  if (shapePreview || (toolGesture && isLassoKind(toolGesture.kind))) drawLasso();
   if (liquifyRing) {
     const [x, y, radius] = liquifyRing;
     c.beginPath();
@@ -6069,12 +6339,208 @@ async function openDocument(next) {
   restoreReferences();
 }
 
+// Drags back and forth through every stroke and layer change, live.
+function historyPanel() {
+  const body = h("div", { className: "column" }, h("div", { className: "title" }, "History"));
+  const total = history.undoCount + history.redoCount;
+  if (!total) {
+    body.append(gap(h("div", { className: "small" }, "Nothing to step through yet. Draw something first.")));
+    return body;
+  }
+  const step = h("div", { className: "small" }, `Step ${history.undoCount} of ${total}`);
+  body.append(gap(step), gap(h("input", {
+    className: "range", type: "range", min: "0", max: String(total), value: String(history.undoCount), ariaLabel: "History",
+    onInput: (event) => {
+      const target = Number(event.target.value);
+      // Stops if a step can't move right now.
+      while (history.undoCount > target) {
+        const before = history.undoCount;
+        undo();
+        if (history.undoCount === before) break;
+      }
+      while (history.undoCount < target && history.redoCount > 0) {
+        const before = history.undoCount;
+        redo();
+        if (history.undoCount === before) break;
+      }
+      step.textContent = `Step ${history.undoCount} of ${total}`;
+    },
+  })), gap(h("div", { className: "small" }, "Drawing anything new clears the steps ahead of you.")));
+  return body;
+}
+
+// Earlier sittings of this artwork, kept when it was opened.
+function versionsPanel() {
+  const body = h("div", { className: "column" }, h("div", { className: "title" }, "Earlier versions"));
+  const list = h("div", { className: "column" });
+  body.append(list);
+  store.versions(doc.id).then((versions) => {
+    if (!versions.length) {
+      list.append(gap(h("div", { className: "small" }, "A version is kept each time you come back to this artwork, so check again next time.")));
+      return;
+    }
+    list.append(gap(h("div", { className: "small" }, "Tap one to open it as a new variation. This artwork stays as it is.")));
+    for (const [time, picture] of versions) {
+      const label = new Date(time).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+      const image = h("img", { className: "layer-thumb", alt: "" });
+      if (picture) image.src = URL.createObjectURL(picture);
+      list.append(gap(h("button", {
+        className: "action-row",
+        onClick: async () => {
+          closePanel();
+          await save(true);
+          const copy = await store.restoreVersion(doc.id, time, label).catch(() => null);
+          if (copy) await openArtwork(copy); else say("Couldn't open this version");
+        },
+      }, image, h("div", { className: "text" }, label))));
+    }
+  });
+  return body;
+}
+
+function gesturesPanel() {
+  const rows = [
+    ["Tap with two fingers", "Undo. Hold them down to keep undoing."],
+    ["Tap with three fingers", "Redo. Hold them down to keep redoing."],
+    ["Tap with four fingers", "Hide or show the tools."],
+    ["Pinch and turn", "Zoom and rotate the canvas. A quick pinch inward fits it again, and nearly straight settles straight."],
+    ["Hold a finger or the pen still", "Pick a color from the canvas or a reference."],
+    ["Hold the pen at the end of a stroke", "Turns it into a clean line, ellipse, or box."],
+    ["Drag a color onto the canvas", "Fills the area where you let go."],
+    ["Tap the name of your layer", "Rename it right there."],
+    ["Double-tap a reference", "Fits the whole image again. Two fingers zoom and turn it."],
+    ["Pen side button", "Picks a color, erases, or undoes. Choose in this menu."],
+    ["Keyboard", "B brush, E eraser, [ and ] size, Tab hides the tools, Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo."],
+  ];
+  return h("div", { className: "column" }, h("div", { className: "title" }, "Gestures and shortcuts"),
+    rows.map(([gesture, effect]) => gap(h("div", { className: "column" }, h("div", {}, gesture), h("div", { className: "small" }, effect)))));
+}
+
+// A new size for the canvas: crop or extend it around an anchor, or scale everything. The result
+// opens as a new variation, so this artwork stays as it is.
+function showCanvasSize() {
+  closePanel();
+  let scaleMode = false;
+  let anchor = 4;
+  let widthText = String(doc.width);
+  let heightText = String(doc.height);
+  let cropBox = null;
+  let close;
+  const body = h("div", { className: "sheet-body small-body" });
+  const render = () => {
+    const field = (value, hint, change) => h("input", {
+      className: "field", inputMode: "numeric", placeholder: hint, value,
+      onInput: (event) => change(event.target.value, event.target),
+    });
+    const widthField = field(widthText, "Width in pixels", (value) => {
+      widthText = value;
+      cropBox = null;
+      // Scaling keeps the proportions, so the height follows the width.
+      if (scaleMode && Number(value) > 0) {
+        heightText = String(Math.max(1, Math.round(Number(value) * doc.height / doc.width)));
+        heightField.value = heightText;
+      }
+    });
+    const heightField = field(heightText, "Height in pixels", (value) => {
+      heightText = value;
+      cropBox = null;
+      if (scaleMode && Number(value) > 0) {
+        widthText = String(Math.max(1, Math.round(Number(value) * doc.width / doc.height)));
+        widthField.value = widthText;
+      }
+    });
+    const parts = [
+      serifTitle("Canvas size"),
+      h("div", { className: "gap14" }, segmentedLight(["Crop or extend", "Scale"], scaleMode ? 1 : 0, (index) => {
+        scaleMode = index === 1;
+        cropBox = null;
+        render();
+      })),
+      h("div", { className: "row gap10 two" }, widthField, heightField),
+    ];
+    if (!scaleMode) {
+      parts.push(h("div", { className: "label gap14" }, "Where the current picture sits"),
+        h("div", { className: "anchor-grid gap6" }, Array.from({ length: 9 }, (_, index) => h("button", {
+          className: index === anchor ? "anchor on" : "anchor", ariaLabel: `Anchor ${index + 1}`,
+          onClick: () => { anchor = index; cropBox = null; render(); },
+        }, index === anchor ? "●" : "○"))));
+      if (hasSelection) {
+        parts.push(h("div", { className: "row gap10" }, creamChip("Crop to selection", false, () => {
+          if (engine._cap_selection_bounds() !== 1) return;
+          const heap = engine.HEAPF32;
+          cropBox = [heap[pointsOffset], heap[pointsOffset + 1], heap[pointsOffset + 2], heap[pointsOffset + 3]];
+          widthText = String(cropBox[2] - cropBox[0]);
+          heightText = String(cropBox[3] - cropBox[1]);
+          const box = cropBox;
+          render();
+          cropBox = box;
+        })));
+      }
+    }
+    parts.push(h("div", { className: "summary gap14" }, "Opens as a new variation. This artwork stays as it is."),
+      h("div", { className: "end gap16" },
+        h("button", { className: "chip-cream", onClick: () => close() }, "Cancel"),
+        h("button", {
+          className: "sheet-button",
+          onClick: () => {
+            const width = Number.parseInt(widthText, 10);
+            const height = Number.parseInt(heightText, 10);
+            if (!(width >= 64 && width <= 8192 && height >= 64 && height <= 8192)) return say("Use sizes from 64 to 8192 pixels");
+            close();
+            const left = scaleMode ? 0 : cropBox ? -cropBox[0] : Math.round((width - doc.width) * (anchor % 3) / 2);
+            const top = scaleMode ? 0 : cropBox ? -cropBox[1] : Math.round((height - doc.height) * Math.floor(anchor / 3) / 2);
+            resizeCanvas(width, height, scaleMode, left, top);
+          },
+        }, "Make it")));
+    body.replaceChildren(...parts);
+  };
+  render();
+  close = sheet(body, { small: true });
+}
+
+// Writes every layer and mask at the new size, then opens the result.
+async function resizeCanvas(width, height, scale, left, top) {
+  say("Making the new canvas");
+  await save(true);
+  const oldWidth = doc.width;
+  const oldHeight = doc.height;
+  const reshape = (pixels, fromWidth, fromHeight, toWidth, toHeight) => {
+    const before = new OffscreenCanvas(fromWidth, fromHeight);
+    before.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(pixels.buffer, pixels.byteOffset, pixels.length), fromWidth, fromHeight), 0, 0);
+    const after = new OffscreenCanvas(toWidth, toHeight);
+    const c = after.getContext("2d");
+    if (scale) {
+      c.drawImage(before, 0, 0, toWidth, toHeight);
+    } else {
+      // Positions are in canvas pixels, so a smaller copy such as the thumbnail scales them down.
+      c.drawImage(before, left * toWidth / width, top * toHeight / height, oldWidth * toWidth / width, oldHeight * toHeight / height);
+    }
+    return new Uint8Array(c.getImageData(0, 0, toWidth, toHeight).data.buffer);
+  };
+  try {
+    const ids = layers().flatMap((layer) => (layer.mask ? [layer.id, layer.mask] : [layer.id]));
+    const regions = new Map(ids.map((id) => [id, { left: 0, top: 0, width, height, pixels: reshape(readLayerPixels(id), oldWidth, oldHeight, width, height) }]));
+    const thumbWidth = 480;
+    const thumbOld = Math.max(1, Math.round(thumbWidth * oldHeight / oldWidth));
+    const thumbNew = Math.max(1, Math.round(thumbWidth * height / width));
+    const thumbPixels = reshape(readComposite(thumbWidth, thumbOld), thumbWidth, thumbOld, thumbWidth, thumbNew);
+    const thumbnail = await pngBlob(thumbPixels, thumbWidth, thumbNew);
+    const id = await store.saveResized(doc, `${doc.manifest.name} ${width}×${height}`, width, height, regions, thumbnail);
+    await openArtwork(id);
+  } catch (error) {
+    console.error(error);
+    say("Couldn't make a canvas that size. Try a smaller one.");
+  }
+}
+
 async function openArtwork(id) {
   const loaded = await store.load(id).catch(() => null);
   if (!loaded) {
     sayNote("Couldn't open that artwork", { long: true });
     return;
   }
+  // Keeps how the artwork looked before this sitting, so it can be brought back later.
+  store.saveVersionIfDue(id).catch(() => {});
   await openDocument(loaded);
 }
 

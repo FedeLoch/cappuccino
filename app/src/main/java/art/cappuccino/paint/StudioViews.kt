@@ -52,6 +52,14 @@ class LassoOverlay(context: Context) : View(context) {
         invalidate()
     }
 
+    /** Shows a whole outline at once, for rectangles, ellipses, and polygons. */
+    fun setPoints(points: FloatArray) {
+        path.reset()
+        started = false
+        for (index in 0 until points.size - 1 step 2) add(points[index], points[index + 1])
+        invalidate()
+    }
+
     override fun onDraw(canvas: Canvas) {
         if (!started) return
         canvas.drawLine(lastX, lastY, startX, startY, closing)

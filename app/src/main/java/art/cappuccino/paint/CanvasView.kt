@@ -85,6 +85,15 @@ internal fun beginEngineStroke(engine: Long, brush: BrushState) {
 
 enum class SelectionTool { NONE, LASSO, WAND }
 
+/** How the lasso and lasso fill draw their outline. */
+enum class LassoShape(val label: String) { FREEHAND("Freehand"), RECTANGLE("Rectangle"), ELLIPSE("Ellipse"), POLYGON("Polygon") }
+
+private const val ELLIPSE_POINTS = 72
+private const val QUICK_PINCH_MS = 350L
+private const val QUICK_PINCH_SHARE = 0.6f
+private const val ROTATION_SNAP_DEGREES = 6f
+private const val CLOSE_POLYGON_DP = 24f
+
 class CanvasView(
     context: Context,
     private val canvasWidth: Int,
@@ -99,6 +108,21 @@ class CanvasView(
     var stabilizerStrength = 0f
     var pressureGamma = 0.75f
     var selectionTool = SelectionTool.NONE
+        set(value) {
+            field = value
+            polygon.clear()
+        }
+    /** The eyedropper reads only the layer you're on, instead of everything you see. */
+    var pickFromLayer = false
+    var lassoShape = LassoShape.FREEHAND
+        set(value) {
+            field = value
+            polygon.clear()
+        }
+
+    /** A polygon's corners so far, in canvas pixels, kept between taps. */
+    private val polygon = ArrayList<Float>()
+    private val closeDistance = CLOSE_POLYGON_DP * resources.displayMetrics.density
     var transformMode = false
         private set
     var acceptsInput = false
@@ -119,6 +143,8 @@ class CanvasView(
     var onWandTap: (Int, Int) -> Unit = { _, _ -> }
     var onLassoMove: (Float, Float) -> Unit = { _, _ -> }
     var onLassoDone: (FloatArray) -> Unit = {}
+    /** Shows a shaped lasso's outline so far, in screen pixels. */
+    var onLassoShape: (FloatArray) -> Unit = {}
     var onLassoFill: (FloatArray, Boolean) -> Unit = { _, _ -> }
     var onLiquifyRing: (Float, Float, Float) -> Unit = { _, _, _ -> }
     var onGradientMove: (FloatArray) -> Unit = {}
@@ -184,6 +210,8 @@ class CanvasView(
     private val colorRandom = java.util.Random()
 
     private var maxFingers = 0
+    private var viewGestureStart = 0L
+    private var viewGestureSpan = 0f
     // Set once the current fingers have tapped or moved, so the next fingers to land start a new tap.
     private var tapSpent = false
     private var gestureStart = 0L
@@ -331,12 +359,7 @@ class CanvasView(
         super.onSizeChanged(width, height, oldWidth, oldHeight)
         if (width == 0 || height == 0) return
         if (!fitted) {
-            val scale = min(width / canvasWidth.toFloat(), height / canvasHeight.toFloat()) * 0.95f
-            viewMatrix.setScale(scale, scale)
-            viewMatrix.postTranslate(
-                (width - canvasWidth * scale) / 2f,
-                (height - canvasHeight * scale) / 2f,
-            )
+            setFitted()
             fitted = true
         } else if (oldWidth > 0 && oldHeight > 0) {
             // Keeps the same part of the canvas in the middle at the same share of the screen.
@@ -348,7 +371,23 @@ class CanvasView(
         publishView()
     }
 
+    private fun setFitted() {
+        val scale = min(width / canvasWidth.toFloat(), height / canvasHeight.toFloat()) * 0.95f
+        viewMatrix.setScale(scale, scale)
+        viewMatrix.postTranslate((width - canvasWidth * scale) / 2f, (height - canvasHeight * scale) / 2f)
+    }
+
+    /** Shows the whole canvas, straight and centered. */
+    fun fitView() {
+        if (width == 0 || height == 0) return
+        setFitted()
+        publishView()
+    }
+
     private fun viewValues() = FloatArray(9).also(viewMatrix::getValues)
+
+    /** How many screen pixels one canvas pixel covers. */
+    val viewZoom: Float get() = viewValues().let { hypot(it[Matrix.MSCALE_X], it[Matrix.MSKEW_Y]) }
 
     private fun publishView() {
         latestView = viewValues()
@@ -629,6 +668,7 @@ class CanvasView(
         val spot = screenToCanvas(event.x, event.y)
         if (liquifyTool >= 0) return onLiquifyEvent(event, spot[0], spot[1])
         val lasso = selectionTool == SelectionTool.LASSO || shapeFill != null
+        if (lasso && lassoShape != LassoShape.FREEHAND) return onShapedLasso(event, spot)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
                 if (lasso) {
@@ -655,6 +695,75 @@ class CanvasView(
             }
         }
         return true
+    }
+
+    /** Rectangles and ellipses follow a drag from corner to corner; polygons gather a corner per tap. */
+    private fun onShapedLasso(event: MotionEvent, spot: FloatArray): Boolean {
+        val action = event.actionMasked
+        if (lassoShape == LassoShape.POLYGON) {
+            when (action) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> showShape(polygon.toFloatArray() + spot[0] + spot[1])
+                MotionEvent.ACTION_UP -> {
+                    toolGesture = false
+                    val first = if (polygon.size >= 2) canvasToScreen(polygon[0], polygon[1]) else null
+                    // Tapping the first corner again closes the shape.
+                    if (first != null && polygon.size >= 6 && hypot(event.x - first[0], event.y - first[1]) < closeDistance) {
+                        val points = polygon.toFloatArray()
+                        polygon.clear()
+                        finishShape(points)
+                    } else {
+                        polygon.add(spot[0])
+                        polygon.add(spot[1])
+                        showShape(polygon.toFloatArray())
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    toolGesture = false
+                    showShape(polygon.toFloatArray())
+                }
+            }
+            return true
+        }
+        val points = boxShape(gestureStartX, gestureStartY, spot[0], spot[1])
+        when (action) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> showShape(points)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                toolGesture = false
+                val wide = kotlin.math.abs(spot[0] - gestureStartX)
+                val tall = kotlin.math.abs(spot[1] - gestureStartY)
+                finishShape(if (action == MotionEvent.ACTION_UP && wide > 2f && tall > 2f) points else FloatArray(0))
+            }
+        }
+        return true
+    }
+
+    /** The corners of a rectangle, or points around an ellipse, fitted between two corners. */
+    private fun boxShape(fromX: Float, fromY: Float, toX: Float, toY: Float): FloatArray {
+        if (lassoShape == LassoShape.RECTANGLE) return floatArrayOf(fromX, fromY, toX, fromY, toX, toY, fromX, toY)
+        val centerX = (fromX + toX) / 2f
+        val centerY = (fromY + toY) / 2f
+        val radiusX = kotlin.math.abs(toX - fromX) / 2f
+        val radiusY = kotlin.math.abs(toY - fromY) / 2f
+        return FloatArray(ELLIPSE_POINTS * 2) { index ->
+            val angle = (index / 2) * 2.0 * Math.PI / ELLIPSE_POINTS
+            if (index % 2 == 0) centerX + radiusX * kotlin.math.cos(angle).toFloat() else centerY + radiusY * kotlin.math.sin(angle).toFloat()
+        }
+    }
+
+    private fun showShape(points: FloatArray) {
+        val screen = points.copyOf()
+        viewMatrix.mapPoints(screen)
+        onLassoShape(screen)
+    }
+
+    /** Draws the polygon in progress again, after the view moves. */
+    fun redrawLassoShape() {
+        if (polygon.isNotEmpty()) showShape(polygon.toFloatArray())
+    }
+
+    private fun finishShape(points: FloatArray) {
+        val fill = shapeFill
+        if (fill != null) onLassoFill(points, fill.isEraser) else onLassoDone(points)
     }
 
     /** Holding the pen at the end of a stroke swaps it for the clean shape it resembles. */
@@ -842,6 +951,10 @@ class CanvasView(
             MotionEvent.ACTION_POINTER_DOWN -> {
                 removeCallbacks(pickAtPress)
                 removeCallbacks(holdRepeat)
+                if (event.pointerCount == 2) {
+                    viewGestureStart = event.eventTime
+                    viewGestureSpan = hypot(event.getX(1) - event.getX(0), event.getY(1) - event.getY(0))
+                }
                 // A finger still resting from the last tap doesn't count toward the next one.
                 if (tapSpent) {
                     tapSpent = false
@@ -869,6 +982,7 @@ class CanvasView(
                 endPick()
             }
             MotionEvent.ACTION_POINTER_UP -> {
+                if (event.pointerCount == 2) endViewGesture(event)
                 // The first finger to lift ends a multi-finger tap, so quick taps in a row each count.
                 endFingerTap(event)
                 if (event.pointerCount >= 3) captureGesture(event, skip = event.actionIndex)
@@ -917,7 +1031,12 @@ class CanvasView(
         val y = spot[1].toInt()
         if (x !in 0 until canvasWidth || y !in 0 until canvasHeight) return
         act { engine ->
-            val color = NativeEngine.pickColor(engine, x, y) or 0xFF000000.toInt()
+            val color = if (pickFromLayer) {
+                // A clear spot on the layer keeps the color you had.
+                NativeEngine.pickLayerColor(engine, x, y).takeIf { it != 0 } ?: return@act
+            } else {
+                NativeEngine.pickColor(engine, x, y) or 0xFF000000.toInt()
+            }
             post { onPickMove(color, screenX, screenY) }
         }
     }
@@ -937,6 +1056,25 @@ class CanvasView(
     private fun gesturePointers(event: MotionEvent, skip: Int): Pair<Int, Int> {
         val indices = (0 until event.pointerCount).filter { it != skip }
         return indices[0] to indices[1]
+    }
+
+    /**
+     * A quick pinch inward fits the whole canvas again. A slower gesture that leaves the canvas
+     * nearly straight settles it exactly straight.
+     */
+    private fun endViewGesture(event: MotionEvent) {
+        if (travel < tapTravel) return
+        val quick = event.eventTime - viewGestureStart < QUICK_PINCH_MS
+        if (quick && previousSpan < viewGestureSpan * QUICK_PINCH_SHARE) {
+            fitView()
+            return
+        }
+        val degrees = Math.toDegrees(viewRotation().toDouble()).toFloat()
+        val straight = Math.round(degrees / 90f) * 90f
+        if (degrees != straight && kotlin.math.abs(degrees - straight) < ROTATION_SNAP_DEGREES) {
+            viewMatrix.postRotate(straight - degrees, previousX, previousY)
+            publishView()
+        }
     }
 
     private fun captureGesture(event: MotionEvent, skip: Int) {

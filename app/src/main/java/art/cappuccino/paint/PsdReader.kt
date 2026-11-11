@@ -42,6 +42,7 @@ private class LayerRecord(
 object PsdReader {
     private val BLENDS = mapOf(
         "norm" to 0, "mul " to 1, "scrn" to 2, "lddg" to 3, "dark" to 4, "lite" to 5, "sLit" to 6, "fsub" to 7, "smud" to 8,
+        "over" to 9, "hLit" to 10, "div " to 11, "idiv" to 12, "diff" to 13, "hue " to 14, "sat " to 15, "colr" to 16, "lum " to 17,
     )
 
     fun read(data: ByteArray): PsdImage {

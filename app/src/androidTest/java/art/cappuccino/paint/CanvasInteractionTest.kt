@@ -193,6 +193,136 @@ class CanvasInteractionTest {
         }
     }
 
+    @Test
+    fun selectingTheLayerSelectsWhatsDrawnOnIt() {
+        val y = height * 0.5f
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        onStudio { it.selectWholeLayer(it.activeLayer()!!) }
+        var shown = false
+        scenario.onActivity { shown = it.selectionBarShown }
+        assertTrue("a drawn layer should be selected", shown)
+        onStudio {
+            it.clearSelection()
+            it.addLayer()
+            it.selectWholeLayer(it.activeLayer()!!)
+        }
+        scenario.onActivity { shown = it.selectionBarShown }
+        assertFalse("an empty layer has nothing to select", shown)
+    }
+
+    @Test
+    fun blendModesThatReadBelowMixWithTheLayerUnderneath() {
+        // Red underneath, blue on top, and the expected result of each mode from the W3C formulas.
+        val expected = mapOf(
+            14 to intArrayOf(54, 54, 255), // Hue
+            16 to intArrayOf(54, 54, 255), // Color
+            17 to intArrayOf(94, 0, 0), // Luminosity
+            13 to intArrayOf(255, 0, 255), // Difference
+        )
+        onStudio { it.dropColorAt(Color.RED, width / 2f, height / 2f) }
+        onStudio {
+            it.addLayer()
+            it.dropColorAt(Color.BLUE, width / 2f, height / 2f)
+        }
+        for ((mode, rgb) in expected) {
+            onStudio { it.setBlend(it.activeLayer()!!, mode) }
+            val pixel = screenshot().getPixel(width.toInt() / 2, height.toInt() / 2)
+            val seen = intArrayOf(Color.red(pixel), Color.green(pixel), Color.blue(pixel))
+            for (channel in 0..2) {
+                assertTrue(
+                    "mode $mode gave ${seen.joinToString()} instead of ${rgb.joinToString()}",
+                    kotlin.math.abs(seen[channel] - rgb[channel]) <= 6,
+                )
+            }
+        }
+    }
+
+    private fun penDrag(fromX: Float, fromY: Float, toX: Float, toY: Float) {
+        val down = SystemClock.uptimeMillis()
+        injectPen(MotionEvent.ACTION_DOWN, fromX, fromY, down, down)
+        for (step in 1..10) {
+            injectPen(MotionEvent.ACTION_MOVE, fromX + (toX - fromX) * step / 10f, fromY + (toY - fromY) * step / 10f, down, down + step * 16L)
+        }
+        injectPen(MotionEvent.ACTION_UP, toX, toY, down, down + 200L)
+    }
+
+    @Test
+    fun rectangleAndPolygonLassosSelect() {
+        var shown = false
+        onStudio {
+            it.canvasForTest.lassoShape = LassoShape.RECTANGLE
+            it.startSelection(SelectionTool.LASSO)
+        }
+        penDrag(width * 0.3f, height * 0.3f, width * 0.6f, height * 0.6f)
+        settle()
+        scenario.onActivity { shown = it.selectionBarShown }
+        assertTrue("a rectangle should make a selection", shown)
+
+        onStudio {
+            it.clearSelection()
+            it.canvasForTest.lassoShape = LassoShape.POLYGON
+            it.startSelection(SelectionTool.LASSO)
+        }
+        val corners = listOf(0.3f to 0.3f, 0.6f to 0.35f, 0.5f to 0.6f, 0.3f to 0.3f)
+        for ((x, y) in corners) {
+            tapPen(width * x, height * y)
+            SystemClock.sleep(100)
+        }
+        settle()
+        scenario.onActivity { shown = it.selectionBarShown }
+        assertTrue("tapping the first corner again should close the polygon", shown)
+        onStudio { it.canvasForTest.lassoShape = LassoShape.FREEHAND }
+    }
+
+    @Test
+    fun ellipseLassoFillPaints() {
+        onStudio {
+            it.setColor(Color.BLACK)
+            it.canvasForTest.lassoShape = LassoShape.ELLIPSE
+            it.selectTool(BrushKind.LASSO_FILL)
+        }
+        penDrag(width * 0.35f, height * 0.35f, width * 0.65f, height * 0.65f)
+        settle()
+        onStudio { it.canvasForTest.lassoShape = LassoShape.FREEHAND }
+        assertTrue("the ellipse should be filled", hasInk(width / 2f, height / 2f))
+        assertFalse("the corner outside the ellipse should stay clear", hasInk(width * 0.37f, height * 0.37f))
+    }
+
+    @Test
+    fun canvasSizeMakesACroppedVariation() {
+        val y = height * 0.5f
+        stroke(width * 0.2f, y, width * 0.8f, y)
+        settle()
+        onStudio { it.resizeCanvas(1000, 800, false, 0, 0) }
+        val store = ArtworkStore(InstrumentationRegistry.getInstrumentation().targetContext)
+        var made: ArtworkInfo? = null
+        repeat(30) {
+            made = store.artworks().firstOrNull { it.width == 1000 && it.height == 800 }
+            if (made == null) SystemClock.sleep(500)
+        }
+        val copy = requireNotNull(made) { "the cropped variation was not saved" }
+        val loaded = requireNotNull(store.load(copy.id))
+        assertEquals(1000, loaded.width)
+        assertEquals(800, loaded.height)
+        assertTrue("the copy should be a variation", copy.variationOf.isNotEmpty())
+    }
+
+    @Test
+    fun mergeVisibleKeepsTheDrawingInOneLayer() {
+        val top = height * 0.45f
+        val bottom = height * 0.55f
+        stroke(width * 0.2f, top, width * 0.8f, top)
+        settle()
+        onStudio { it.addLayer() }
+        stroke(width * 0.2f, bottom, width * 0.8f, bottom)
+        settle()
+        onStudio { it.mergeVisible() }
+        assertEquals(1, layerCount())
+        assertTrue("the first stroke should remain", hasInk(width / 2f, top))
+        assertTrue("the second stroke should remain", hasInk(width / 2f, bottom))
+    }
+
     private fun onStudio(action: (MainActivity) -> Unit) {
         scenario.onActivity(action)
         settle()

@@ -183,8 +183,20 @@ class BrushKind(
     }
 }
 
+/** Blend modes in the engine's order. The last nine read the colors underneath. */
 val BLEND_MODES = listOf(
     "Normal", "Multiply", "Screen", "Additive", "Darken", "Lighten", "Soft light", "Subtract", "Exclusion",
+    "Overlay", "Hard light", "Color dodge", "Color burn", "Difference", "Hue", "Saturation", "Color", "Luminosity",
+)
+
+/** How the blend list groups them: darkening, lightening, contrast, difference, and color parts. */
+val BLEND_GROUPS = listOf(
+    listOf(0),
+    listOf(1, 4, 12, 7),
+    listOf(2, 5, 11, 3),
+    listOf(9, 6, 10),
+    listOf(13, 8),
+    listOf(14, 15, 16, 17),
 )
 
 data class LayerInfo(

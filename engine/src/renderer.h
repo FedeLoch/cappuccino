@@ -32,6 +32,16 @@ enum class BlendMode {
     kSoftLight = 6,
     kSubtract = 7,
     kExclusion = 8,
+    // These read the colors underneath in the shader, so each copies them first.
+    kOverlay = 9,
+    kHardLight = 10,
+    kColorDodge = 11,
+    kColorBurn = 12,
+    kDifference = 13,
+    kHue = 14,
+    kSaturation = 15,
+    kColor = 16,
+    kLuminosity = 17,
 };
 
 struct BrushParams {
@@ -87,11 +97,15 @@ public:
 
     void setSelectionPolygon(const float* points, int count, int mode);
     void selectColorAt(int x, int y, int tolerance, int mode);
+    // Selects everything drawn on a layer, keeping soft edges soft. False if the layer is empty.
+    bool selectLayer(int id, int mode);
     void clearSelection();
     void invertSelection();
     // Fades the selection's edge over about twice this many pixels. Zero keeps it hard.
     void setSelectionFeather(int radius);
     bool hasSelection() const { return selectionActive_; }
+    // The selection's left, top, right, and bottom, or false when nothing is selected.
+    bool selectionBounds(int* bounds) const;
     void copySelectionToLayer(int newId, bool cut);
 
     void setGradientPreview(bool active, const float* points, const float* color);
@@ -126,6 +140,8 @@ public:
     // Flattens the artwork on white paper. Rows run from the top of the canvas.
     void readComposite(int width, int height, void* pixels);
     uint32_t pickColor(int x, int y);
+    // The active layer's own color at a point, as 0xFFRRGGBB, or 0 where it's clear.
+    uint32_t pickLayerColor(int x, int y);
 
 private:
     struct Layer {
@@ -200,6 +216,9 @@ private:
     GLint fillSize_ = -1;
     GLint fillColor_ = -1;
     GLuint canvasProgram_ = 0;
+    GLint canvasMode_ = -1;
+    GLint canvasDestOrigin_ = -1;
+    GLuint destTexture_ = 0;
     GLint stampMatrix_ = -1;
     GLint stampColor_ = -1;
     GLint stampHardness_ = -1;

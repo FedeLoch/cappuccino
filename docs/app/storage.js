@@ -579,6 +579,65 @@ export class ArtworkStore {
     return copy;
   }
 
+  // --- Earlier versions, as ArtworkStore's versions/<id>/<time> on Android -------------------
+
+  // Keeps a copy of the artwork as it's saved, at most one an hour and only the newest twelve.
+  async saveVersionIfDue(id) {
+    const folder = await directory(await directory(this.root, "versions"), id);
+    const times = [];
+    for await (const [name, handle] of folder.entries()) if (handle.kind === "directory" && /^\d+$/.test(name)) times.push(Number(name));
+    const now = Date.now();
+    if (times.length && now - Math.max(...times) < 60 * 60 * 1000) return;
+    await copyDirectory(await this.artworkDir(id), await directory(folder, String(now)));
+    for (const old of times.sort((a, b) => b - a).slice(11)) await remove(folder, String(old), true);
+  }
+
+  // Newest first, as [time, picture file or null].
+  async versions(id) {
+    const list = [];
+    let folder;
+    try {
+      folder = await directory(await directory(this.root, "versions"), id, false);
+    } catch {
+      return list;
+    }
+    for await (const [name, handle] of folder.entries()) {
+      if (handle.kind !== "directory" || !/^\d+$/.test(name)) continue;
+      list.push([Number(name), (await readFile(handle, "preview.jpg")) || (await readFile(handle, "thumbnail.png"))]);
+    }
+    return list.sort((a, b) => b[0] - a[0]);
+  }
+
+  // Opens an earlier version as a new variation, so nothing is overwritten.
+  async restoreVersion(id, time, label) {
+    const folder = await directory(await directory(await directory(this.root, "versions"), id), String(time), false);
+    const family = await this.variations(id);
+    const root = family.find((a) => !a.variationOf) || family[0];
+    const copy = crypto.randomUUID();
+    await copyDirectory(folder, await this.artworkDir(copy, true));
+    await this.updateManifest(copy, (m) => {
+      m.name = `${m.name || "Untitled"} · ${label}`;
+      m.variationOf = root?.id || id;
+      m.updated = Date.now();
+    });
+    return copy;
+  }
+
+  // Saves layers at a new size as a new variation, as ArtworkStore.saveResized() does.
+  async saveResized(source, name, width, height, regions, thumbnail) {
+    const family = await this.variations(source.id);
+    const root = family.find((a) => !a.variationOf) || family[0];
+    const doc = await this.create(name, source.manifest.project, width, height);
+    const keep = structuredClone(source.manifest);
+    doc.manifest = {
+      ...keep, name, width, height, variationOf: root?.id || source.id, updated: Date.now(), packs: [], journalSequence: 0,
+      layers: keep.layers.map((layer) => ({ ...layer, file: "", tiles: null, maskFile: "", maskTiles: null })),
+    };
+    delete doc.manifest.print;
+    await this.save(doc, regions, thumbnail, null);
+    return doc.id;
+  }
+
   // --- Time-lapse frames, as timelapse/000000.jpg on Android --------------------------------
 
   async addTimelapseFrame(doc, pixels, width, height) {

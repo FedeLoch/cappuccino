@@ -96,6 +96,14 @@ EMSCRIPTEN_KEEPALIVE void cap_select_color_at(int x, int y, int tolerance, int m
     renderer->selectColorAt(x, y, tolerance, mode);
 }
 EMSCRIPTEN_KEEPALIVE void cap_invert_selection() { renderer->invertSelection(); }
+EMSCRIPTEN_KEEPALIVE int cap_select_layer(int id, int mode) { return renderer->selectLayer(id, mode) ? 1 : 0; }
+// Writes the selection's left, top, right, and bottom to cap_points(); returns 0 when nothing is selected.
+EMSCRIPTEN_KEEPALIVE int cap_selection_bounds() {
+    int bounds[4] = {};
+    if (!renderer->selectionBounds(bounds)) return 0;
+    for (int i = 0; i < 4; ++i) points[i] = static_cast<float>(bounds[i]);
+    return 1;
+}
 EMSCRIPTEN_KEEPALIVE void cap_set_selection_feather(int radius) { renderer->setSelectionFeather(radius); }
 EMSCRIPTEN_KEEPALIVE void cap_copy_selection_to_layer(int newId, int cut) {
     renderer->copySelectionToLayer(newId, cut != 0);
@@ -129,6 +137,7 @@ EMSCRIPTEN_KEEPALIVE void cap_read_layer(int id, void* pixels) { renderer->readL
 
 // The flattened color under a canvas point, as 0xRRGGBB-style packed bytes from the engine.
 EMSCRIPTEN_KEEPALIVE uint32_t cap_pick_color(int x, int y) { return renderer->pickColor(x, y); }
+EMSCRIPTEN_KEEPALIVE uint32_t cap_pick_layer_color(int x, int y) { return renderer->pickLayerColor(x, y); }
 
 EMSCRIPTEN_KEEPALIVE void cap_read_composite(int width, int height, void* pixels) {
     renderer->readComposite(width, height, pixels);

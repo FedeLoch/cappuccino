@@ -74,6 +74,9 @@ private const val PANEL_WIDTH = 340
 private const val DROP_SIZE = 28
 private const val DROP_LIFT = 40
 private const val LOCKED_ALPHA = 0.45f
+private const val RECENT_BRUSHES = 4
+private const val SIZE_RING_MS = 700L
+private const val FOCUS_TAB_ALPHA = 0.6f
 private const val BUBBLE_WIDTH = 308
 private const val HIDE_BUTTON_DP = 28
 private const val BUBBLE_TAIL_DP = 10
@@ -85,7 +88,7 @@ private const val THUMBNAIL_HEIGHT = 48
 private const val LAYER_ROW = 56
 private const val LAYER_GAP = 4
 private const val RETIRED_LAYERS = 6
-private val LEFT_PANELS = setOf("actions", "references", "view", "tools", "sticker")
+private val LEFT_PANELS = setOf("actions", "references", "view", "tools", "sticker", "gestures", "history", "versions")
 private const val PICK_TIP = 45
 private const val PICK_LAYER_IMAGE = 46
 private const val PICK_FLASH_MS = 700L
@@ -193,6 +196,11 @@ class MainActivity : Activity(), ReferenceHost {
     private var renamingLayer = 0
     private lateinit var flatWhite: FlatWhiteStore
     private var pendingFlatWhite = false
+    private var sizeRing: BrushRing? = null
+    private var sizeRingWindow: PopupWindow? = null
+    private var focusTab: PopupWindow? = null
+    private var soloRestore: Set<Int>? = null
+    private var soloLayer = 0
     private var lastTextStyle = TextStyle()
     private var textDraft: TextDraft? = null
     private var renameInput: EditText? = null
@@ -301,6 +309,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.pressureGamma = preferences.getFloat("pressureGamma", 0.75f)
         canvas.snapShapes = preferences.getBoolean("snapShapes", true)
         customBrushes.addAll(store.customBrushes())
+        loadRecentColors()
         flatWhite = FlatWhiteStore(this, ::flatWhiteChanged).also { it.connect() }
         setContentView(canvas)
         companion = CompanionView(this).apply {
@@ -336,6 +345,7 @@ class MainActivity : Activity(), ReferenceHost {
             positionHandles()
             noteOverlay?.invalidate()
             printOverlay?.invalidate()
+            canvas.redrawLassoShape()
         }
         canvas.onFillTap = { x, y -> fillAt(x, y) }
         canvas.onStrokeCommitted = { history.record(Edit.Stroke) }
@@ -356,11 +366,7 @@ class MainActivity : Activity(), ReferenceHost {
                 undoneWarmupStrokes.clear()
             }
         }
-                canvas.onToggleInterface = {
-            interfaceHidden = !interfaceHidden
-            fadeChrome(if (interfaceHidden) 0f else 1f)
-            closePanel()
-        }
+                canvas.onToggleInterface = { setFocusMode(!interfaceHidden) }
         canvas.onPickMove = { color, x, y -> showPickRing(color, x, y) }
         canvas.onPickEnd = { hidePickRing() }
         canvas.onLassoMove = { x, y ->
@@ -368,6 +374,12 @@ class MainActivity : Activity(), ReferenceHost {
             lassoOverlay.add(x, y)
         }
         canvas.onLassoDone = { finishLasso(it) }
+        canvas.onLassoShape = { points ->
+            showLassoOverlay()
+            lassoOverlay.setPoints(points)
+        }
+        canvas.pickFromLayer = preferences.getBoolean("pickFromLayer", false)
+        canvas.lassoShape = runCatching { LassoShape.valueOf(preferences.getString("lassoShape", null) ?: "") }.getOrDefault(LassoShape.FREEHAND)
         canvas.onLassoFill = { path, erase -> finishLassoFill(path, erase) }
         canvas.onLiquifyRing = { x, y, radius -> showLiquifyRing(x, y, radius) }
         canvas.onWandTap = { x, y -> finishWand(x, y) }
@@ -405,6 +417,8 @@ class MainActivity : Activity(), ReferenceHost {
         }
         document = loaded
         everSaved = true
+        // Keeps how the artwork looked before this sitting, so it can be brought back later.
+        if (warmup == null) saver.execute { runCatching { store.saveVersionIfDue(loaded.id) } }
         if (loaded.animation) canvas.post { if (!isDestroyed) showAnimationBar() }
         engineLayers.addAll(loaded.layers.map { it.id })
         engineLayers.addAll(loaded.layers.map { it.maskId }.filter { it != 0 })
@@ -729,6 +743,7 @@ class MainActivity : Activity(), ReferenceHost {
             canvas.eraserKind = kind
         } else if (!kind.isTool) {
             lastBrush = kind
+            rememberBrush(kind)
         }
         sizeBar?.progress = sizeProgress()
         opacityBar?.progress = (settings.opacity * 1000f).roundToInt()
@@ -760,7 +775,26 @@ class MainActivity : Activity(), ReferenceHost {
         recentColors.remove(canvas.brushColor)
         recentColors.add(0, canvas.brushColor)
         if (recentColors.size > 8) recentColors.removeAt(recentColors.size - 1)
+        // Kept between sessions, so your colors are still there tomorrow.
+        preferences.edit().putString("recentColors", recentColors.joinToString(",")).apply()
         showRecentColors()
+    }
+
+    private fun loadRecentColors() {
+        recentColors.clear()
+        preferences.getString("recentColors", null)?.split(',')?.mapNotNull { it.toIntOrNull() }?.let(recentColors::addAll)
+    }
+
+    /** The last few brushes you drew with, newest first. */
+    private fun recentBrushes(): List<BrushKind> {
+        val all = BrushKind.BRUSH_FAMILIES.flatMap { it.second } + customBrushes
+        return preferences.getString("recentBrushes", null).orEmpty().split(',')
+            .mapNotNull { id -> all.firstOrNull { it.id == id } }
+    }
+
+    private fun rememberBrush(kind: BrushKind) {
+        val ids = (listOf(kind.id) + recentBrushes().map { it.id }.filter { it != kind.id }).take(RECENT_BRUSHES)
+        preferences.edit().putString("recentBrushes", ids.joinToString(",")).apply()
     }
 
     private fun showRecentColors() {
@@ -918,6 +952,7 @@ class MainActivity : Activity(), ReferenceHost {
                 val share = it / 1000f
                 canvas.brushDiameter = MIN_BRUSH + (MAX_BRUSH - MIN_BRUSH) * share * share
                 toolFor(canvas.brushKind).diameter = canvas.brushDiameter
+                showSizeRing()
             })
             addView(verticalSlider(tr("Brush opacity"), (canvas.brushOpacity * 1000f).roundToInt(), { opacityBar = it }) {
                 canvas.brushOpacity = max(it, 10) / 1000f
@@ -972,6 +1007,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.brushDiameter = (canvas.brushDiameter * factor).coerceIn(MIN_BRUSH.toFloat(), MAX_BRUSH.toFloat())
         toolFor(canvas.brushKind).diameter = canvas.brushDiameter
         sizeBar?.progress = sizeProgress()
+        showSizeRing()
     }
 
     private fun sizeProgress(): Int {
@@ -1002,6 +1038,27 @@ class MainActivity : Activity(), ReferenceHost {
             layoutParams = LinearLayout.LayoutParams(dp(36), length + dp(8))
             addView(bar, FrameLayout.LayoutParams(length, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         }
+    }
+
+    /** While the size slider moves, a ring in the middle of the screen shows the brush's real size. */
+    private fun showSizeRing() {
+        val ring = sizeRing ?: BrushRing(this).also { view ->
+            sizeRing = view
+            sizeRingWindow = PopupWindow(view, canvas.width, canvas.height).apply {
+                isTouchable = false
+                isClippingEnabled = false
+                showAtLocation(canvas, Gravity.NO_GRAVITY, 0, 0)
+            }
+        }
+        ring.move(canvas.width / 2f, canvas.height / 2f, canvas.brushDiameter / 2f * canvas.viewZoom)
+        handler.removeCallbacks(hideSizeRing)
+        handler.postDelayed(hideSizeRing, SIZE_RING_MS)
+    }
+
+    private val hideSizeRing = Runnable {
+        sizeRingWindow?.dismiss()
+        sizeRingWindow = null
+        sizeRing = null
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -1215,6 +1272,327 @@ class MainActivity : Activity(), ReferenceHost {
             val spot = canvas.canvasToScreen(anchors[end], anchors[end + 1])
             window.showAtLocation(canvas, Gravity.NO_GRAVITY, spot[0].toInt() - size / 2, spot[1].toInt() - size / 2)
             shapeHandles.add(window)
+        }
+    }
+
+    /** Hides everything but the canvas, with a small tab to bring the tools back. */
+    internal fun setFocusMode(on: Boolean) {
+        interfaceHidden = on
+        fadeChrome(if (on) 0f else 1f)
+        closePanel()
+        focusTab?.dismiss()
+        focusTab = null
+        if (!on || isDestroyed) return
+        val tab = pill().apply {
+            alpha = FOCUS_TAB_ALPHA
+            addView(iconButton(R.drawable.ic_view, tr("Show the tools")) { setFocusMode(false) }.apply { tooltipText = tr("Show the tools") })
+        }
+        focusTab = PopupWindow(tab, -2, -2).apply {
+            isClippingEnabled = false
+            showAtLocation(canvas, Gravity.TOP or Gravity.END, dp(12), dp(12))
+        }
+    }
+
+    /**
+     * A new size for the canvas: crop or extend it around an anchor, or scale everything. The
+     * result opens as a new variation, so this artwork stays as it is.
+     */
+    private fun showCanvasSize() {
+        closePanel()
+        val dialog = android.app.Dialog(this)
+        var scaleMode = false
+        var anchor = 4
+        var widthText = document.width.toString()
+        var heightText = document.height.toString()
+        var cropBox: IntArray? = null
+        val body = column().apply {
+            background = rounded(SURFACE, 20)
+            setPadding(dp(20), dp(18), dp(20), dp(18))
+        }
+        fun render() {
+            body.removeAllViews()
+            body.addView(label(tr("Canvas size"), 18f))
+            body.gapped(
+                segmented(listOf(tr("Crop or extend"), tr("Scale")), if (scaleMode) 1 else 0) {
+                    scaleMode = it == 1
+                    cropBox = null
+                    render()
+                },
+            )
+            fun field(value: String, hintText: String, change: (String) -> Unit) = EditText(this).apply {
+                setText(value)
+                hint = hintText
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER
+                setTextColor(TEXT_COLOR)
+                setHintTextColor(MUTED_TEXT)
+                background = rounded(SURFACE_RAISED, 10)
+                setPadding(dp(12), dp(10), dp(12), dp(10))
+                addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(text: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                    override fun onTextChanged(text: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                    override fun afterTextChanged(text: android.text.Editable?) = change(text.toString())
+                })
+            }
+            lateinit var heightField: EditText
+            lateinit var widthField: EditText
+            widthField = field(widthText, tr("Width in pixels")) {
+                widthText = it
+                cropBox = null
+                // Scaling keeps the proportions, so the height follows the width.
+                if (scaleMode && widthField.hasFocus()) {
+                    it.toIntOrNull()?.let { w -> heightText = max(1, w * document.height / document.width).toString(); heightField.setText(heightText) }
+                }
+            }
+            heightField = field(heightText, tr("Height in pixels")) {
+                heightText = it
+                cropBox = null
+                if (scaleMode && heightField.hasFocus()) {
+                    it.toIntOrNull()?.let { h -> widthText = max(1, h * document.width / document.height).toString(); widthField.setText(widthText) }
+                }
+            }
+            body.gapped(
+                LinearLayout(this).apply {
+                    addView(widthField, LinearLayout.LayoutParams(0, -2, 1f))
+                    addView(heightField, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
+                },
+            )
+            if (!scaleMode) {
+                body.gapped(label(tr("Where the current picture sits"), 12f, MUTED_TEXT))
+                body.gapped(
+                    tileGrid(
+                        List(9) { index ->
+                            label(if (index == anchor) "●" else "○", 16f).apply {
+                                gravity = Gravity.CENTER
+                                minHeight = dp(36)
+                                background = rounded(if (index == anchor) ACCENT else SURFACE_RAISED, 8)
+                                setOnClickListener {
+                                    anchor = index
+                                    cropBox = null
+                                    render()
+                                }
+                            }
+                        },
+                        columns = 3,
+                    ).apply { layoutParams = LinearLayout.LayoutParams(dp(150), -2) },
+                )
+                if (hasSelection) {
+                    body.gapped(
+                        smallChip(tr("Crop to selection")) {
+                            canvas.act { engine ->
+                                val bounds = NativeEngine.selectionBounds(engine)
+                                runOnUiThread {
+                                    if (bounds == null) return@runOnUiThread
+                                    cropBox = bounds
+                                    widthText = (bounds[2] - bounds[0]).toString()
+                                    heightText = (bounds[3] - bounds[1]).toString()
+                                    render()
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+            body.gapped(label(tr("Opens as a new variation. This artwork stays as it is."), 12f, MUTED_TEXT))
+            body.gapped(
+                LinearLayout(this).apply {
+                    gravity = Gravity.END
+                    addView(smallChip(tr("Cancel")) { dialog.dismiss() })
+                    addView(
+                        smallChip(tr("Make it"), true) {
+                            val w = widthText.toIntOrNull()
+                            val h = heightText.toIntOrNull()
+                            if (w == null || h == null || w !in 64..MAX_CANVAS_SIDE || h !in 64..MAX_CANVAS_SIDE) {
+                                say(tr("Use sizes from 64 to %1 pixels", MAX_CANVAS_SIDE))
+                                return@smallChip
+                            }
+                            dialog.dismiss()
+                            val box = cropBox
+                            val left = when {
+                                scaleMode -> 0
+                                box != null -> -box[0]
+                                else -> ((w - document.width) * (anchor % 3)) / 2
+                            }
+                            val top = when {
+                                scaleMode -> 0
+                                box != null -> -box[1]
+                                else -> ((h - document.height) * (anchor / 3)) / 2
+                            }
+                            resizeCanvas(w, h, scaleMode, left, top)
+                        },
+                        LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(6) },
+                    )
+                },
+            )
+        }
+        render()
+        dialog.setContentView(ScrollView(this).apply { addView(body) })
+        dialog.window?.apply {
+            setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+            setLayout(min(dp(440), resources.displayMetrics.widthPixels - dp(32)), ViewGroup.LayoutParams.WRAP_CONTENT)
+        }
+        dialog.show()
+    }
+
+    /**
+     * Writes every layer and mask at the new size, cropped or extended so the old canvas's corner
+     * lands at [left], [top], or scaled to fit, then opens the result.
+     */
+    internal fun resizeCanvas(width: Int, height: Int, scale: Boolean, left: Int, top: Int) {
+        val oldWidth = document.width
+        val oldHeight = document.height
+        val ids = document.layers.flatMap { listOfNotNull(it.id, it.maskId.takeIf { mask -> mask != 0 }) }
+        val name = "${document.name} ${width}×$height"
+        val source = document
+        say(tr("Making the new canvas"))
+        fun reshape(buffer: java.nio.ByteBuffer, fromWidth: Int, fromHeight: Int, toWidth: Int, toHeight: Int): java.nio.ByteBuffer {
+            val before = Bitmap.createBitmap(fromWidth, fromHeight, Bitmap.Config.ARGB_8888)
+            buffer.rewind()
+            before.copyPixelsFromBuffer(buffer)
+            val after = Bitmap.createBitmap(toWidth, toHeight, Bitmap.Config.ARGB_8888)
+            val painter = android.graphics.Canvas(after)
+            if (scale) {
+                painter.drawBitmap(before, null, android.graphics.Rect(0, 0, toWidth, toHeight), android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+            } else {
+                // Positions are in canvas pixels, so a smaller copy such as the thumbnail scales them down.
+                val x = left.toFloat() * toWidth / width
+                val y = top.toFloat() * toHeight / height
+                val place = android.graphics.RectF(x, y, x + oldWidth.toFloat() * toWidth / width, y + oldHeight.toFloat() * toHeight / height)
+                painter.drawBitmap(before, null, place, android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG))
+            }
+            before.recycle()
+            val out = ArtworkStore.pixelBuffer(toWidth, toHeight)
+            after.copyPixelsToBuffer(out)
+            after.recycle()
+            out.rewind()
+            return out
+        }
+        save(withPreview = true) {
+            canvas.snapshot { engine ->
+                val pixels = runCatching {
+                    ids.associateWith { id ->
+                        val buffer = ArtworkStore.pixelBuffer(oldWidth, oldHeight)
+                        NativeEngine.readLayer(engine, id, buffer)
+                        reshape(buffer, oldWidth, oldHeight, width, height)
+                    }
+                }.getOrNull()
+                val thumbWidth = ArtworkStore.THUMBNAIL_WIDTH
+                val thumbOld = ArtworkStore.thumbnailHeight(oldWidth, oldHeight)
+                val composite = ArtworkStore.pixelBuffer(thumbWidth, thumbOld)
+                NativeEngine.readComposite(engine, thumbWidth, thumbOld, composite)
+                saver.execute {
+                    val made = pixels?.let {
+                        runCatching {
+                            val thumbnail = reshape(composite, thumbWidth, thumbOld, thumbWidth, ArtworkStore.thumbnailHeight(width, height))
+                            store.saveResized(source, name, width, height, it, thumbnail)
+                        }.getOrNull()
+                    }
+                    runOnUiThread {
+                        if (made == null) say(tr("Couldn't make a canvas that size. Try a smaller one.")) else openVariation(made)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Drags back and forth through every stroke and layer change, live. */
+    private fun historyPanel(): View = column().apply {
+        addView(label(tr("History"), 16f))
+        val total = history.undoCount + history.redoCount
+        if (total == 0) {
+            gapped(label(tr("Nothing to step through yet. Draw something first."), 13f, MUTED_TEXT))
+            return@apply
+        }
+        val step = label(tr("Step %1 of %2", history.undoCount, total), 13f, MUTED_TEXT)
+        gapped(step)
+        gapped(
+            SeekBar(context).apply {
+                max = total
+                progress = history.undoCount
+                contentDescription = tr("History")
+                progressTintList = ColorStateList.valueOf(ACCENT)
+                thumbTintList = ColorStateList.valueOf(ACCENT)
+                onChange { target ->
+                    // Stops if a step can't move right now, such as while liquify is open.
+                    while (history.undoCount > target) {
+                        val before = history.undoCount
+                        undoEdit()
+                        if (history.undoCount == before) break
+                    }
+                    while (history.undoCount < target && history.redoCount > 0) {
+                        val before = history.undoCount
+                        redoEdit()
+                        if (history.undoCount == before) break
+                    }
+                    step.text = tr("Step %1 of %2", history.undoCount, total)
+                }
+            },
+        )
+        gapped(label(tr("Drawing anything new clears the steps ahead of you."), 12f, MUTED_TEXT))
+    }
+
+    /** Earlier sittings of this artwork, kept when it was opened. */
+    private fun versionsPanel(): View = column().apply {
+        addView(label(tr("Earlier versions"), 16f))
+        val versions = store.versions(document.id)
+        if (versions.isEmpty()) {
+            gapped(label(tr("A version is kept each time you come back to this artwork, so check again next time."), 13f, MUTED_TEXT))
+            return@apply
+        }
+        gapped(label(tr("Tap one to open it as a new variation. This artwork stays as it is."), 12f, MUTED_TEXT))
+        val format = java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+        versions.forEach { (time, picture) ->
+            val label = format.format(java.util.Date(time))
+            gapped(
+                LinearLayout(context).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                    background = rounded(SURFACE_RAISED, 10)
+                    setPadding(dp(6), dp(6), dp(10), dp(6))
+                    contentDescription = label
+                    addView(
+                        ImageView(context).apply {
+                            scaleType = ImageView.ScaleType.CENTER_CROP
+                            background = rounded(Color.WHITE, 4)
+                            clipToOutline = true
+                            BitmapFactory.decodeFile(picture.path, BitmapFactory.Options().apply { inSampleSize = 4 })?.let(::setImageBitmap)
+                        },
+                        LinearLayout.LayoutParams(dp(THUMBNAIL_WIDTH), dp(THUMBNAIL_HEIGHT)),
+                    )
+                    addView(label(label, 14f), LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
+                    setOnClickListener {
+                        closePanel()
+                        val id = document.id
+                        save {
+                            val copy = store.restoreVersion(id, time, label)
+                            runOnUiThread { if (copy != null) openVariation(copy) else say(tr("Couldn't open this version")) }
+                        }
+                    }
+                },
+            )
+        }
+    }
+
+    private fun gesturesPanel(): View = column().apply {
+        addView(label(tr("Gestures and shortcuts"), 16f))
+        val rows = listOf(
+            tr("Tap with two fingers") to tr("Undo. Hold them down to keep undoing."),
+            tr("Tap with three fingers") to tr("Redo. Hold them down to keep redoing."),
+            tr("Tap with four fingers") to tr("Hide or show the tools."),
+            tr("Pinch and turn") to tr("Zoom and rotate the canvas. A quick pinch inward fits it again, and nearly straight settles straight."),
+            tr("Hold a finger or the pen still") to tr("Pick a color from the canvas or a reference."),
+            tr("Hold the pen at the end of a stroke") to tr("Turns it into a clean line, ellipse, or box."),
+            tr("Drag a color onto the canvas") to tr("Fills the area where you let go."),
+            tr("Tap the name of your layer") to tr("Rename it right there."),
+            tr("Double-tap a reference") to tr("Fits the whole image again. Two fingers zoom and turn it."),
+            tr("Pen side button") to tr("Picks a color, erases, or undoes. Choose in this menu."),
+            tr("Keyboard") to tr("B brush, E eraser, [ and ] size, Tab hides the tools, Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo."),
+        )
+        rows.forEach { (gesture, effect) ->
+            gapped(
+                column().apply {
+                    addView(label(gesture, 14f))
+                    addView(label(effect, 12f, MUTED_TEXT))
+                },
+            )
         }
     }
 
@@ -1819,6 +2197,19 @@ class MainActivity : Activity(), ReferenceHost {
             },
         )
         val active = canvas.brushKind
+        val recent = recentBrushes()
+        if (recent.size > 1) {
+            gapped(
+                wrapRow(
+                    recent.map { kind ->
+                        smallChip(tr(kind.label), kind === active) {
+                            selectTool(kind)
+                            rerender("brushes", ::brushPanel)
+                        }
+                    },
+                ),
+            )
+        }
         val families = brushFamilies()
         val family = families.firstOrNull { it.first == brushTab }
             ?: families.firstOrNull { active in it.second }
@@ -2071,6 +2462,16 @@ class MainActivity : Activity(), ReferenceHost {
                 columns = 3,
             ),
         )
+        // The outline shape applies to the lasso and the lasso fill.
+        gapped(label(tr("Lasso shape"), 12f, MUTED_TEXT))
+        addView(
+            segmented(LassoShape.entries.map { tr(it.label) }, canvas.lassoShape.ordinal) { index ->
+                hideLasso()
+                canvas.lassoShape = LassoShape.entries[index]
+                preferences.edit().putString("lassoShape", canvas.lassoShape.name).apply()
+                rerender("tools", ::toolsPanel)
+            },
+        )
         // One line on what the tool in use does, instead of a caption on every tile.
         val detail = when {
             canvas.selectionTool == SelectionTool.LASSO -> tr("Draw around an area")
@@ -2087,7 +2488,13 @@ class MainActivity : Activity(), ReferenceHost {
         markTools()
         closePanel()
         showSelectionBar()
-        say(if (tool == SelectionTool.WAND) tr("Tap a color area with your pen") else tr("Draw around an area with your pen"))
+        say(if (tool == SelectionTool.WAND) tr("Tap a color area with your pen") else lassoHint())
+    }
+
+    private fun lassoHint() = when (canvas.lassoShape) {
+        LassoShape.FREEHAND -> tr("Draw around an area with your pen")
+        LassoShape.POLYGON -> tr("Tap each corner with your pen, then tap the first one again to close")
+        else -> tr("Drag across an area with your pen")
     }
 
     /** Arms the last selection tool to grow or trim the selection, or puts it away on a second tap. */
@@ -2104,6 +2511,8 @@ class MainActivity : Activity(), ReferenceHost {
 
     /** Keeps what you can do with a selection at hand, under the canvas, while there is one. */
     internal val selectionBarShown get() = selectionBar?.isShowing == true
+
+    internal val canvasForTest get() = canvas
 
     private fun showSelectionBar() {
         selectionBar?.dismiss()
@@ -2156,6 +2565,21 @@ class MainActivity : Activity(), ReferenceHost {
         selectionMode = 0
         markTools()
         showSelectionBar()
+    }
+
+    /** Selects everything drawn on [layer], so it can be moved, copied, or painted inside. */
+    internal fun selectWholeLayer(layer: LayerInfo) {
+        setEditingMask(false)
+        closePanel()
+        canvas.selectionTool = SelectionTool.NONE
+        val id = layer.id
+        canvas.act { engine ->
+            val selected = NativeEngine.selectLayer(engine, id, 0)
+            runOnUiThread {
+                if (isDestroyed) return@runOnUiThread
+                if (selected) markSelection(true) else say(tr("This layer is empty"))
+            }
+        }
     }
 
     internal fun clearSelection() {
@@ -2721,6 +3145,18 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun colorPanel(): View = column().apply {
+        addView(colorChoices())
+        gapped(label(tr("Eyedropper picks from"), 12f, MUTED_TEXT))
+        addView(
+            segmented(listOf(tr("Everything"), tr("This layer")), if (canvas.pickFromLayer) 1 else 0) { index ->
+                canvas.pickFromLayer = index == 1
+                preferences.edit().putBoolean("pickFromLayer", canvas.pickFromLayer).apply()
+                rerender("color", ::colorPanel)
+            },
+        )
+    }
+
+    private fun colorChoices(): View = column().apply {
         addView(
             segmented(listOf(tr("Picker"), tr("Harmony"), tr("Palettes")), colorTab) {
                 colorTab = it
@@ -3712,6 +4148,7 @@ class MainActivity : Activity(), ReferenceHost {
             tileGrid(
                 listOf(
                     iconTile(R.drawable.ic_transform, tr("Transform")) { startTransform() },
+                    iconTile(R.drawable.ic_select, tr("Select")) { selectWholeLayer(active) },
                     iconTile(R.drawable.ic_liquify, tr("Liquify")) { startLiquify() },
                     iconTile(R.drawable.ic_filter, tr("Filters")) { openFilters() },
                     iconTile(R.drawable.ic_adjust, tr("Adjust")) {
@@ -3757,6 +4194,7 @@ class MainActivity : Activity(), ReferenceHost {
             }
         }
         if (active.text != null) extras += smallChip(tr("Edit text")) { askForText(active) }
+        if (document.layers.count { it.visible } >= 2) extras += smallChip(tr("Merge visible")) { mergeVisible() }
         if (extras.isNotEmpty()) gapped(wrapRow(extras))
         if (editingMask) gapped(label(tr("Painting on the mask. Tap Mask to return to the layer."), 12f, ACCENT))
     }
@@ -3865,20 +4303,28 @@ class MainActivity : Activity(), ReferenceHost {
     private fun chooseBlend(anchor: View, layer: LayerInfo) {
         lateinit var list: PopupWindow
         val rows = column().apply {
-            BLEND_MODES.forEachIndexed { index, name ->
-                addView(
-                    label(tr(name), 14f).apply {
-                        gravity = Gravity.CENTER_VERTICAL
-                        minHeight = dp(40)
-                        setPadding(dp(14), 0, dp(14), 0)
-                        if (index == layer.blend) background = rounded(SURFACE_RAISED, 10)
-                        setOnClickListener {
-                            list.dismiss()
-                            setBlend(layer, index)
-                        }
-                    },
-                    LinearLayout.LayoutParams(-1, -2),
-                )
+            BLEND_GROUPS.forEachIndexed { group, indices ->
+                if (group > 0) {
+                    addView(
+                        View(context).apply { setBackgroundColor(SURFACE_RAISED) },
+                        LinearLayout.LayoutParams(-1, dp(1)).apply { setMargins(dp(8), dp(4), dp(8), dp(4)) },
+                    )
+                }
+                indices.forEach { index ->
+                    addView(
+                        label(tr(BLEND_MODES[index]), 14f).apply {
+                            gravity = Gravity.CENTER_VERTICAL
+                            minHeight = dp(40)
+                            setPadding(dp(14), 0, dp(14), 0)
+                            if (index == layer.blend) background = rounded(SURFACE_RAISED, 10)
+                            setOnClickListener {
+                                list.dismiss()
+                                setBlend(layer, index)
+                            }
+                        },
+                        LinearLayout.LayoutParams(-1, -2),
+                    )
+                }
             }
         }
         val body = ScrollView(this).apply {
@@ -3887,7 +4333,12 @@ class MainActivity : Activity(), ReferenceHost {
             setPadding(dp(6), dp(6), dp(6), dp(6))
             addView(rows)
         }
-        list = PopupWindow(body, dp(BLEND_LIST_WIDTH), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        // Eighteen modes don't fit under the chip on every screen, so the list scrolls within what's left.
+        val spot = IntArray(2).also(anchor::getLocationInWindow)
+        // The chip sits low in the layers panel, so the list opens above it when that has more room.
+        val room = max(window.decorView.height - spot[1] - anchor.height, spot[1]) - dp(16)
+        body.measure(View.MeasureSpec.makeMeasureSpec(dp(BLEND_LIST_WIDTH), View.MeasureSpec.EXACTLY), View.MeasureSpec.UNSPECIFIED)
+        list = PopupWindow(body, dp(BLEND_LIST_WIDTH), min(body.measuredHeight, max(room, dp(200)))).apply {
             isOutsideTouchable = true
             isClippingEnabled = true
             setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
@@ -3906,6 +4357,10 @@ class MainActivity : Activity(), ReferenceHost {
         }
         layerPreviews[layer.id]?.let(thumbnail::setImageBitmap)
         layerThumbnails[layer.id] = thumbnail
+        thumbnail.setOnClickListener {
+            finishRename()
+            toggleSolo(layer)
+        }
         val handle = ImageView(this).apply {
             setImageResource(R.drawable.ic_handle)
             contentDescription = tr("Reorder %1", layer.name)
@@ -4129,6 +4584,34 @@ class MainActivity : Activity(), ReferenceHost {
         refreshLayers()
     }
 
+    /** Merges every visible layer into the lowest one, in drawing order. Hidden layers stay as they are. */
+    internal fun mergeVisible() {
+        val visible = document.layers.filter { it.visible }
+        if (visible.size < 2) {
+            say(tr("Show at least two layers to merge them"))
+            return
+        }
+        // Hidden layers between them don't change the picture, so the visible ones gather together first.
+        val base = document.layers.indexOf(visible.first())
+        visible.drop(1).forEachIndexed { offset, layer -> moveLayerTo(layer.id, base + 1 + offset) }
+        visible.drop(1).forEach { layer -> layerById(layer.id)?.let(::mergeDown) }
+    }
+
+    /** Shows only [layer], or brings the others back when it's already shown alone. */
+    private fun toggleSolo(layer: LayerInfo) {
+        val restore = soloRestore
+        if (restore != null && soloLayer == layer.id) {
+            soloRestore = null
+            editLayers(structural = false) { document.layers.forEach { it.visible = it.id in restore } }
+        } else {
+            soloRestore = document.layers.filter { it.visible }.map { it.id }.toSet()
+            soloLayer = layer.id
+            editLayers(structural = false) { document.layers.forEach { it.visible = it.id == layer.id } }
+            say(tr("Showing only this layer. Tap its picture again to bring the others back."))
+        }
+        refreshLayers()
+    }
+
     private fun moveLayerTo(id: Int, target: Int) {
         val layer = layerById(id) ?: return
         val to = target.coerceIn(0, document.layers.size - 1)
@@ -4221,6 +4704,34 @@ class MainActivity : Activity(), ReferenceHost {
             actionRow(R.drawable.ic_video, if (document.animation) tr("Stop animating") else tr("Animate"), tr("Each layer becomes a frame")) {
                 closePanel()
                 setAnimation(!document.animation)
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_transform, tr("Canvas size"), tr("Crop, extend, or scale, as a new variation")) {
+                showCanvasSize()
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_actions, tr("History"), tr("Step back through your strokes and changes")) {
+                closePanel()
+                showPanel("history", historyPanel())
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_duplicate, tr("Earlier versions"), tr("How this artwork looked in past sittings")) {
+                closePanel()
+                showPanel("versions", versionsPanel())
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_view, tr("Focus mode"), tr("Only the canvas, with a tab to bring the tools back")) {
+                setFocusMode(true)
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_companion, tr("Gestures and shortcuts"), tr("Every tap, hold, and key the app knows")) {
+                closePanel()
+                showPanel("gestures", gesturesPanel())
             },
         )
         gapped(label(tr("Export"), 13f, MUTED_TEXT))
@@ -5751,6 +6262,8 @@ class MainActivity : Activity(), ReferenceHost {
         hideHandles()
         transformControls?.dismiss()
         selectionBar?.dismiss()
+        sizeRingWindow?.dismiss()
+        focusTab?.dismiss()
         printWindow?.dismiss()
         noteWindow?.dismiss()
         liquifyControls?.dismiss()

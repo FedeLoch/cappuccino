@@ -60,6 +60,12 @@ int main() {
     std::vector<uint8_t> none;
     combineSelection(none, {255}, 2);
     assert(none.empty());
+    // A layer's soft edge adds and takes away in proportion.
+    std::vector<uint8_t> soft{100, 200, 0, 255};
+    combineSelection(soft, {150, 50, 0, 0}, 1);
+    assert((soft == std::vector<uint8_t>{150, 200, 0, 255}));
+    combineSelection(soft, {0, 0, 0, 128}, 2);
+    assert((soft == std::vector<uint8_t>{150, 200, 0, 127}));
     std::vector<uint8_t> edge(kSize * kSize, 0);
     for (int y = 0; y < kSize; ++y) {
         for (int x = 0; x < kSize / 2; ++x) edge[y * kSize + x] = 255;

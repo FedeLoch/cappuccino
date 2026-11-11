@@ -3,7 +3,10 @@
 
 const OPEN_FOLDER = 1;
 const GROUP_START = 3;
-const BLEND_KEYS = ["norm", "mul ", "scrn", "lddg", "dark", "lite", "sLit", "fsub", "smud"];
+const BLEND_KEYS = [
+  "norm", "mul ", "scrn", "lddg", "dark", "lite", "sLit", "fsub", "smud",
+  "over", "hLit", "div ", "idiv", "diff", "hue ", "sat ", "colr", "lum ",
+];
 
 // A growing big-endian byte buffer, like DataOutputStream over a ByteArrayOutputStream.
 class Bytes {
@@ -204,7 +207,10 @@ export function writePsd(width, height, layers, merged) {
 
 // --- Reading ---------------------------------------------------------------------------------
 
-const BLENDS = { "norm": 0, "mul ": 1, "scrn": 2, "lddg": 3, "dark": 4, "lite": 5, "sLit": 6, "fsub": 7, "smud": 8 };
+const BLENDS = {
+  "norm": 0, "mul ": 1, "scrn": 2, "lddg": 3, "dark": 4, "lite": 5, "sLit": 6, "fsub": 7, "smud": 8,
+  "over": 9, "hLit": 10, "div ": 11, "idiv": 12, "diff": 13, "hue ": 14, "sat ": 15, "colr": 16, "lum ": 17,
+};
 
 class Reader {
   constructor(buffer) {

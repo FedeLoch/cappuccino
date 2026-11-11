@@ -198,6 +198,20 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_selectColorAt(
     renderer(handle)->selectColorAt(x, y, tolerance, mode);
 }
 
+JNIEXPORT jintArray JNICALL Java_art_cappuccino_paint_NativeEngine_selectionBounds(
+    JNIEnv* env, jobject, jlong handle) {
+    jint bounds[4] = {};
+    if (!renderer(handle)->selectionBounds(bounds)) return nullptr;
+    jintArray result = env->NewIntArray(4);
+    env->SetIntArrayRegion(result, 0, 4, bounds);
+    return result;
+}
+
+JNIEXPORT jboolean JNICALL Java_art_cappuccino_paint_NativeEngine_selectLayer(
+    JNIEnv*, jobject, jlong handle, jint id, jint mode) {
+    return renderer(handle)->selectLayer(id, mode) ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_clearSelection(JNIEnv*, jobject,
                                                                              jlong handle) {
     renderer(handle)->clearSelection();
@@ -301,6 +315,12 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_writeLayer(JNIEnv*
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_readComposite(
     JNIEnv* env, jobject, jlong handle, jint width, jint height, jobject buffer) {
     renderer(handle)->readComposite(width, height, env->GetDirectBufferAddress(buffer));
+}
+
+JNIEXPORT jint JNICALL Java_art_cappuccino_paint_NativeEngine_pickLayerColor(JNIEnv*, jobject,
+                                                                             jlong handle, jint x,
+                                                                             jint y) {
+    return static_cast<jint>(renderer(handle)->pickLayerColor(x, y));
 }
 
 JNIEXPORT jint JNICALL Java_art_cappuccino_paint_NativeEngine_pickColor(JNIEnv*, jobject,

@@ -70,6 +70,8 @@ object NativeEngine {
     external fun commitLayerTransform(handle: Long)
     external fun setSelectionPolygon(handle: Long, points: FloatArray, mode: Int)
     external fun selectColorAt(handle: Long, x: Int, y: Int, tolerance: Int, mode: Int)
+    external fun selectLayer(handle: Long, id: Int, mode: Int): Boolean
+    external fun selectionBounds(handle: Long): IntArray?
     external fun clearSelection(handle: Long)
     external fun invertSelection(handle: Long)
     external fun setSelectionFeather(handle: Long, radius: Int)
@@ -88,6 +90,7 @@ object NativeEngine {
     external fun writeLayer(handle: Long, id: Int, pixels: ByteBuffer)
     external fun readComposite(handle: Long, width: Int, height: Int, pixels: ByteBuffer)
     external fun pickColor(handle: Long, x: Int, y: Int): Int
+    external fun pickLayerColor(handle: Long, x: Int, y: Int): Int
     external fun beginStroke(
         handle: Long,
         diameter: Float,

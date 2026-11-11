@@ -45,6 +45,10 @@ class EditHistory {
         if (undoStack.size > MAX_EDITS) undoStack.removeFirst()
     }
 
+    /** Steps you can undo, and steps you can redo. */
+    val undoCount get() = undoStack.size
+    val redoCount get() = redoStack.size
+
     fun undo(): Edit? = undoStack.removeLastOrNull()?.also(redoStack::addLast)
 
     fun redo(): Edit? = redoStack.removeLastOrNull()?.also(undoStack::addLast)

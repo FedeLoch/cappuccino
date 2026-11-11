@@ -322,6 +322,53 @@ class ArtworkStore(context: Context) {
 
     fun deleteArtwork(id: String) {
         artworkDir(id).deleteRecursively()
+        File(versionsDir, id).deleteRecursively()
+    }
+
+    private val versionsDir = File(root, "versions")
+
+    /**
+     * Keeps a copy of the artwork as it is on disk, so an earlier sitting can be brought back.
+     * At most one an hour, and only the newest few.
+     */
+    fun saveVersionIfDue(id: String) {
+        val source = artworkDir(id)
+        if (!File(source, MANIFEST).exists()) return
+        val folder = File(versionsDir, id).apply { mkdirs() }
+        val now = System.currentTimeMillis()
+        val newest = folder.listFiles().orEmpty().mapNotNull { it.name.toLongOrNull() }.maxOrNull()
+        if (newest != null && now - newest < VERSION_EVERY_MS) return
+        val target = File(folder, now.toString())
+        val copied = runCatching { source.copyRecursively(File(folder, "$now.tmp"), overwrite = true) }.getOrDefault(false)
+        if (!copied || !File(folder, "$now.tmp").renameTo(target)) {
+            File(folder, "$now.tmp").deleteRecursively()
+            return
+        }
+        folder.listFiles().orEmpty().filter { it.name.toLongOrNull() != null }.sortedByDescending { it.name.toLong() }
+            .drop(KEPT_VERSIONS).forEach { it.deleteRecursively() }
+    }
+
+    /** Earlier versions, newest first, as the time each was kept and its picture. */
+    fun versions(id: String): List<Pair<Long, File>> =
+        File(versionsDir, id).listFiles().orEmpty().mapNotNull { folder ->
+            val time = folder.name.toLongOrNull() ?: return@mapNotNull null
+            time to (File(folder, PREVIEW).takeIf { it.exists() } ?: File(folder, THUMBNAIL))
+        }.sortedByDescending { it.first }
+
+    /** Opens an earlier version as a new variation, so nothing is overwritten. Returns its id. */
+    fun restoreVersion(id: String, time: Long, label: String): String? {
+        val source = File(File(versionsDir, id), time.toString())
+        if (!source.exists()) return null
+        val family = variations(id)
+        val root = family.firstOrNull { it.variationOf.isEmpty() } ?: family.firstOrNull()
+        val copy = UUID.randomUUID().toString()
+        source.copyRecursively(artworkDir(copy))
+        updateManifest(copy) {
+            it.put("name", "${it.optString("name", "Untitled")} · $label")
+            it.put("variationOf", root?.id ?: id)
+            it.put("updated", System.currentTimeMillis())
+        }
+        return copy
     }
 
     fun duplicateArtwork(id: String) {
@@ -760,6 +807,39 @@ class ArtworkStore(context: Context) {
         return id
     }
 
+    /**
+     * Saves [document]'s layers at a new size as a new variation and returns its id. [pixels] holds
+     * every engine layer, masks included, already at [width] by [height].
+     */
+    fun saveResized(
+        document: ArtworkDocument,
+        name: String,
+        width: Int,
+        height: Int,
+        pixels: Map<Int, ByteBuffer>,
+        thumbnail: ByteBuffer,
+    ): String {
+        val family = variations(document.id)
+        val root = family.firstOrNull { it.variationOf.isEmpty() }?.id ?: document.id
+        val layers = document.layers.map { it.copy(file = null, maskFile = null) }.toMutableList()
+        val copy = ArtworkDocument(
+            UUID.randomUUID().toString(), name, document.projectId, document.activeLayer, document.nextLayerId, layers,
+            width = width, height = height,
+            groups = document.groups.map { it.copy() }.toMutableList(), nextGroupId = document.nextGroupId,
+            light = document.light, variationOf = root, followedBoards = document.followedBoards,
+            animation = document.animation, fps = document.fps,
+        )
+        save(
+            copy,
+            ArtworkSnapshot(
+                layers, copy.activeLayer, copy.nextLayerId,
+                pixels.mapValues { (_, buffer) -> LayerRegion(0, 0, width, height, buffer) },
+                thumbnail, copy.groups, copy.nextGroupId,
+            ),
+        )
+        return copy.id
+    }
+
     fun exportPsd(name: String, width: Int, height: Int, layers: List<PsdLayer>, merged: ByteArray): Boolean {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, "$name.psd")
@@ -896,6 +976,8 @@ class ArtworkStore(context: Context) {
     companion object {
         const val THUMBNAIL_WIDTH = 480
         private const val POINTS_PER_INCH = 72f
+        private const val VERSION_EVERY_MS = 60 * 60 * 1000L
+        private const val KEPT_VERSIONS = 12
         private const val JPEG_QUALITY = 95
         private const val MANIFEST = "manifest.json"
         private const val PREVIOUS_MANIFEST = "manifest.prev.json"

@@ -22,6 +22,8 @@ constexpr int kViewsGuide = 5;
 constexpr int kFramesGuide = 6;
 constexpr int kHideUnit = 4;
 constexpr int kClipHideUnit = 5;
+// Holds what's already drawn under a layer whose blend reads it.
+constexpr int kDestUnit = 6;
 
 constexpr char kStampVertex[] = R"(#version 300 es
 layout(location = 0) in vec2 aPosition;
@@ -300,7 +302,46 @@ uniform float uOpacity;
 uniform float uMatte;
 uniform sampler2D uTintMask;
 uniform vec4 uTint;
+// 0 blends in fixed function. Higher values are BlendMode values that read uDest.
+uniform int uMode;
+uniform sampler2D uDest;
+uniform vec2 uDestOrigin;
 out vec4 fragColor;
+
+// The W3C compositing formulas, with b the color underneath and s the layer's color.
+float lum(vec3 c) { return dot(c, vec3(0.3, 0.59, 0.11)); }
+vec3 clipColor(vec3 c) {
+    float l = lum(c);
+    float n = min(c.r, min(c.g, c.b));
+    float x = max(c.r, max(c.g, c.b));
+    if (n < 0.0) c = l + (c - l) * l / max(l - n, 1e-5);
+    if (x > 1.0) c = l + (c - l) * (1.0 - l) / max(x - l, 1e-5);
+    return c;
+}
+vec3 setLum(vec3 c, float l) { return clipColor(c + (l - lum(c))); }
+float sat(vec3 c) { return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b)); }
+vec3 setSat(vec3 c, float s) {
+    float n = min(c.r, min(c.g, c.b));
+    float range = max(c.r, max(c.g, c.b)) - n;
+    return range > 1e-5 ? (c - n) * s / range : vec3(0.0);
+}
+vec3 hardLight(vec3 b, vec3 s) {
+    vec3 multiply = b * 2.0 * s;
+    vec3 screen = b + (2.0 * s - 1.0) - b * (2.0 * s - 1.0);
+    return mix(multiply, screen, step(0.5, s));
+}
+vec3 blendColor(vec3 b, vec3 s) {
+    if (uMode == 9) return hardLight(s, b);
+    if (uMode == 10) return hardLight(b, s);
+    if (uMode == 11) return mix(min(vec3(1.0), b / max(1.0 - s, 1e-5)), vec3(0.0), step(b, vec3(0.0)));
+    if (uMode == 12) return mix(1.0 - min(vec3(1.0), (1.0 - b) / max(s, 1e-5)), vec3(1.0), step(1.0, b));
+    if (uMode == 13) return abs(b - s);
+    if (uMode == 14) return setLum(setSat(s, sat(b)), lum(b));
+    if (uMode == 15) return setLum(setSat(b, sat(s)), lum(b));
+    if (uMode == 16) return setLum(s, lum(b));
+    return setLum(b, lum(s));
+}
+
 void main() {
     if (uTint.a > 0.0) {
         fragColor = uTint * (1.0 - texture(uTintMask, vUv).r);
@@ -310,6 +351,14 @@ void main() {
     clip *= 1.0 - uUseClipHide * texture(uClipHide, vPlace).a;
     float shown = 1.0 - uUseHide * texture(uHide, vUv).a;
     fragColor = uSolid.a > 0.0 ? uSolid : texture(uTexture, vUv) * uOpacity * clip * shown;
+    if (uMode > 0) {
+        // The canvas underneath is opaque, so only the layer's own coverage mixes the result in.
+        vec3 below = texelFetch(uDest, ivec2(gl_FragCoord.xy - uDestOrigin), 0).rgb;
+        float cover = fragColor.a;
+        vec3 color = cover > 0.0 ? fragColor.rgb / cover : vec3(0.0);
+        fragColor = vec4(mix(below, clamp(blendColor(below, color), 0.0, 1.0), cover), 1.0);
+        return;
+    }
     // Some blends need clear pixels to read as a color that leaves the canvas unchanged.
     fragColor.rgb += (1.0 - fragColor.a) * uMatte;
 })";
@@ -496,6 +545,17 @@ Renderer::Renderer(int canvasWidth, int canvasHeight) : width_(canvasWidth), hei
     glUniform1i(glGetUniformLocation(canvasProgram_, "uTintMask"), 2);
     canvasTint_ = glGetUniformLocation(canvasProgram_, "uTint");
     glUniform4f(canvasTint_, 0.0f, 0.0f, 0.0f, 0.0f);
+    canvasMode_ = glGetUniformLocation(canvasProgram_, "uMode");
+    canvasDestOrigin_ = glGetUniformLocation(canvasProgram_, "uDestOrigin");
+    glUniform1i(canvasMode_, 0);
+    glUniform1i(glGetUniformLocation(canvasProgram_, "uDest"), kDestUnit);
+    glGenTextures(1, &destTexture_);
+    glBindTexture(GL_TEXTURE_2D, destTexture_);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
 
     stampUseMask_ = glGetUniformLocation(stampProgram_, "uUseMask");
     stampUseTip_ = glGetUniformLocation(stampProgram_, "uUseTip");
@@ -627,6 +687,7 @@ Renderer::~Renderer() {
     glDeleteProgram(effectProgram_);
     glDeleteProgram(stampProgram_);
     glDeleteProgram(canvasProgram_);
+    glDeleteTextures(1, &destTexture_);
     glDeleteProgram(filterProgram_);
     glDeleteProgram(smudgeProgram_);
     glDeleteProgram(gradientProgram_);
@@ -982,6 +1043,45 @@ void Renderer::selectColorAt(int x, int y, int tolerance, int mode) {
     if (!selectionActive_) hardSelection_.clear();
     combineSelection(hardSelection_, shape, mode);
     refreshSelection();
+}
+
+bool Renderer::selectionBounds(int* bounds) const {
+    if (!selectionActive_ || hardSelection_.empty()) return false;
+    int left = width_, top = height_, right = -1, bottom = -1;
+    for (int y = 0; y < height_; ++y) {
+        const uint8_t* row = hardSelection_.data() + static_cast<size_t>(y) * width_;
+        for (int x = 0; x < width_; ++x) {
+            if (row[x] == 0) continue;
+            left = std::min(left, x);
+            right = std::max(right, x + 1);
+            top = std::min(top, y);
+            bottom = std::max(bottom, y + 1);
+        }
+    }
+    if (right < 0) return false;
+    bounds[0] = left;
+    bounds[1] = top;
+    bounds[2] = right;
+    bounds[3] = bottom;
+    return true;
+}
+
+bool Renderer::selectLayer(int id, int mode) {
+    if (!findLayer(id)) return false;
+    const size_t count = static_cast<size_t>(width_) * height_;
+    std::vector<uint8_t> pixels(count * 4);
+    readLayer(id, pixels.data());
+    std::vector<uint8_t> shape(count);
+    bool drawn = false;
+    for (size_t index = 0; index < count; ++index) {
+        shape[index] = pixels[index * 4 + 3];
+        drawn = drawn || shape[index] != 0;
+    }
+    if (!drawn) return false;
+    if (!selectionActive_) hardSelection_.clear();
+    combineSelection(hardSelection_, shape, mode);
+    refreshSelection();
+    return true;
 }
 
 void Renderer::refreshSelection() {
@@ -1834,6 +1934,24 @@ void Renderer::drawCanvas(const float* matrix) {
                 source = GL_ONE_MINUS_DST_COLOR;
                 destination = GL_ONE_MINUS_SRC_COLOR;
                 break;
+            default: break;
+        }
+        // A filter, adjustment, or liquify preview draws with its own shader, so it shows the layer
+        // blended normally until it's applied.
+        const bool ownShader = (filterActive_ && layer.id == activeLayer_) || (adjustActive_ && layer.id == activeLayer_) ||
+                               (liquify_ && layer.id == liquifyLayer_);
+        const bool readsBelow = !ownShader && static_cast<int>(layer.blend) >= static_cast<int>(BlendMode::kOverlay);
+        if (readsBelow) {
+            // Copies what's drawn so far, so the shader can blend with it.
+            GLint viewport[4];
+            glGetIntegerv(GL_VIEWPORT, viewport);
+            glActiveTexture(GL_TEXTURE0 + kDestUnit);
+            glBindTexture(GL_TEXTURE_2D, destTexture_);
+            glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, viewport[0], viewport[1], viewport[2], viewport[3], 0);
+            glActiveTexture(GL_TEXTURE0);
+            glUniform2f(canvasDestOrigin_, static_cast<float>(viewport[0]), static_cast<float>(viewport[1]));
+            glUniform1i(canvasMode_, static_cast<int>(layer.blend));
+            glDisable(GL_BLEND);
         }
         glBlendEquationSeparate(equation, GL_FUNC_ADD);
         glBlendFuncSeparate(source, destination, GL_ZERO, GL_ONE);
@@ -1872,6 +1990,10 @@ void Renderer::drawCanvas(const float* matrix) {
             drawQuad(moved);
         } else {
             drawQuad(matrix);
+        }
+        if (readsBelow) {
+            glUniform1i(canvasMode_, 0);
+            glEnable(GL_BLEND);
         }
         if (gradientActive_ && (layer.id == activeLayer_ || layer.maskId == activeLayer_)) {
             drawGradient(matrix);
@@ -2099,6 +2221,21 @@ void Renderer::readComposite(int width, int height, void* pixels) {
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &texture);
     glBindFramebuffer(GL_FRAMEBUFFER, target);
+}
+
+uint32_t Renderer::pickLayerColor(int x, int y) {
+    if (x < 0 || y < 0 || x >= width_ || y >= height_) return 0;
+    uint8_t pixel[4] = {};
+    Rect spot;
+    spot.left = x;
+    spot.top = y;
+    spot.right = x + 1;
+    spot.bottom = y + 1;
+    readLayerRegion(activeLayer_, spot, pixel);
+    if (pixel[3] == 0) return 0;
+    // Layers keep premultiplied color, so a soft edge is brought back to its full color.
+    auto full = [&](uint8_t value) { return static_cast<uint32_t>(std::min(255, value * 255 / pixel[3])); };
+    return 0xFF000000u | (full(pixel[0]) << 16) | (full(pixel[1]) << 8) | full(pixel[2]);
 }
 
 uint32_t Renderer::pickColor(int x, int y) {

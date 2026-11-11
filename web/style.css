@@ -757,6 +757,7 @@ button:focus-visible, .slider:focus-visible { outline: 2px solid var(--accent); 
 }
 .blend-list button { display: block; width: 100%; min-height: 40px; padding: 0 14px; text-align: left; border-radius: 10px; font-size: 14px; }
 .blend-list button.on { background: var(--surface-raised); }
+.blend-divider { height: 1px; margin: 4px 8px; background: var(--surface-raised); }
 
 /* --- Transform and liquify --------------------------------------------------------------------- */
 
@@ -961,3 +962,9 @@ button:focus-visible, .slider:focus-visible { outline: 2px solid var(--accent); 
 /* The text sheet's live preview, painted like the canvas. */
 .text-preview { width: 100%; height: 110px; border-radius: 12px; background: #FFFFFF; display: block; }
 .slider-value { font-size: 12px; color: var(--cocoa, #6B4226); }
+
+/* Focus mode's way back, and the canvas size anchor. */
+.focus-tab { position: fixed; top: 12px; right: 12px; z-index: 6; opacity: 0.6; background: var(--surface); border-radius: 24px; }
+.anchor-grid { display: grid; grid-template-columns: repeat(3, 40px); gap: 4px; }
+.anchor { height: 36px; border-radius: 8px; background: #E9DDCB; color: #6B4226; }
+.anchor.on { background: var(--accent); color: #FFFFFF; }
