@@ -48,7 +48,7 @@ class TranslationsTest {
     fun catalogNamesHaveSpanish() {
         val names = BrushKind.entries.map { it.label } + BrushKind.BRUSH_FAMILIES.map { it.first } + BoardPurpose.entries.map { it.label } + REFERENCE_BLOCKS.keys + BLEND_MODES +
             Light.entries.map { it.label } + CompanionLook.entries.map { it.label } +
-            GUIDES.filter { it != "None" } + CANVAS_PRESETS.map { it.label } + LIQUIFY_TOOLS + FILTERS.map { it.label } +
+            GUIDES.filter { it != "None" } + CANVAS_PRESETS.map { it.label } + LIQUIFY_TOOLS + FILTERS.map { it.label } + FILTERS.map { it.about } +
             FILTERS.flatMap { kind -> kind.sliders.map { it.label } } + STARTER_PALETTES_NAMES + HARMONY_NAMES +
             WARMUPS.flatMap { listOf(it.title, it.steps, it.purpose) } + WARMUP_GROUPS + SUN_SPOTS.map { it.name } + FORM_WORDS +
             listOf("Palette", "Values", "Composition", "Silhouette", "Mood", "Light", "Perspective", "Next step", "Progress")

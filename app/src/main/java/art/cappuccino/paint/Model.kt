@@ -231,30 +231,51 @@ val VIEW_MODES = listOf("Color", "Grayscale", "Two values", "Three values")
 
 val GUIDES = listOf("None", "Thirds", "Golden", "Grid", "Isometric", "Views", "Frames")
 
-/** A filter's label, its engine number, and its sliders in order. */
-class FilterSlider(val label: String, val low: Float, val high: Float, val start: Float)
+/**
+ * A filter slider and how its value reads: "px" for pixels, "deg" for an angle in radians, "level"
+ * for a 0 to 255 tone, "gamma" for a midtone power, "times" for a multiplier shown as a percentage,
+ * and "%" for a share of the slider's range.
+ */
+class FilterSlider(val label: String, val low: Float, val high: Float, val start: Float, val unit: String = "%")
 
-class FilterKind(val label: String, val id: Int, val sliders: List<FilterSlider>, val usesColor: Boolean = false)
+/** A filter's label, its engine number, one line on what it does, and its sliders in order. */
+class FilterKind(val label: String, val id: Int, val about: String, val sliders: List<FilterSlider>, val usesColor: Boolean = false)
 
 val FILTERS = listOf(
-    FilterKind("Blur", 1, listOf(FilterSlider("Radius", 0f, 120f, 12f))),
+    FilterKind("Blur", 1, "Softens the whole layer.", listOf(FilterSlider("Radius", 0f, 120f, 12f, "px"))),
     FilterKind(
-        "Motion blur", 2,
-        listOf(FilterSlider("Distance", 0f, 240f, 40f), FilterSlider("Angle", 0f, 3.1416f, 0f)),
+        "Motion blur", 2, "Smears the layer in one direction, as if it moved.",
+        listOf(FilterSlider("Distance", 0f, 240f, 40f, "px"), FilterSlider("Angle", 0f, 3.1416f, 0f, "deg")),
     ),
-    FilterKind("Sharpen", 3, listOf(FilterSlider("Amount", 0f, 3f, 1f))),
-    FilterKind("Noise", 4, listOf(FilterSlider("Amount", 0f, 0.5f, 0.1f))),
-    FilterKind("Gradient map", 5, listOf(FilterSlider("Amount", 0f, 1f, 1f)), usesColor = true),
+    FilterKind("Sharpen", 3, "Crisps up soft edges.", listOf(FilterSlider("Amount", 0f, 3f, 1f, "times"))),
+    FilterKind("Noise", 4, "Adds a fine grain.", listOf(FilterSlider("Amount", 0f, 0.5f, 0.1f))),
     FilterKind(
-        "Levels", 6,
+        "Gradient map", 5, "Recolors the layer: darks to black, midtones to your color, lights to white.",
+        listOf(FilterSlider("Amount", 0f, 1f, 1f)), usesColor = true,
+    ),
+    FilterKind(
+        "Levels", 6, "Sets the darkest and lightest points, and how bright the midtones are.",
         listOf(
-            FilterSlider("Black point", 0f, 0.5f, 0f),
-            FilterSlider("Midtones", 0.3f, 3f, 1f),
-            FilterSlider("White point", 0.5f, 1f, 1f),
+            FilterSlider("Black point", 0f, 0.5f, 0f, "level"),
+            FilterSlider("Midtones", 0.3f, 3f, 1f, "gamma"),
+            FilterSlider("White point", 0.5f, 1f, 1f, "level"),
         ),
     ),
-    FilterKind("Depth fade", 7, listOf(FilterSlider("Amount", 0f, 1f, 0.3f)), usesColor = true),
+    FilterKind(
+        "Depth fade", 7, "Washes the layer toward your color, so it sits farther back.",
+        listOf(FilterSlider("Amount", 0f, 1f, 0.3f)), usesColor = true,
+    ),
 )
+
+/** How a filter slider's value reads beside it. */
+fun filterValueText(slider: FilterSlider, value: Float): String = when (slider.unit) {
+    "px" -> "${Math.round(value)} px"
+    "deg" -> "${Math.round(Math.toDegrees(value.toDouble()))}°"
+    "level" -> "${Math.round(value * 255)}"
+    "gamma" -> String.format(java.util.Locale.US, "%.2f", value)
+    "times" -> "${Math.round(value * 100)}%"
+    else -> "${Math.round((value - slider.low) / (slider.high - slider.low) * 100)}%"
+}
 
 val LIQUIFY_TOOLS = listOf("Push", "Grow", "Shrink", "Restore")
 

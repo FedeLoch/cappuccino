@@ -323,6 +323,25 @@ class CanvasInteractionTest {
         assertTrue("the second stroke should remain", hasInk(width / 2f, bottom))
     }
 
+    @Test
+    fun aGroupMovesWithAllItsLayers() {
+        onStudio { it.addLayer() }
+        onStudio { it.addLayer() }
+        var before = emptyList<Int>()
+        var group = 0
+        onStudio {
+            val top = it.activeLayer()!!
+            it.toggleGroup(top)
+            group = top.groupId
+            before = it.layerOrder
+        }
+        // Bottom to top: loose, grouped, grouped. Put the group under the loose layer.
+        onStudio { it.moveBlocks(listOf("l${before[0]}", "g$group")) }
+        var after = emptyList<Int>()
+        onStudio { after = it.layerOrder }
+        assertEquals(listOf(before[1], before[2], before[0]), after)
+    }
+
     private fun onStudio(action: (MainActivity) -> Unit) {
         scenario.onActivity(action)
         settle()

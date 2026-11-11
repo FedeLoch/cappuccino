@@ -87,6 +87,7 @@ private const val THUMBNAIL_WIDTH = 72
 private const val THUMBNAIL_HEIGHT = 48
 private const val LAYER_ROW = 56
 private const val LAYER_GAP = 4
+private const val FILTER_STEPS = 240
 private const val RETIRED_LAYERS = 6
 private val LEFT_PANELS = setOf("actions", "references", "view", "tools", "sticker", "gestures", "history", "versions")
 private const val PICK_TIP = 45
@@ -2700,28 +2701,119 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     private fun filterPanel(): View = column().apply {
-        addView(label(tr("Filters"), 16f))
-        gapped(wrapRow(FILTERS.map { kind -> smallChip(tr(kind.label), kind === filter) { chooseFilter(kind) } }))
-        filter.sliders.forEachIndexed { index, slider ->
-            val span = slider.high - slider.low
-            addView(toolSlider(tr(slider.label), ((filterValues[index] - slider.low) / span * 100).roundToInt()) {
-                filterValues[index] = slider.low + span * it / 100f
-                pushFilter()
-            })
+        addView(
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(label(tr("Filters"), 16f), LinearLayout.LayoutParams(0, -2, 1f))
+                // Which layer it lands on, since the panel covers the layer list.
+                activeLayer()?.let { layer ->
+                    addView(
+                        label(layer.name, 12f, MUTED_TEXT).apply {
+                            maxLines = 1
+                            ellipsize = android.text.TextUtils.TruncateAt.END
+                            maxWidth = dp(140)
+                        },
+                    )
+                }
+            },
+        )
+        gapped(tileGrid(FILTERS.map { kind -> iconTile(filterIcon(kind), tr(kind.label), kind === filter) { chooseFilter(kind) } }))
+        gapped(label(tr(filter.about), 12f, MUTED_TEXT))
+        filter.sliders.forEachIndexed { index, slider -> addView(filterSlider(slider, index)) }
+        if (filter.usesColor) {
+            gapped(label(tr("Color"), 12f, MUTED_TEXT))
+            gapped(filterColors())
         }
-        if (filter.usesColor) gapped(label(tr("Uses your current color."), 12f, MUTED_TEXT))
         gapped(
-            wrapRow(
-                listOf(
-                    smallChip(tr("Cancel")) { closePanel() },
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(compareChip())
+                addView(smallChip(tr("Reset")) { chooseFilter(filter) }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
+                addView(View(context), LinearLayout.LayoutParams(0, 0, 1f))
+                addView(smallChip(tr("Cancel")) { closePanel() })
+                addView(
                     smallChip(tr("Apply"), true) {
                         panelKey = ""
                         panel?.dismiss()
                         commitFilter()
                     },
-                ),
-            ),
+                    LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) },
+                )
+            },
         )
+    }
+
+    private fun filterIcon(kind: FilterKind) = when (kind.id) {
+        1 -> R.drawable.ic_fx_blur
+        2 -> R.drawable.ic_fx_motion
+        3 -> R.drawable.ic_fx_sharpen
+        4 -> R.drawable.ic_fx_noise
+        5 -> R.drawable.ic_fx_gradient_map
+        6 -> R.drawable.ic_fx_levels
+        else -> R.drawable.ic_fx_depth
+    }
+
+    /** A slider with its name on the left and its value, in pixels, degrees, or percent, on the right. */
+    private fun filterSlider(slider: FilterSlider, index: Int): View = column().apply {
+        val span = slider.high - slider.low
+        val value = label(filterValueText(slider, filterValues[index]), 12f)
+        gapped(
+            LinearLayout(context).apply {
+                addView(label(tr(slider.label), 12f, MUTED_TEXT), LinearLayout.LayoutParams(0, -2, 1f))
+                addView(value)
+            },
+        )
+        addView(
+            SeekBar(context).apply {
+                max = FILTER_STEPS
+                progress = ((filterValues[index] - slider.low) / span * FILTER_STEPS).roundToInt()
+                contentDescription = tr(slider.label)
+                progressTintList = ColorStateList.valueOf(ACCENT)
+                thumbTintList = ColorStateList.valueOf(ACCENT)
+                onChange {
+                    filterValues[index] = slider.low + span * it / FILTER_STEPS
+                    value.text = filterValueText(slider, filterValues[index])
+                    pushFilter()
+                }
+            },
+        )
+    }
+
+    /** Your color and recent ones, for the filters that tint; picking one updates the preview. */
+    private fun filterColors(): View = LinearLayout(this).apply {
+        (listOf(canvas.brushColor) + recentColors).distinct().take(8).forEach { color ->
+            addView(
+                View(context).apply {
+                    background = if (color == canvas.brushColor) swatchBackground(color) else rounded(color, 12)
+                    contentDescription = tr("Color swatch")
+                    setOnClickListener {
+                        setColor(color)
+                        pushFilter()
+                        rerender("filter", ::filterPanel)
+                    }
+                },
+                LinearLayout.LayoutParams(dp(24), dp(24)).apply { marginEnd = dp(8) },
+            )
+        }
+    }
+
+    /** Held down, shows the layer as it was; let go and the filter is back. */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun compareChip(): View = smallChip(tr("Compare")) { }.apply {
+        contentDescription = tr("Hold to see the layer without the filter")
+        setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    background = rounded(ACCENT, 14)
+                    showFilter(false)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    background = rounded(SURFACE_RAISED, 14)
+                    showFilter(true)
+                }
+            }
+            true
+        }
     }
 
     private fun chooseFilter(kind: FilterKind) {
@@ -2738,12 +2830,14 @@ class MainActivity : Activity(), ReferenceHost {
         showPanel("filter", filterPanel())
     }
 
-    private fun pushFilter() {
+    private fun pushFilter() = showFilter(true)
+
+    private fun showFilter(shown: Boolean) {
         val id = filter.id
         val values = filterValues.copyOf()
         val color = canvas.brushColor
         val rgb = floatArrayOf(Color.red(color) / 255f, Color.green(color) / 255f, Color.blue(color) / 255f)
-        canvas.act { NativeEngine.setFilter(it, true, id, values, rgb) }
+        canvas.act { NativeEngine.setFilter(it, shown, id, values, rgb) }
     }
 
     private fun commitFilter() {
@@ -3720,6 +3814,7 @@ class MainActivity : Activity(), ReferenceHost {
     }
 
     internal val layerCount get() = document.layers.size
+    internal val layerOrder get() = document.layers.map { it.id }
     internal val artworkId get() = document.id
 
     internal fun openActionsAndVariants() {
@@ -4076,11 +4171,15 @@ class MainActivity : Activity(), ReferenceHost {
         document.layers.asReversed().forEach { layer ->
             val group = document.groups.firstOrNull { it.id == layer.groupId }
             if (group != null && group.id != shownGroup) {
-                list.addView(groupRow(group), LinearLayout.LayoutParams(-1, dp(40)).apply { topMargin = dp(LAYER_GAP) })
+                list.addView(
+                    groupRow(group, list).apply { tag = "g${group.id}" },
+                    LinearLayout.LayoutParams(-1, dp(40)).apply { topMargin = dp(LAYER_GAP) },
+                )
             }
             shownGroup = group?.id ?: 0
             if (group?.collapsed == true) return@forEach
             val row = layerRow(layer, rows)
+            row.tag = if (group != null) "g${group.id}" else "l${layer.id}"
             rows.add(row)
             list.addView(
                 row,
@@ -4246,10 +4345,36 @@ class MainActivity : Activity(), ReferenceHost {
         return actions
     }
 
-    private fun groupRow(group: LayerGroup): View = LinearLayout(this).apply {
+    @SuppressLint("ClickableViewAccessibility")
+    private fun groupRow(group: LayerGroup, list: LinearLayout): View = LinearLayout(this).apply {
         gravity = Gravity.CENTER_VERTICAL
         background = rounded(ROAST, 10)
-        setPadding(dp(10), 0, dp(2), 0)
+        setPadding(0, 0, dp(2), 0)
+        // Dragging the handle carries the group header and all its layers together.
+        val handle = ImageView(context).apply {
+            setImageResource(R.drawable.ic_handle)
+            contentDescription = tr("Reorder %1", group.name)
+            setPadding(dp(6), dp(8), dp(6), dp(8))
+        }
+        val key = "g${group.id}"
+        fun block() = (0 until list.childCount).map(list::getChildAt).filter { it.tag == key }
+        var startY = 0f
+        handle.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startY = event.rawY
+                    parent.requestDisallowInterceptTouchEvent(true)
+                    block().forEach { it.alpha = 0.8f; it.elevation = dp(4).toFloat() }
+                }
+                MotionEvent.ACTION_MOVE -> block().forEach { it.translationY = event.rawY - startY }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    block().forEach { it.translationY = 0f; it.alpha = 1f; it.elevation = 0f }
+                    if (event.actionMasked == MotionEvent.ACTION_UP) dropBlock(list, key, event.rawY - startY)
+                }
+            }
+            true
+        }
+        addView(handle, LinearLayout.LayoutParams(dp(32), -1))
         setOnClickListener {
             group.collapsed = !group.collapsed
             markUnsaved()
@@ -4272,6 +4397,40 @@ class MainActivity : Activity(), ReferenceHost {
                 refreshLayers()
             },
         )
+    }
+
+    /**
+     * Places the list block tagged [key] (a group with its layers, or one loose layer) wherever its
+     * middle lands after moving [shift] pixels, among the other blocks.
+     */
+    private fun dropBlock(list: LinearLayout, key: String, shift: Float) {
+        val spans = LinkedHashMap<String, Pair<Int, Int>>()
+        for (index in 0 until list.childCount) {
+            val view = list.getChildAt(index)
+            val tag = view.tag as? String ?: continue
+            val span = spans[tag]
+            spans[tag] = if (span == null) view.top to view.bottom else min(span.first, view.top) to max(span.second, view.bottom)
+        }
+        val own = spans.remove(key) ?: return
+        val middle = (own.first + own.second) / 2f + shift
+        val order = spans.keys.toMutableList()
+        order.add(spans.values.count { (it.first + it.second) / 2f < middle }, key)
+        moveBlocks(order)
+    }
+
+    /** Puts the layers in the order of [order], blocks listed top first as the panel shows them. */
+    internal fun moveBlocks(order: List<String>) {
+        val topFirst = order.flatMap { tag ->
+            val id = tag.drop(1).toInt()
+            if (tag[0] == 'g') document.layers.filter { it.groupId == id }.asReversed() else listOfNotNull(layerById(id))
+        }
+        val reordered = topFirst.asReversed()
+        if (reordered.size != document.layers.size || reordered == document.layers) return
+        editLayers {
+            document.layers.clear()
+            document.layers.addAll(reordered)
+        }
+        refreshLayers()
     }
 
     internal fun toggleGroup(layer: LayerInfo) {
@@ -4432,10 +4591,26 @@ class MainActivity : Activity(), ReferenceHost {
 
     /** Tapping the name of the layer you're on renames it right there; other taps pick the layer. */
     private fun layerName(layer: LayerInfo, selected: Boolean): View =
-        label(if (layer.maskId != 0) "◐ ${layer.name}" else layer.name).apply {
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setPadding(0, dp(12), 0, dp(12))
+        label(if (layer.maskId != 0) "◐ ${layer.name}" else layer.name).let { name ->
+            name.maxLines = 1
+            name.ellipsize = android.text.TextUtils.TruncateAt.END
+            if (layer.blend == 0) {
+                name.setPadding(0, dp(12), 0, dp(12))
+                return@let name
+            }
+            // A quiet second line names the blend, so you don't have to open the layer to see it.
+            column().apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(6), 0, dp(6))
+                addView(name)
+                addView(
+                    label(tr(BLEND_MODES[layer.blend]), 11f, name.currentTextColor).apply {
+                        alpha = 0.7f
+                        maxLines = 1
+                    },
+                )
+            }
+        }.apply {
             setOnClickListener {
                 when {
                     pickingLayers -> {

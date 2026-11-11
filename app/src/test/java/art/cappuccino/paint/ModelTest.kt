@@ -33,4 +33,15 @@ class ModelTest {
         val brushes = BrushKind.PAINT_BRUSHES
         assertEquals(brushes.map { it.label }, erasers.map { it.label })
     }
+
+    @Test
+    fun filterValuesReadInTheirOwnUnits() {
+        fun slider(filter: String, name: String) = FILTERS.first { it.label == filter }.sliders.first { it.label == name }
+        assertEquals("12 px", filterValueText(slider("Blur", "Radius"), 12f))
+        assertEquals("90°", filterValueText(slider("Motion blur", "Angle"), 1.5708f))
+        assertEquals("100%", filterValueText(slider("Sharpen", "Amount"), 1f))
+        assertEquals("20%", filterValueText(slider("Noise", "Amount"), 0.1f))
+        assertEquals("128", filterValueText(slider("Levels", "Black point"), 0.5f))
+        assertEquals("1.00", filterValueText(slider("Levels", "Midtones"), 1f))
+    }
 }

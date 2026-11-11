@@ -2926,15 +2926,42 @@ function liquifyPointerEvent(event, type) {
 
 // --- Adjust and filters, as MainActivity.adjustPanel() and filterPanel() ---------------------------
 
+// As FILTERS in Model.kt. A slider is [label, low, high, start, unit]; see filterValueText for units.
 const FILTERS = [
-  { label: "Blur", id: 1, sliders: [["Radius", 0, 120, 12]] },
-  { label: "Motion blur", id: 2, sliders: [["Distance", 0, 240, 40], ["Angle", 0, 3.1416, 0]] },
-  { label: "Sharpen", id: 3, sliders: [["Amount", 0, 3, 1]] },
-  { label: "Noise", id: 4, sliders: [["Amount", 0, 0.5, 0.1]] },
-  { label: "Gradient map", id: 5, sliders: [["Amount", 0, 1, 1]], usesColor: true },
-  { label: "Levels", id: 6, sliders: [["Black point", 0, 0.5, 0], ["Midtones", 0.3, 3, 1], ["White point", 0.5, 1, 1]] },
-  { label: "Depth fade", id: 7, sliders: [["Amount", 0, 1, 0.3]], usesColor: true },
+  { label: "Blur", id: 1, icon: "fx_blur", about: "Softens the whole layer.", sliders: [["Radius", 0, 120, 12, "px"]] },
+  {
+    label: "Motion blur", id: 2, icon: "fx_motion", about: "Smears the layer in one direction, as if it moved.",
+    sliders: [["Distance", 0, 240, 40, "px"], ["Angle", 0, 3.1416, 0, "deg"]],
+  },
+  { label: "Sharpen", id: 3, icon: "fx_sharpen", about: "Crisps up soft edges.", sliders: [["Amount", 0, 3, 1, "times"]] },
+  { label: "Noise", id: 4, icon: "fx_noise", about: "Adds a fine grain.", sliders: [["Amount", 0, 0.5, 0.1, "%"]] },
+  {
+    label: "Gradient map", id: 5, icon: "fx_gradient_map", usesColor: true,
+    about: "Recolors the layer: darks to black, midtones to your color, lights to white.", sliders: [["Amount", 0, 1, 1, "%"]],
+  },
+  {
+    label: "Levels", id: 6, icon: "fx_levels", about: "Sets the darkest and lightest points, and how bright the midtones are.",
+    sliders: [["Black point", 0, 0.5, 0, "level"], ["Midtones", 0.3, 3, 1, "gamma"], ["White point", 0.5, 1, 1, "level"]],
+  },
+  {
+    label: "Depth fade", id: 7, icon: "fx_depth", usesColor: true,
+    about: "Washes the layer toward your color, so it sits farther back.", sliders: [["Amount", 0, 1, 0.3, "%"]],
+  },
 ];
+const FILTER_STEPS = 240;
+
+// How a filter slider's value reads beside it.
+function filterValueText([, low, high, , unit], value) {
+  switch (unit) {
+    case "px": return `${Math.round(value)} px`;
+    case "deg": return `${Math.round(value * 180 / Math.PI)}°`;
+    case "level": return `${Math.round(value * 255)}`;
+    case "gamma": return value.toFixed(2);
+    case "times": return `${Math.round(value * 100)}%`;
+    default: return `${Math.round((value - low) / (high - low) * 100)}%`;
+  }
+}
+
 let adjustment = [0, 1, 0, 0, 0, 0];
 let filter = FILTERS[0];
 let filterValues = [0, 0, 0, 0];
@@ -2973,10 +3000,10 @@ function adjustPanel() {
   return body;
 }
 
-function pushFilter() {
+function pushFilter(shown = true) {
   engine.HEAPF32.set(filterValues, pointsOffset);
   const rgb = hexToRgb(color);
-  engine._cap_set_filter(1, filter.id, rgb[0], rgb[1], rgb[2]);
+  engine._cap_set_filter(shown ? 1 : 0, filter.id, rgb[0], rgb[1], rgb[2]);
   queueCompose();
 }
 
@@ -2999,17 +3026,63 @@ function openFilters() {
 }
 
 function filterPanel() {
-  const body = h("div", { className: "column" }, h("div", { className: "title" }, "Filters"),
-    gap(h("div", { className: "chips wrap" }, FILTERS.map((kind) => smallChip(kind.label, kind === filter, () => chooseFilter(kind))))));
-  filter.sliders.forEach(([label, low, high], index) => {
+  const layer = activeLayer();
+  const tile = (kind) => h("button", { className: kind === filter ? "icon-tile on" : "icon-tile", ariaLabel: kind.label, onClick: () => chooseFilter(kind) },
+    svg(kind.icon), h("span", {}, kind.label));
+  const body = h("div", { className: "column" },
+    h("div", { className: "row" },
+      h("div", { className: "title grow" }, "Filters"),
+      // Which layer it lands on, since the panel covers the layer list.
+      layer && h("div", { className: "small filter-layer", translate: false }, layer.name)),
+    gap(h("div", { className: "tile-grid" }, FILTERS.map(tile))),
+    gap(h("div", { className: "small" }, filter.about)));
+  filter.sliders.forEach((slider, index) => {
+    const [label, low, high] = slider;
     const span = high - low;
-    body.append(toolSlider(label, Math.round((filterValues[index] - low) / span * 100), (value) => {
-      filterValues[index] = low + span * value / 100;
-      pushFilter();
-    }));
+    const value = h("span", {}, filterValueText(slider, filterValues[index]));
+    body.append(h("div", { className: "column" },
+      gap(h("div", { className: "row small" }, h("span", { className: "grow" }, label), value)),
+      h("input", {
+        className: "range", type: "range", min: "0", max: String(FILTER_STEPS), ariaLabel: label,
+        value: String(Math.round((filterValues[index] - low) / span * FILTER_STEPS)),
+        onInput: (event) => {
+          filterValues[index] = low + span * Number(event.target.value) / FILTER_STEPS;
+          value.textContent = filterValueText(slider, filterValues[index]);
+          pushFilter();
+        },
+      })));
   });
-  if (filter.usesColor) body.append(gap(h("div", { className: "small" }, "Uses your current color.")));
+  if (filter.usesColor) {
+    // Your color and recent ones, for the filters that tint; picking one updates the preview.
+    const colors = [...new Set([color, ...recentColors].map((it) => it.toUpperCase()))].slice(0, 8);
+    body.append(gap(h("div", { className: "small" }, "Color")), gap(h("div", { className: "filter-colors" },
+      colors.map((value) => h("button", {
+        className: value === color ? "on" : "", ariaLabel: "Color swatch", style: { background: value },
+        onClick: () => {
+          setColor(value);
+          pushFilter();
+          rerender();
+        },
+      })))));
+  }
+  // Held down, shows the layer as it was; let go and the filter is back.
+  const compare = smallChip("Compare", false, () => {});
+  compare.title = "Hold to see the layer without the filter";
+  compare.addEventListener("pointerdown", (event) => {
+    compare.setPointerCapture(event.pointerId);
+    compare.classList.add("on");
+    pushFilter(false);
+  });
+  const release = () => {
+    compare.classList.remove("on");
+    pushFilter();
+  };
+  compare.addEventListener("pointerup", release);
+  compare.addEventListener("pointercancel", release);
   body.append(gap(h("div", { className: "chips" },
+    compare,
+    smallChip("Reset", false, () => chooseFilter(filter)),
+    h("span", { className: "grow" }),
     smallChip("Cancel", false, () => closePanel()),
     smallChip("Apply", true, () => {
       panelKey = "";
@@ -4806,10 +4879,11 @@ function layersPanel() {
   let shownGroup = 0;
   for (const layer of [...layers()].reverse()) {
     const group = groupsOf().find((it) => it.id === layer.group);
-    if (group && group.id !== shownGroup) list.append(groupRow(group));
+    if (group && group.id !== shownGroup) list.append(groupRow(group, list));
     shownGroup = group?.id || 0;
     if (group?.collapsed) continue;
     const row = layerRow(layer);
+    row.dataset.block = group ? `g${group.id}` : `l${layer.id}`;
     row.style.marginLeft = `${(group ? 12 : 0) + (layer.clip ? 20 : 0)}px`;
     list.append(row);
   }
@@ -4925,7 +4999,9 @@ function layerPickActions() {
   return actions;
 }
 
-function groupRow(group) {
+function groupRow(group, list) {
+  const key = `g${group.id}`;
+  const handle = h("span", { className: "layer-handle", ariaLabel: `Reorder ${group.name}`, innerHTML: ICONS.handle });
   const row = h("div", {
     className: "group-row", role: "button", tabIndex: 0,
     onClick: () => {
@@ -4940,7 +5016,7 @@ function groupRow(group) {
         refreshLayers();
       });
     },
-  }, h("span", { className: "grow" }, `${group.collapsed ? "▸" : "▾"} ${group.name}`),
+  }, handle, h("span", { className: "grow" }, `${group.collapsed ? "▸" : "▾"} ${group.name}`),
   h("button", {
     className: "icon", ariaLabel: `Show or hide ${group.name}`, innerHTML: ICONS[group.visible ? "visible" : "hidden"],
     onClick: (event) => {
@@ -4952,7 +5028,65 @@ function groupRow(group) {
       refreshLayers();
     },
   }));
+  row.dataset.block = key;
+  // Dragging the handle carries the group header and all its layers together.
+  const block = () => [...list.children].filter((it) => it.dataset.block === key);
+  let startY = 0;
+  handle.addEventListener("pointerdown", (event) => {
+    event.stopPropagation();
+    handle.setPointerCapture(event.pointerId);
+    startY = event.clientY;
+    block().forEach((it) => it.classList.add("dragging"));
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    block().forEach((it) => { it.style.transform = `translateY(${toUi(event.clientY - startY)}px)`; });
+  });
+  const drop = (event, keep) => {
+    if (!handle.hasPointerCapture(event.pointerId)) return;
+    block().forEach((it) => {
+      it.style.transform = "";
+      it.classList.remove("dragging");
+    });
+    if (keep) dropBlock(list, key, toUi(event.clientY - startY));
+  };
+  handle.addEventListener("pointerup", (event) => drop(event, true));
+  handle.addEventListener("pointercancel", (event) => drop(event, false));
+  handle.addEventListener("click", (event) => event.stopPropagation());
   return row;
+}
+
+// Places the list block tagged key (a group with its layers, or one loose layer) wherever its
+// middle lands after moving shift, among the other blocks.
+function dropBlock(list, key, shift) {
+  const spans = new Map();
+  for (const view of list.children) {
+    const tag = view.dataset.block;
+    if (!tag) continue;
+    const top = view.offsetTop;
+    const bottom = top + view.offsetHeight;
+    const span = spans.get(tag);
+    spans.set(tag, span ? [Math.min(span[0], top), Math.max(span[1], bottom)] : [top, bottom]);
+  }
+  const own = spans.get(key);
+  if (!own) return;
+  spans.delete(key);
+  const middle = (own[0] + own[1]) / 2 + shift;
+  const order = [...spans.keys()];
+  order.splice([...spans.values()].filter(([top, bottom]) => (top + bottom) / 2 < middle).length, 0, key);
+  moveBlocks(order);
+}
+
+// Puts the layers in the order of the blocks, listed top first as the panel shows them.
+function moveBlocks(order) {
+  const topFirst = order.flatMap((tag) => {
+    const id = Number(tag.slice(1));
+    return tag[0] === "g" ? layers().filter((it) => it.group === id).reverse() : [layerById(id)].filter(Boolean);
+  });
+  const reordered = topFirst.reverse();
+  if (reordered.length !== layers().length || reordered.every((it, index) => it === layers()[index])) return;
+  editLayers(() => { layers().splice(0, layers().length, ...reordered); });
+  refreshLayers();
 }
 
 function layerRow(layer) {
@@ -4983,7 +5117,9 @@ function layerRow(layer) {
       event.stopPropagation();
       startRename(layer);
     },
-  }, layer.mask ? `◐ ${layer.name}` : layer.name),
+  }, layer.mask ? `◐ ${layer.name}` : layer.name,
+  // A quiet second line names the blend, so you don't have to open the layer to see it.
+  layer.blend ? h("span", { className: "layer-blend" }, BLEND_MODES[layer.blend]) : null),
   h("button", {
     className: "icon", ariaLabel: "Lock transparency", innerHTML: ICONS[layer.alphaLock ? "lock" : "unlock"],
     onClick: (event) => {
