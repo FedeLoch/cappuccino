@@ -2,6 +2,11 @@
 
 #include <vector>
 
+#include <cstring>
+#include <mutex>
+#include <string>
+
+#include "model3d.h"
 #include "renderer.h"
 
 using cappuccino::Renderer;
@@ -10,6 +15,32 @@ using cappuccino::Sample;
 namespace {
 
 Renderer* renderer(jlong handle) { return reinterpret_cast<Renderer*>(handle); }
+
+// The 3D drawing aid. There's one, shared by every artwork, since only one studio is open.
+cappuccino::ModelScene& modelScene() {
+    static cappuccino::ModelScene scene;
+    return scene;
+}
+
+// The preview draws on a background thread while the studio places models on the GL thread.
+std::mutex& modelLock() {
+    static std::mutex lock;
+    return lock;
+}
+
+cappuccino::ModelView modelView(const float* values) {
+    cappuccino::ModelView view;
+    view.yaw = values[0];
+    view.pitch = values[1];
+    view.lens = values[2];
+    view.centerX = values[3];
+    view.centerY = values[4];
+    view.size = values[5];
+    view.lightAzimuth = values[6];
+    view.lightElevation = values[7];
+    view.style = static_cast<int>(values[8]);
+    return view;
+}
 
 class FloatArray {
 public:
@@ -395,6 +426,63 @@ JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_undo(JNIEnv*, jobj
 
 JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_redo(JNIEnv*, jobject, jlong handle) {
     renderer(handle)->redo();
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_modelShape(JNIEnv*, jobject, jint shape) {
+    const std::lock_guard<std::mutex> guard(modelLock());
+    modelScene().setShape(static_cast<cappuccino::ModelShape>(shape));
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_modelPose(JNIEnv* env, jobject,
+                                                                        jfloatArray joints) {
+    const FloatArray values(env, joints);
+    const std::lock_guard<std::mutex> guard(modelLock());
+    if (values.size() >= cappuccino::kFigureJoints * 3) modelScene().setPose(values.get());
+}
+
+JNIEXPORT jboolean JNICALL Java_art_cappuccino_paint_NativeEngine_modelLoadObj(JNIEnv* env, jobject,
+                                                                               jstring text) {
+    const char* chars = env->GetStringUTFChars(text, nullptr);
+    const std::lock_guard<std::mutex> guard(modelLock());
+    const bool loaded = modelScene().loadObj(chars);
+    env->ReleaseStringUTFChars(text, chars);
+    return loaded ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_modelRender(
+    JNIEnv* env, jobject, jfloatArray view, jint width, jint height, jobject buffer) {
+    const FloatArray values(env, view);
+    auto* pixels = static_cast<uint8_t*>(env->GetDirectBufferAddress(buffer));
+    std::memset(pixels, 0, static_cast<size_t>(width) * height * 4);
+    const std::lock_guard<std::mutex> guard(modelLock());
+    modelScene().render(modelView(values.get()), width, height, pixels);
+}
+
+JNIEXPORT void JNICALL Java_art_cappuccino_paint_NativeEngine_clearLayerPixels(JNIEnv*, jobject,
+                                                                              jlong handle, jint id) {
+    renderer(handle)->clearLayerPixels(id);
+}
+
+// Live, the layer is cleared and redrawn without an undo step, as the model turns.
+JNIEXPORT jboolean JNICALL Java_art_cappuccino_paint_NativeEngine_modelPlace(
+    JNIEnv* env, jobject, jlong handle, jint layerId, jfloatArray view, jint width, jint height,
+    jboolean live) {
+    const FloatArray values(env, view);
+    if (live) renderer(handle)->clearLayerPixels(layerId);
+    const cappuccino::ModelView placed = modelView(values.get());
+    const std::lock_guard<std::mutex> guard(modelLock());
+    int box[4];
+    modelScene().bounds(placed, width, height, box);
+    const cappuccino::Rect rect{box[0], box[1], box[2], box[3]};
+    if (rect.empty()) return JNI_FALSE;
+    // Drawn into the model's own rectangle, then moved onto the layer there.
+    std::vector<uint8_t> pixels(static_cast<size_t>(rect.width()) * rect.height() * 4, 0);
+    cappuccino::ModelView local = placed;
+    local.centerX -= rect.left;
+    local.centerY -= rect.top;
+    modelScene().render(local, rect.width(), rect.height(), pixels.data());
+    renderer(handle)->placePixels(layerId, rect, pixels.data(), !live);
+    return JNI_TRUE;
 }
 
 }  // extern "C"

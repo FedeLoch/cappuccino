@@ -7,8 +7,12 @@
 #include <emscripten/html5.h>
 
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <string>
+#include <vector>
 
+#include "model3d.h"
 #include "renderer.h"
 
 using cappuccino::BrushParams;
@@ -35,6 +39,25 @@ int bufferWidth = 1;
 int bufferHeight = 1;
 int canvasWidth = 1;
 int canvasHeight = 1;
+// The 3D drawing aid, and the pixels of its last preview.
+cappuccino::ModelScene modelScene;
+std::vector<uint8_t> modelPixels;
+
+// A view from cap_points(): yaw, pitch, lens, center x, center y, size, light direction, light
+// height, and style, as ModelView in model3d.h.
+cappuccino::ModelView modelView() {
+    cappuccino::ModelView view;
+    view.yaw = points[0];
+    view.pitch = points[1];
+    view.lens = points[2];
+    view.centerX = points[3];
+    view.centerY = points[4];
+    view.size = points[5];
+    view.lightAzimuth = points[6];
+    view.lightElevation = points[7];
+    view.style = static_cast<int>(points[8]);
+    return view;
+}
 
 }  // namespace
 
@@ -285,6 +308,43 @@ EMSCRIPTEN_KEEPALIVE void cap_set_symmetry(int mode, float x, float y) {
         y = canvasHeight / 2.0f;
     }
     renderer->setSymmetry(mode, x, y);
+}
+
+// The 3D drawing aid, as the model functions in jni.cpp.
+EMSCRIPTEN_KEEPALIVE void cap_model_shape(int shape) { modelScene.setShape(static_cast<cappuccino::ModelShape>(shape)); }
+
+// Poses the figure from cap_points(), three floats a joint.
+EMSCRIPTEN_KEEPALIVE void cap_model_pose() { modelScene.setPose(points); }
+
+EMSCRIPTEN_KEEPALIVE int cap_model_load_obj(const char* text, int length) {
+    return modelScene.loadObj(std::string(text, static_cast<size_t>(length))) ? 1 : 0;
+}
+
+// Draws the model with the view in cap_points() and returns its premultiplied RGBA pixels.
+EMSCRIPTEN_KEEPALIVE uint8_t* cap_model_render(int width, int height) {
+    modelPixels.assign(static_cast<size_t>(width) * height * 4, 0);
+    modelScene.render(modelView(), width, height, modelPixels.data());
+    return modelPixels.data();
+}
+
+EMSCRIPTEN_KEEPALIVE void cap_clear_layer_pixels(int id) { renderer->clearLayerPixels(id); }
+
+// Draws the model with the view in cap_points() onto a layer, as one undo step. Live, the layer
+// is cleared and redrawn without one, as the model turns.
+EMSCRIPTEN_KEEPALIVE int cap_model_place(int layerId, int live) {
+    const cappuccino::ModelView placed = modelView();
+    if (live) renderer->clearLayerPixels(layerId);
+    int box[4];
+    modelScene.bounds(placed, canvasWidth, canvasHeight, box);
+    const cappuccino::Rect rect{box[0], box[1], box[2], box[3]};
+    if (rect.empty()) return 0;
+    std::vector<uint8_t> pixels(static_cast<size_t>(rect.width()) * rect.height() * 4, 0);
+    cappuccino::ModelView local = placed;
+    local.centerX -= rect.left;
+    local.centerY -= rect.top;
+    modelScene.render(local, rect.width(), rect.height(), pixels.data());
+    renderer->placePixels(layerId, rect, pixels.data(), live == 0);
+    return 1;
 }
 
 }  // extern "C"

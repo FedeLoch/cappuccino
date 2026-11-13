@@ -6,7 +6,7 @@
 // on the next animation frame. Nothing here allocates per sample or per frame except the arrays
 // the browser itself returns from getCoalescedEvents() and getPredictedEvents().
 
-import { LANGUAGES, language, saveLanguage, translatePage } from "./i18n.js";
+import { LANGUAGES, language, saveLanguage, tr, translatePage } from "./i18n.js";
 import createEngine from "./engine.js";
 import ICONS from "./icons.js";
 import {
@@ -28,6 +28,10 @@ import {
 } from "./references.js";
 import { REFERENCE_PROFILE_SIZE, compareWithReferences, profileImage } from "./match.js";
 import { reshapeShape, shapeAnchors, snapShape } from "./shapes.js";
+import {
+  BODY_JOINTS, FACE_POINTS, MANNEQUIN_POSES, analyzeBody, analyzeFace, defaultBody, defaultFace, drawFigureGuide,
+  facePlace, faceTurn, liftBody, moveJoint,
+} from "./figure.js";
 import { DEFAULT_STYLE, SYSTEM_FONTS, cssFont, drawLettering, fontKey, importedFontNames, loadFont } from "./lettering.js";
 import {
   coverRead, describe, drawPrintGuides, folds, frontBox, makePdf, preflight, trimmedWidth,
@@ -57,7 +61,13 @@ const STARTER_PALETTES = [
   ["Earth tones", ["#3A2E27", "#6B4F3A", "#A47148", "#C9A66B", "#EFE3C8"]],
   ["Skin range", ["#4A2C22", "#8D5A3B", "#C68863", "#E8B896", "#F9DCC4"]],
 ];
-const LEFT_PANELS = new Set(["actions", "references", "view", "tools", "sticker", "variants", "gestures", "history", "versions"]);
+const LEFT_PANELS = new Set(["references", "view", "tools", "sticker", "variants", "gestures", "history", "versions"]);
+// The bar button each panel opens from, so a panel opens on the side its button now sits.
+const PANEL_BUTTONS = {
+  brushes: "brushes", erasers: "eraser", layers: "layers", references: "references", view: "view", tools: "tools",
+  create: "create", sticker: "create", variants: "create", study: "study", artwork: "artwork", history: "artwork",
+  versions: "artwork", export: "export", settings: "settings", gestures: "settings",
+};
 
 const canvas = document.getElementById("canvas");
 const overlay = document.getElementById("overlay");
@@ -266,7 +276,7 @@ function composeNow() {
   if (!opened) return;
   const start = performance.now();
   engine._cap_compose();
-  if (noteMarks.length || printGuidesShown() || shapePreview) drawOverlay();
+  if (noteMarks.length || printGuidesShown() || shapePreview || figureShown() || modelShown) drawOverlay();
   if (transformCorners) moveTransformHandles();
   composeIndex = record(composeTimes, composeIndex, performance.now() - start);
 }
@@ -705,6 +715,13 @@ function capture(event) {
 canvas.addEventListener("pointerdown", (event) => {
   if (!ready) return;
   lastPointerType = event.pointerType;
+  // A guide being edited takes the touches that land on it, and keeps its panel open.
+  if (guidePointer === -1 && event.isPrimary && guideTouch?.(event, "down")) {
+    guidePointer = event.pointerId;
+    capture(event);
+    return;
+  }
+  if (guidePointer !== -1) return;
   closePanel();
   if (transforming) {
     transformPointer(event, "down");
@@ -809,6 +826,10 @@ canvas.addEventListener("pointerdown", (event) => {
 });
 
 canvas.addEventListener("pointermove", (event) => {
+  if (event.pointerId === guidePointer) {
+    guideTouch?.(event, "move");
+    return;
+  }
   if (transforming) {
     transformPointer(event, "move");
     return;
@@ -853,6 +874,11 @@ canvas.addEventListener("pointermove", (event) => {
 });
 
 function finishPointer(event, cancelled) {
+  if (event.pointerId === guidePointer) {
+    guidePointer = -1;
+    guideTouch?.(event, "up");
+    return;
+  }
   if (transforming) {
     transformPointer(event, "up");
     return;
@@ -1097,10 +1123,204 @@ const brushButton = document.getElementById("brush-button");
 const eraserButton = document.getElementById("eraser-button");
 const toolsButton = document.getElementById("tools-button");
 const colorButton = document.getElementById("color-button");
+const moreBar = document.getElementById("more-bar");
 const chrome = [document.getElementById("left"), document.getElementById("right"),
-  document.getElementById("sliders"), document.getElementById("recent"), document.getElementById("companion")];
+  document.getElementById("sliders"), document.getElementById("recent"), document.getElementById("companion"), moreBar];
+
+// --- Bars you arrange, as MainActivity's bar buttons ---------------------------------------------
+
+const BAR_KEYS = ["projects", "more", "references", "view", "tools", "brushes", "eraser", "layers",
+  "create", "study", "artwork", "export", "settings"];
+// The bar the companion holds, the one with the color, and the one that opens under More.
+const DEFAULT_BARS = [
+  ["projects", "more", "references", "view", "tools"],
+  ["brushes", "eraser", "layers"],
+  ["create", "study", "artwork", "export", "settings"],
+];
+const MORE_BAR = 2;
+const LIFT_MS = 380;
+const barPills = [document.getElementById("left"), document.getElementById("right"), moreBar];
+
+// Reads saved bars, keeping every button once and no bar empty, as readBars() in Model.kt.
+function readBars(saved) {
+  if (!saved) return DEFAULT_BARS.map((bar) => [...bar]);
+  const bars = saved.split("|").map((bar) => bar.split(",").filter((key) => BAR_KEYS.includes(key)));
+  if (bars.length !== DEFAULT_BARS.length || bars.some((bar) => !bar.length)) return DEFAULT_BARS.map((bar) => [...bar]);
+  const seen = new Set();
+  const clean = bars.map((bar) => bar.filter((key) => !seen.has(key) && seen.add(key)));
+  for (const key of BAR_KEYS) if (!seen.has(key)) clean[DEFAULT_BARS.findIndex((bar) => bar.includes(key))].push(key);
+  if (clean.some((bar) => !bar.length) || clean[MORE_BAR].includes("more")) return DEFAULT_BARS.map((bar) => [...bar]);
+  return clean;
+}
+
+// Moves a button, or returns null when that would empty its bar or put More inside the bar it opens.
+function moveBarItem(bars, key, toBar, index) {
+  const from = bars.findIndex((bar) => bar.includes(key));
+  if (from < 0 || toBar < 0 || toBar >= bars.length) return null;
+  if (from !== toBar && bars[from].length === 1) return null;
+  if (key === "more" && toBar === MORE_BAR) return null;
+  const moved = bars.map((bar) => bar.filter((it) => it !== key));
+  moved[toBar].splice(Math.min(Math.max(index, 0), moved[toBar].length), 0, key);
+  return moved;
+}
+
+let bars = readBars(localStorage.getItem("bars"));
+
+const barButton = (key) => document.querySelector(`[data-key="${key}"]`);
+
+// Puts each button on its bar, the color always last on its own.
+function arrangeBars() {
+  bars.forEach((keys, index) => {
+    for (const key of keys) barPills[index].insertBefore(barButton(key), index === 1 ? colorButton : null);
+  });
+  placeMoreBar();
+  showCompanionState();
+}
+
+function placeMoreBar() {
+  const host = bars.findIndex((bar) => bar.includes("more"));
+  moreBar.classList.toggle("right", host === 1);
+  moreBar.style.top = `${12 + barPills[host].offsetHeight + 8}px`;
+}
+
+function toggleMoreBar() {
+  if (moreBar.hidden) showMoreBar();
+  else hideMoreBar();
+}
+
+function showMoreBar() {
+  closePanel();
+  moreBar.hidden = false;
+  placeMoreBar();
+}
+
+function hideMoreBar() {
+  if (!lifted) moreBar.hidden = true;
+}
+
+function panelOnLeft(key) {
+  const button = PANEL_BUTTONS[key];
+  if (!button) return LEFT_PANELS.has(key);
+  const bar = bars.findIndex((keys) => keys.includes(button));
+  return bar === MORE_BAR ? bars.findIndex((keys) => keys.includes("more")) !== 1 : bar !== 1;
+}
+
+// Holding a button lifts it as a drop of ink; it can then be carried to any bar.
+let lifted = null;
+let liftTimer = 0;
+let pressStart = [0, 0];
+let swallowClick = false;
+const slot = h("div", { className: "bar-slot" });
+let slotBar = -1;
+let slotIndex = -1;
+
+function liftBarButton(button, x, y) {
+  lifted = button;
+  closePanel();
+  showMoreBar();
+  const drop = h("div", { className: "ink-drop" });
+  drop.innerHTML = '<svg class="drop" viewBox="0 0 56 70"><path fill="#D85A30" d="M28 3 C33.9 22.2 51.5 32.4 51.5 42 A23.5 23.5 0 0 1 4.5 42 C4.5 32.4 22.1 22.2 28 3 Z"/>'
+    + '<circle cx="18" cy="35" r="3.3" fill="rgba(255,255,255,0.35)"/></svg>';
+  drop.append(h("div", { className: "glyph", innerHTML: button.innerHTML }));
+  document.body.append(drop);
+  lifted.drop = drop;
+  // The other buttons close the gap it leaves.
+  button.style.display = "none";
+  placeMoreBar();
+  carryDrop(x, y);
+}
+
+function carryDrop(x, y) {
+  const drop = lifted.drop;
+  // Above the finger, or below it near the top edge, swaying as it's carried.
+  // The page is drawn at the interface scale, so screen points are turned into its units.
+  const above = toUi(y) - 70 - 12;
+  drop.style.left = `${toUi(x) - 28}px`;
+  drop.style.top = `${above >= 0 ? above : toUi(y) + 20}px`;
+  drop.style.rotate = `${Math.max(-14, Math.min(14, (x - pressStart[0]) * 0.6))}deg`;
+  pressStart = [x, y];
+  let target = -1;
+  let index = -1;
+  barPills.forEach((pill, bar) => {
+    if (target >= 0 || pill.hidden) return;
+    const box = pill.getBoundingClientRect();
+    if (x < box.left - 28 || x > box.right + 28 || y < box.top - 28 || y > box.bottom + 28) return;
+    target = bar;
+    index = [...pill.querySelectorAll("[data-key]")].filter((it) => it.style.display !== "none")
+      .filter((it) => { const r = it.getBoundingClientRect(); return r.left + r.width / 2 < x; }).length;
+  });
+  if (target === slotBar && index === slotIndex) return;
+  slot.remove();
+  slotBar = target;
+  slotIndex = index;
+  if (target >= 0) {
+    const buttons = [...barPills[target].querySelectorAll("[data-key]")].filter((it) => it.style.display !== "none");
+    const before = buttons[index] || (target === 1 ? colorButton : null);
+    barPills[target].insertBefore(slot, before);
+  }
+}
+
+function landDrop(cancelled) {
+  const button = lifted;
+  lifted = null;
+  button.drop.remove();
+  button.style.display = "";
+  slot.remove();
+  if (!cancelled && slotBar >= 0) {
+    const moved = moveBarItem(bars, button.dataset.key, slotBar, slotIndex);
+    if (!moved) {
+      say("Each bar keeps at least one tool.");
+    } else {
+      bars = moved;
+      try {
+        localStorage.setItem("bars", bars.map((bar) => bar.join(",")).join("|"));
+      } catch {
+        // Private windows may refuse; the bars then last for this visit.
+      }
+    }
+  }
+  const landedInMore = slotBar === MORE_BAR;
+  slotBar = -1;
+  slotIndex = -1;
+  arrangeBars();
+  if (!landedInMore) hideMoreBar();
+}
+
+for (const button of document.querySelectorAll("[data-key]")) {
+  button.addEventListener("pointerdown", (event) => {
+    pressStart = [event.clientX, event.clientY];
+    clearTimeout(liftTimer);
+    try {
+      button.setPointerCapture(event.pointerId);
+    } catch {
+      // Synthetic events have no pointer to capture.
+    }
+    liftTimer = setTimeout(() => liftBarButton(button, pressStart[0], pressStart[1]), LIFT_MS);
+  });
+  button.addEventListener("pointermove", (event) => {
+    if (lifted === button) carryDrop(event.clientX, event.clientY);
+    else if (Math.hypot(event.clientX - pressStart[0], event.clientY - pressStart[1]) > 10) clearTimeout(liftTimer);
+  });
+  const release = (cancelled) => () => {
+    clearTimeout(liftTimer);
+    if (lifted !== button) return;
+    swallowClick = true;
+    // Only the click that ends this press is swallowed, not the next real tap.
+    setTimeout(() => { swallowClick = false; }, 0);
+    landDrop(cancelled);
+  };
+  button.addEventListener("pointerup", release(false));
+  button.addEventListener("pointercancel", release(true));
+  // A drop that was carried isn't a tap.
+  button.addEventListener("click", (event) => {
+    if (!swallowClick) return;
+    swallowClick = false;
+    event.stopImmediatePropagation();
+  }, true);
+}
 
 brushButton.addEventListener("click", () => {
+  hideMoreBar();
   if (brush.eraser || isTool(brush)) {
     closePanel();
     selectTool(lastBrush);
@@ -1110,6 +1330,7 @@ brushButton.addEventListener("click", () => {
 });
 
 eraserButton.addEventListener("click", () => {
+  hideMoreBar();
   if (brush.eraser) {
     togglePanel("erasers", eraserPanel);
   } else {
@@ -1129,11 +1350,14 @@ colorButton.addEventListener("click", async () => {
 for (const button of document.querySelectorAll("[data-action]")) {
   const action = button.dataset.action;
   button.addEventListener("click", () => {
+    if (action === "more") return toggleMoreBar();
+    hideMoreBar();
+    const groups = { create: createPanel, study: studyPanel, artwork: artworkPanel, export: exportPanel, settings: settingsPanel };
     if (action === "projects") leaveStudio();
+    else if (groups[action]) togglePanel(action, groups[action]);
     else if (action === "view") togglePanel("view", viewPanel);
     else if (action === "tools") togglePanel("tools", toolsPanel);
     else if (action === "layers") togglePanel("layers", layersPanel);
-    else if (action === "actions") togglePanel("actions", actionsPanel);
     else if (action === "references") {
       if (panelKey === "references") closePanel();
       else showReferences();
@@ -1401,7 +1625,7 @@ function togglePanel(key, build) {
 function showPanel(key, build) {
   panelKey = key;
   panelBuilder = build;
-  panel.className = key === "companion" ? "bubble" : LEFT_PANELS.has(key) ? "left" : "right";
+  panel.className = key === "companion" ? "bubble" : panelOnLeft(key) ? "left" : "right";
   if (key === "layers") panel.classList.add("layers");
   panelBody.replaceChildren(build());
   panel.hidden = false;
@@ -1435,9 +1659,15 @@ function closePanel() {
     engine._cap_set_filter(0, 0, 0, 0, 0);
     queueCompose();
   }
+  if (panelKey === "figure") {
+    guideTouch = null;
+    draggedPoint = -1;
+  }
+  if (panelKey === "model") hideModel();
   panel.hidden = true;
   panelKey = "";
   panelBuilder = null;
+  drawOverlay();
 }
 
 const gap = (element) => {
@@ -2947,7 +3177,19 @@ const FILTERS = [
     label: "Depth fade", id: 7, icon: "fx_depth", usesColor: true,
     about: "Washes the layer toward your color, so it sits farther back.", sliders: [["Amount", 0, 1, 0.3, "%"]],
   },
+  {
+    label: "Light", id: 8, icon: "fx_light",
+    about: "Shades flat shapes as if they were rounded, on a layer of its own clipped to this one.",
+    sliders: [["Light from", 0, 6.2832, 2.36, "dir"], ["Light height", 0.1, 1.45, 0.6, "deg"], ["Roundness", 4, 300, 60, "px"], ["Strength", 0, 1, 0.8, "%"]],
+  },
 ];
+const LIGHT_FILTER = 8;
+const SOFT_LIGHT_BLEND = 6;
+// Where light comes from, by eighths of a turn counterclockwise from the right.
+const LIGHT_DIRECTIONS = ["right", "upper right", "top", "upper left", "left", "lower left", "bottom", "lower right"];
+
+// The engine's values for a filter: the light filter wants roundness, height, strength, then direction.
+const engineFilterValues = (kind, values) => (kind.id === LIGHT_FILTER ? [values[2], values[1], values[3], values[0]] : values);
 const FILTER_STEPS = 240;
 
 // How a filter slider's value reads beside it.
@@ -2958,6 +3200,7 @@ function filterValueText([, low, high, , unit], value) {
     case "level": return `${Math.round(value * 255)}`;
     case "gamma": return value.toFixed(2);
     case "times": return `${Math.round(value * 100)}%`;
+    case "dir": return LIGHT_DIRECTIONS[((Math.round(value / (Math.PI / 4)) % 8) + 8) % 8];
     default: return `${Math.round((value - low) / (high - low) * 100)}%`;
   }
 }
@@ -3000,9 +3243,10 @@ function adjustPanel() {
   return body;
 }
 
-function pushFilter(shown = true) {
-  engine.HEAPF32.set(filterValues, pointsOffset);
-  const rgb = hexToRgb(color);
+function pushFilter(shown = true, shadeOnly = false) {
+  engine.HEAPF32.set(engineFilterValues(filter, filterValues), pointsOffset);
+  // The light filter reads its color slot as a switch: shading alone, for its own layer.
+  const rgb = filter.id === LIGHT_FILTER ? [0, shadeOnly ? 1 : 0, 0] : hexToRgb(color);
   engine._cap_set_filter(shown ? 1 : 0, filter.id, rgb[0], rgb[1], rgb[2]);
   queueCompose();
 }
@@ -3039,7 +3283,7 @@ function filterPanel() {
   filter.sliders.forEach((slider, index) => {
     const [label, low, high] = slider;
     const span = high - low;
-    const value = h("span", {}, filterValueText(slider, filterValues[index]));
+    const value = h("span", {}, tr(filterValueText(slider, filterValues[index])));
     body.append(h("div", { className: "column" },
       gap(h("div", { className: "row small" }, h("span", { className: "grow" }, label), value)),
       h("input", {
@@ -3047,7 +3291,7 @@ function filterPanel() {
         value: String(Math.round((filterValues[index] - low) / span * FILTER_STEPS)),
         onInput: (event) => {
           filterValues[index] = low + span * Number(event.target.value) / FILTER_STEPS;
-          value.textContent = filterValueText(slider, filterValues[index]);
+          value.textContent = tr(filterValueText(slider, filterValues[index]));
           pushFilter();
         },
       })));
@@ -3087,13 +3331,495 @@ function filterPanel() {
     smallChip("Apply", true, () => {
       panelKey = "";
       panel.hidden = true;
-      pushFilter();
-      engine._cap_commit_filter();
-      recordStroke();
-      markUnsaved();
-      queueCompose();
+      commitFilter();
     }))));
   return body;
+}
+
+function commitFilter() {
+  if (filter.id === LIGHT_FILTER) return commitLight();
+  pushFilter();
+  engine._cap_commit_filter();
+  recordStroke();
+  markUnsaved();
+  queueCompose();
+}
+
+// Light lands on a copy of the layer, clipped to it in Soft light, so it stays editable.
+function commitLight() {
+  const source = activeLayer();
+  if (!source) return;
+  duplicateLayer(source);
+  const light = activeLayer();
+  if (!light || light.id === source.id) return;
+  editLayers(() => {
+    const it = layerById(light.id);
+    it.name = tr("%1 light", source.name);
+    it.clip = true;
+    it.blend = SOFT_LIGHT_BLEND;
+    it.opacity = 1;
+  }, { structural: false });
+  pushFilter(true, true);
+  engine._cap_commit_filter();
+  recordStroke();
+  markUnsaved();
+  queueCompose();
+  refreshLayers();
+}
+
+// --- Figure guide, as MainActivity's figure guide --------------------------------------------------
+
+let figureFace = false;
+let figureLandmarks = true;
+let guideTouch = null;  // While a guide is edited, it's offered each touch on the canvas first.
+let guidePointer = -1;
+let draggedPoint = -1;
+let dragSpot = [0, 0];
+
+const bodyPlaced = () => (doc?.manifest.body || []).length === BODY_JOINTS * 2;
+const facePlaced = () => (doc?.manifest.face || []).length === FACE_POINTS * 2;
+const figureShown = () => bodyPlaced() || facePlaced();
+const figureKept = () => localStorage.getItem("figureKeep") === "on";
+
+function figureNotes() {
+  if (figureFace) return facePlaced() ? analyzeFace(doc.manifest.face) : [];
+  return bodyPlaced() ? analyzeBody(doc.manifest.body) : [];
+}
+
+function drawFigure(c) {
+  const editing = panelKey === "figure";
+  // Shown while it's being edited; while drawing, only if you asked to keep it.
+  if (!figureShown() || !(editing || (figureKept() && panelKey !== "model"))) return;
+  drawFigureGuide(c, {
+    body: bodyPlaced() ? doc.manifest.body : null,
+    face: facePlaced() ? doc.manifest.face : null,
+    showFace: figureFace,
+    flagged: new Set(editing ? figureNotes().filter((it) => it.warning).flatMap((it) => it.joints) : []),
+    landmarks: figureLandmarks && editing,
+    editing,
+  }, canvasToScreen, dpr * uiScale(), (text) => tr(text));
+}
+
+function placeFigureIfMissing() {
+  if (figureFace && !facePlaced()) {
+    doc.manifest.face = defaultFace(canvasWidth, canvasHeight);
+    markUnsaved();
+  }
+  if (!figureFace && !bodyPlaced()) {
+    doc.manifest.body = defaultBody(canvasWidth, canvasHeight);
+    markUnsaved();
+  }
+}
+
+function openFigureGuide(face = figureFace) {
+  figureFace = face;
+  placeFigureIfMissing();
+  showPanel("figure", figurePanel);
+  guideTouch = figureTouch;
+  drawOverlay();
+}
+
+function noteRow(note) {
+  return h("div", { className: "figure-note" },
+    h("span", { className: note.warning ? "dot warn" : "dot" }),
+    h("span", { className: "grow" }, tr(note.text, ...note.values.map((it) => tr(it)))));
+}
+
+function figurePanel() {
+  const body = h("div", { className: "column" },
+    h("div", { className: "title" }, "Figure guide"),
+    gap(segmented(["Body", "Face"], figureFace ? 1 : 0, (index) => {
+      figureFace = index === 1;
+      placeFigureIfMissing();
+      drawOverlay();
+      rerender();
+    })),
+    gap(h("div", { className: "small" }, figureFace
+      ? "Drag the points onto the face: top of the head, chin, eyes, nose, and mouth. Drag inside the oval to move it all."
+      : "Drag the points onto your figure. Drag the hips to move it all.")));
+  for (const note of figureNotes()) body.append(gap(noteRow(note)));
+  body.append(gap(h("div", { className: "chips wrap" },
+    !figureFace && smallChip("Landmarks", figureLandmarks, () => {
+      figureLandmarks = !figureLandmarks;
+      drawOverlay();
+      rerender();
+    }),
+    smallChip("Keep showing", figureKept(), () => {
+      try {
+        localStorage.setItem("figureKeep", figureKept() ? "off" : "on");
+      } catch {
+        // Private windows may refuse; the guide then hides after editing.
+      }
+      rerender();
+    }))));
+  body.append(gap(h("div", { className: "chips" },
+    smallChip("3D", false, () => {
+      closePanel();
+      openModel(figureFace ? 1 : 0, true);
+    }),
+    smallChip("Remove", false, () => {
+      if (figureFace) doc.manifest.face = [];
+      else doc.manifest.body = [];
+      markUnsaved();
+      closePanel();
+    }),
+    h("span", { className: "grow" }),
+    smallChip("Done", true, () => closePanel()))));
+  return body;
+}
+
+function insideFace([x, y]) {
+  if (!facePlaced()) return false;
+  const [down, across] = facePlace([...doc.manifest.face, x, y], FACE_POINTS);
+  return down >= 0 && down <= 1 && Math.abs(across) < 0.37;
+}
+
+function figurePointAt(screenX, screenY) {
+  const points = figureFace ? doc.manifest.face : doc.manifest.body;
+  if (!points?.length) return -1;
+  const reach = 28 * dpr * uiScale();
+  let best = -1;
+  let bestDistance = reach;
+  for (let index = 0; index < points.length / 2; index++) {
+    const [x, y] = canvasToScreen(points[index * 2], points[index * 2 + 1]);
+    const distance = Math.hypot(x - screenX, y - screenY);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = index;
+    }
+  }
+  return best;
+}
+
+// Drags guide points while the panel is open; touches away from them still draw.
+function figureTouch(event, phase) {
+  const x = event.clientX * dpr;
+  const y = event.clientY * dpr;
+  const spot = [toCanvasX(x, y), toCanvasY(x, y)];
+  if (phase === "down") {
+    const hit = figurePointAt(x, y);
+    if (hit >= 0) draggedPoint = hit;
+    else if (figureFace && insideFace(spot)) draggedPoint = FACE_POINTS;
+    else return false;
+    dragSpot = spot;
+    return true;
+  }
+  if (phase === "move") {
+    if (draggedPoint < 0) return true;
+    const dx = spot[0] - dragSpot[0];
+    const dy = spot[1] - dragSpot[1];
+    dragSpot = spot;
+    if (figureFace) {
+      const points = doc.manifest.face;
+      for (let index = 0; index < FACE_POINTS; index++) {
+        if (draggedPoint === FACE_POINTS || draggedPoint === index) {
+          points[index * 2] += dx;
+          points[index * 2 + 1] += dy;
+        }
+      }
+    } else {
+      moveJoint(doc.manifest.body, draggedPoint, dx, dy);
+    }
+    drawOverlay();
+    return true;
+  }
+  if (draggedPoint >= 0) {
+    draggedPoint = -1;
+    markUnsaved();
+    rerender();
+    drawOverlay();
+  }
+  return true;
+}
+
+// --- 3D model, as MainActivity's 3D panel ------------------------------------------------------
+
+const MODEL_PREVIEW_SIZE = 1024;
+const MODEL_DRAG_PREVIEW_SIZE = 480;
+let modelDragging = false;
+let modelLayer = 0;
+let modelLive = false;
+let modelTouching = false;
+let modelSettle = 0;
+const MODEL_SETTLE_MS = 300;
+let modelRendered = [0, 0];
+const MODEL_SHAPES = [["figure", "Figure"], ["head", "Head"], ["cube", "Box"], ["sphere", "Sphere"], ["cylinder", "Cylinder"], ["model_file", "Your model"]];
+let modelShape = 0;
+let modelPose = 0;
+let modelMoving = false;
+// Yaw, pitch, lens, center x, center y, size, light direction, light height, style.
+const modelView = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+const modelCanvas = document.createElement("canvas");
+let modelScale = 1;
+let modelShown = false;
+let modelQueued = false;
+const modelPicker = h("input", { type: "file", accept: ".obj", hidden: true, onChange: (event) => importModel(event.target.files[0]) });
+document.body.append(modelPicker);
+
+function resetModelView() {
+  modelView.splice(0, 9, 0.4, 0.12, 0.35, canvasWidth / 2, canvasHeight / 2, canvasHeight * (modelShape === 0 ? 0.85 : 0.45), 2.36, 0.6, 0);
+}
+
+function applyPose(pose = MANNEQUIN_POSES[modelPose][1]) {
+  engine.HEAPF32.set(pose, pointsOffset);
+  engine._cap_model_pose();
+}
+
+// Takes the figure guide's pose and place, or the face guide's turn and place.
+function matchGuide() {
+  if (modelShape === 0 && bodyPlaced()) {
+    const points = doc.manifest.body;
+    applyPose(liftBody(points));
+    const head = Math.hypot(points[2] - points[0], points[3] - points[1]);
+    const xs = points.filter((_, i) => i % 2 === 0);
+    const ys = points.filter((_, i) => i % 2 === 1);
+    modelView[0] = 0;
+    modelView[1] = 0;
+    modelView[3] = (Math.min(...xs) + Math.max(...xs)) / 2;
+    modelView[4] = (Math.min(...ys) + Math.max(...ys)) / 2 + head * 0.05;
+    modelView[5] = head * 7.6;
+  } else if (modelShape === 1 && facePlaced()) {
+    const points = doc.manifest.face;
+    const [yaw, pitch] = faceTurn(points);
+    const length = Math.hypot(points[2] - points[0], points[3] - points[1]);
+    modelView[0] = yaw;
+    modelView[1] = pitch;
+    modelView[3] = (points[0] + points[2]) / 2;
+    modelView[4] = (points[1] + points[3]) / 2 + length * 0.12;
+    modelView[5] = length * 1.45;
+  } else {
+    applyPose();
+  }
+}
+
+function openModel(shape = modelShape, match = false) {
+  setEditingMask(false);
+  modelShape = shape;
+  if (modelView[5] === 0) resetModelView();
+  engine._cap_model_shape(shape);
+  if (match) matchGuide();
+  else applyPose();
+  if (!ensureModelLayer()) return;
+  showPanel("model", modelPanel);
+  guideTouch = modelTouch;
+  modelShown = true;
+  drawModelLayer();
+}
+
+// The model lives on a layer of its own: the one it was drawn on when that's the active layer, or a new one.
+function ensureModelLayer() {
+  if (modelLayer && activeLayer()?.id === modelLayer) return true;
+  const before = activeLayer()?.id;
+  addLayer({ name: tr("3D model") });
+  const layer = activeLayer();
+  if (!layer || layer.id === before) return false;
+  modelLayer = layer.id;
+  refreshLayers();
+  return true;
+}
+
+// While a finger or slider moves the model, a light preview floats over the canvas and the layer
+// waits empty; once it settles, the model is drawn into its layer at full size.
+function changeModel(now = false) {
+  clearTimeout(modelSettle);
+  if (now) return drawModelLayer();
+  if (!modelLive) {
+    modelLive = true;
+    engine._cap_clear_layer_pixels(modelLayer);
+  }
+  modelDragging = true;
+  showModelPreview();
+  if (!modelTouching) modelSettle = setTimeout(drawModelLayer, MODEL_SETTLE_MS);
+}
+
+function drawModelLayer() {
+  clearTimeout(modelSettle);
+  if (!modelLayer || !layerById(modelLayer)) return;
+  engine.HEAPF32.set(modelView, pointsOffset);
+  engine._cap_model_place(modelLayer, 1);
+  modelLive = false;
+  modelDragging = false;
+  markUnsaved();
+  queueCompose();
+  drawOverlay();
+  refreshLayers();
+}
+
+function modelPanel() {
+  const tile = ([icon, title], index) => h("button", {
+    className: index === modelShape ? "icon-tile on" : "icon-tile", ariaLabel: title,
+    onClick: () => {
+      if (index === 5) {
+        modelPicker.value = "";
+        modelPicker.click();
+        return;
+      }
+      if ((modelShape === 0) !== (index === 0)) modelView[5] = canvasHeight * (index === 0 ? 0.85 : 0.45);
+      modelShape = index;
+      engine._cap_model_shape(index);
+      changeModel(true);
+      rerender();
+    },
+  }, svg(icon), h("span", {}, title));
+  const slider = (name, index, low, high) => toolSlider(name, Math.min(100, Math.max(0, Math.round((modelView[index] - low) / (high - low) * 100))), (value) => {
+    modelView[index] = low + (high - low) * value / 100;
+    changeModel();
+  });
+  const body = h("div", { className: "column" },
+    h("div", { className: "title" }, "3D model"),
+    gap(h("div", { className: "tile-grid three" }, MODEL_SHAPES.map(tile))),
+    gap(h("div", { className: "small" }, modelMoving ? "Drag on the canvas to move it." : "Drag on the canvas to turn it.")),
+    gap(segmented(["Turn", "Move"], modelMoving ? 1 : 0, (index) => {
+      modelMoving = index === 1;
+      rerender();
+    })));
+  if (modelShape === 0) {
+    body.append(gap(h("div", { className: "small" }, "Pose")), gap(h("div", { className: "chips wrap" },
+      MANNEQUIN_POSES.map(([name], index) => smallChip(name, index === modelPose, () => {
+        modelPose = index;
+        applyPose();
+        changeModel(true);
+        rerender();
+      })),
+      bodyPlaced() && smallChip("My figure", false, () => {
+        matchGuide();
+        changeModel(true);
+      }))));
+  }
+  if (modelShape === 1 && facePlaced()) {
+    body.append(gap(h("div", { className: "chips" }, smallChip("Match my face guide", false, () => {
+      matchGuide();
+      changeModel(true);
+    }))));
+  }
+  body.append(
+    slider("Size", 5, canvasHeight * 0.1, canvasHeight * 1.6),
+    slider("Perspective", 2, 0, 1),
+    slider("Light from", 6, 0, Math.PI * 2),
+    slider("Light height", 7, 0.1, 1.45),
+    gap(segmented(["Shaded", "Lines"], modelView[8], (index) => {
+      modelView[8] = index;
+      changeModel(true);
+      rerender();
+    })),
+    gap(h("div", { className: "chips" },
+      smallChip("Remove", false, () => {
+        const layer = layerById(modelLayer);
+        modelLayer = 0;
+        closePanel();
+        if (layer) deleteLayer(layer);
+      }),
+      h("span", { className: "grow" }),
+      smallChip("Done", true, () => placeModel()))));
+  return body;
+}
+
+// Turns or moves the model with one finger while its panel is open.
+function modelTouch(event, phase) {
+  const x = event.clientX * dpr;
+  const y = event.clientY * dpr;
+  if (phase === "move") {
+    const dx = x - dragSpot[0];
+    const dy = y - dragSpot[1];
+    if (modelMoving) {
+      modelView[3] += dx / zoom;
+      modelView[4] += dy / zoom;
+    } else {
+      modelView[0] += dx * 0.01 / dpr;
+      modelView[1] = Math.min(1.5, Math.max(-1.5, modelView[1] + dy * 0.01 / dpr));
+    }
+    changeModel();
+    if (modelMoving) drawOverlay();
+  }
+  if (phase === "down") modelTouching = true;
+  if (phase === "up") {
+    modelTouching = false;
+    changeModel(true);
+  }
+  dragSpot = [x, y];
+  return true;
+}
+
+// Draws a small preview once a frame at most; the overlay places it on the canvas.
+function showModelPreview() {
+  if (modelQueued) return;
+  modelQueued = true;
+  requestAnimationFrame(() => {
+    modelQueued = false;
+    if (panelKey !== "model") return;
+    // Lighter while dragging, so it keeps up with the finger.
+    modelScale = Math.min(1, (modelDragging ? MODEL_DRAG_PREVIEW_SIZE : MODEL_PREVIEW_SIZE) / Math.max(canvasWidth, canvasHeight));
+    modelRendered = [modelView[3], modelView[4]];
+    const width = Math.round(canvasWidth * modelScale);
+    const height = Math.round(canvasHeight * modelScale);
+    const view = modelView.map((value, index) => (index >= 3 && index <= 5 ? value * modelScale : value));
+    engine.HEAPF32.set(view, pointsOffset);
+    const address = engine._cap_model_render(width, height);
+    const premultiplied = engine.HEAPU8.subarray(address, address + width * height * 4);
+    const image = new ImageData(width, height);
+    // Canvas images take straight alpha.
+    for (let i = 0; i < premultiplied.length; i += 4) {
+      const alpha = premultiplied[i + 3];
+      if (alpha === 0) continue;
+      const lift = 255 / alpha;
+      image.data[i] = premultiplied[i] * lift;
+      image.data[i + 1] = premultiplied[i + 1] * lift;
+      image.data[i + 2] = premultiplied[i + 2] * lift;
+      image.data[i + 3] = alpha;
+    }
+    modelCanvas.width = width;
+    modelCanvas.height = height;
+    modelCanvas.getContext("2d").putImageData(image, 0, 0);
+    drawOverlay();
+  });
+}
+
+function drawModel(c) {
+  if (!modelShown || !modelLive || panelKey !== "model" || !modelCanvas.width) return;
+  const [a, b, cc, d] = viewLinear();
+  c.save();
+  c.setTransform(a, cc, b, d, panX, panY);
+  // The last frame slides to wherever the model has moved since it was drawn.
+  c.translate(modelView[3] - modelRendered[0], modelView[4] - modelRendered[1]);
+  c.scale(1 / modelScale, 1 / modelScale);
+  c.imageSmoothingEnabled = true;
+  c.drawImage(modelCanvas, 0, 0);
+  c.restore();
+}
+
+function hideModel() {
+  guideTouch = null;
+  modelTouching = false;
+  // A model still moving lands where it is.
+  if (modelLive) drawModelLayer();
+  modelShown = false;
+}
+
+// Leaves the model on its layer. Opening 3D again with that layer active keeps editing it.
+function placeModel() {
+  closePanel();
+}
+
+async function importModel(file) {
+  if (!file) return;
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const address = engine._malloc(bytes.length + 1);
+  engine.HEAPU8.set(bytes, address);
+  const loaded = engine._cap_model_load_obj(address, bytes.length) === 1;
+  engine._free(address);
+  if (!loaded) {
+    say("Couldn't read this model. Pick an .obj file.");
+    return;
+  }
+  modelShape = 5;
+  if (modelView[5] === 0) resetModelView();
+  modelView[5] = canvasHeight * 0.6;
+  if (panelKey === "model") {
+    changeModel(true);
+    rerender();
+  } else {
+    openModel(5);
+  }
 }
 
 // --- Actions, as MainActivity.actionsPanel() -----------------------------------------------------
@@ -3102,9 +3828,12 @@ const FINISH_NOTE_DELAY_MS = 3500;
 let penButtonAction = loadPreference("penButton", 0);  // 0 picks a color, 1 erases, 2 undoes.
 let variationFamily = [];
 
-function actionsPanel() {
-  const row = (icon, title, detail, click) => h("button", { className: "action-row", onClick: click },
-    svg(icon), h("div", { className: "text" }, h("div", {}, title), detail && h("div", { className: "detail" }, detail)));
+const actionRow = (icon, title, detail, click) => h("button", { className: "action-row", onClick: click },
+  svg(icon), h("div", { className: "text" }, h("div", {}, title), detail && h("div", { className: "detail" }, detail)));
+
+// The artwork itself: its name, variations, size, and history.
+function artworkPanel() {
+  const row = actionRow;
   const body = h("div", { className: "column" },
     h("div", { className: "title" }, doc.manifest.name),
     h("div", { className: "small" }, `${doc.width} x ${doc.height} pixels · ${layerSlots()} of ${maxLayers} layers`),
@@ -3114,15 +3843,6 @@ function actionsPanel() {
         doc.manifest.name = name;
         markUnsaved();
       });
-    })),
-    gap(row("text", "Add text", "Label a design sheet", () => {
-      closePanel();
-      askForText();
-    })),
-    gap(row("copy", "Make a sticker", "Add a die-cut border around your drawing", () => openStickerPanel())),
-    gap(row("palette", "Color variants", "Try this design in new colors", () => {
-      closePanel();
-      showPanel("variants", variantsPanel);
     })),
     gap(h("div", { className: "caption" }, "Variations")),
     gap(row("duplicate", "Make a variation", "Try another version, keeping this one", () => makeVariation())));
@@ -3135,23 +3855,83 @@ function actionsPanel() {
     }))));
   }
   body.append(
+    gap(row("transform", "Canvas size", "Crop, extend, or scale, as a new variation", () => showCanvasSize())),
+    gap(row("actions", "History", "Step back through your strokes and changes", () => { closePanel(); showPanel("history", historyPanel); })),
+    gap(row("duplicate", "Earlier versions", "How this artwork looked in past sittings", () => { closePanel(); showPanel("versions", versionsPanel); })));
+  if (doc && !doc.warmup) {
+    store.variations(doc.id).then((family) => {
+      const changed = family.map((art) => art.id).join() !== variationFamily.map((art) => art.id).join();
+      variationFamily = family;
+      if (changed && panelKey === "artwork") rerender();
+    }).catch(() => {});
+  }
+  return body;
+}
+
+function createPanel() {
+  const row = actionRow;
+  return h("div", { className: "column" },
+    h("div", { className: "title" }, "Create"),
+    gap(row("text", "Add text", "Label a design sheet", () => {
+      closePanel();
+      askForText();
+    })),
+    gap(row("copy", "Make a sticker", "Add a die-cut border around your drawing", () => openStickerPanel())),
+    gap(row("palette", "Color variants", "Try this design in new colors", () => {
+      closePanel();
+      showPanel("variants", variantsPanel);
+    })),
     gap(row("video", doc.manifest.animation ? "Stop animating" : "Animate", "Each layer becomes a frame", () => {
       closePanel();
       setAnimation(!doc.manifest.animation);
+    })));
+}
+
+function studyPanel() {
+  const row = actionRow;
+  return h("div", { className: "column" },
+    h("div", { className: "title" }, "Study"),
+    gap(row("figure", "Figure guide", "Place a body or face and check its proportions", () => {
+      closePanel();
+      openFigureGuide();
     })),
-    gap(row("transform", "Canvas size", "Crop, extend, or scale, as a new variation", () => showCanvasSize())),
-    gap(row("actions", "History", "Step back through your strokes and changes", () => { closePanel(); showPanel("history", historyPanel); })),
-    gap(row("duplicate", "Earlier versions", "How this artwork looked in past sittings", () => { closePanel(); showPanel("versions", versionsPanel); })),
-    gap(row("view", "Focus mode", "Only the canvas, with a tab to bring the tools back", () => { if (!interfaceHidden) toggleInterface(); })),
-    gap(row("companion", "Gestures and shortcuts", "Every tap, hold, and key the app knows", () => { closePanel(); showPanel("gestures", gesturesPanel); })),
-    gap(h("div", { className: "caption" }, "Export")),
+    gap(row("cube", "3D model", "Turn a figure, head, or shape to draw from", () => {
+      closePanel();
+      openModel();
+    })));
+}
+
+function exportPanel() {
+  const row = actionRow;
+  return h("div", { className: "column" },
+    h("div", { className: "title" }, "Export"),
     gap(row("layers", "Design sheet", "All variations on one page", () => { closePanel(); exportSheet(); })),
     gap(row("export", "Frames as PNGs", "One image per thumbnail frame", () => { closePanel(); exportFrames(); })),
     gap(row("export", "Print-ready PDF", doc.manifest.print ? "With bleed at 300 dpi" : "At 300 dpi", () => { closePanel(); exportPrintPdf(); })),
     doc.manifest.print && gap(row("export", "Front cover JPEG", "Trimmed, for online stores and ebooks", () => { closePanel(); exportFrontCover(); })),
     gap(row("export", "PNG image", store.folderName ? `Flattened, saved to ${store.folderName}/Exports` : "Flattened, saved to your downloads", () => { closePanel(); exportPng(); })),
     gap(row("layersfile", "PSD file", "Keeps your layers", () => { closePanel(); exportPsd(); })),
-    gap(row("video", "Time-lapse", "A video of your progress", () => { closePanel(); askTimelapseLength(); })),
+    gap(row("video", "Time-lapse", "A video of your progress", () => { closePanel(); askTimelapseLength(); })));
+}
+
+function settingsPanel() {
+  const row = actionRow;
+  return h("div", { className: "column" },
+    h("div", { className: "title" }, "Settings"),
+    gap(row("view", "Focus mode", "Only the canvas, with a tab to bring the tools back", () => { if (!interfaceHidden) toggleInterface(); })),
+    gap(row("companion", "Gestures and shortcuts", "Every tap, hold, and key the app knows", () => { closePanel(); showPanel("gestures", gesturesPanel); })),
+    gap(h("div", { className: "caption" }, "Toolbars")),
+    gap(h("div", { className: "small" }, "Hold a button to lift it, then drop it on another bar.")),
+    gap(row("settings", "Reset bars", null, () => {
+      try {
+        localStorage.removeItem("bars");
+      } catch {
+        // Nothing saved to clear.
+      }
+      bars = readBars(null);
+      closePanel();
+      arrangeBars();
+    })),
     gap(h("div", { className: "caption" }, "Language")),
     gap(segmented(LANGUAGES.map(([, label]) => label), LANGUAGES.findIndex(([code]) => code === language), async (index) => {
       const [code] = LANGUAGES[index];
@@ -3168,14 +3948,6 @@ function actionsPanel() {
     })),
     gap(h("div", { className: "caption" }, "Companion")),
     gap(row("companion", companionVisible ? "Hide companion" : "Wake companion", null, () => setCompanionVisible(!companionVisible))));
-  if (doc && !doc.warmup) {
-    store.variations(doc.id).then((family) => {
-      const changed = family.map((art) => art.id).join() !== variationFamily.map((art) => art.id).join();
-      variationFamily = family;
-      if (changed && panelKey === "actions") rerender();
-    }).catch(() => {});
-  }
-  return body;
 }
 
 // --- Text layers ------------------------------------------------------------------------------
@@ -4563,7 +5335,7 @@ function sayFull() {
 }
 
 // Adds a layer above the active one, as MainActivity.addLayer() does.
-function addLayer({ blend = 0 } = {}) {
+function addLayer({ blend = 0, name = null } = {}) {
   if (!doc) return;
   if (layerSlots() >= maxLayers) return sayFull();
   const id = doc.manifest.nextLayerId++;
@@ -4571,7 +5343,7 @@ function addLayer({ blend = 0 } = {}) {
   engine._cap_create_layer(id);
   editLayers(() => {
     const index = layers().findIndex((layer) => layer.id === doc.manifest.activeLayer) + 1;
-    layers().splice(index, 0, { ...newLayer(id, `Layer ${id}`), blend });
+    layers().splice(index, 0, { ...newLayer(id, name || `Layer ${id}`), blend });
     doc.manifest.activeLayer = id;
   });
   refreshLayers();
@@ -5843,6 +6615,10 @@ function drawOverlay() {
   const c = overlayContext;
   c.clearRect(0, 0, overlay.width, overlay.height);
   if (printGuidesShown()) drawPrintGuides(c, doc.manifest.print, canvasWidth, canvasHeight, canvasToScreen, dpr * uiScale());
+  if (opened) {
+    drawModel(c);
+    drawFigure(c);
+  }
   if (sizeRingShown && opened) {
     c.beginPath();
     c.arc(overlay.width / 2, overlay.height / 2, settingsFor(brush).diameter / 2 * zoom, 0, Math.PI * 2);
@@ -6546,6 +7322,7 @@ function gesturesPanel() {
     ["Tap the name of your layer", "Rename it right there."],
     ["Double-tap a reference", "Fits the whole image again. Two fingers zoom and turn it."],
     ["Pen side button", "Picks a color, erases, or undoes. Choose in this menu."],
+    ["Hold a bar button", "Lifts it like a drop of ink, to carry to another bar."],
     ["Keyboard", "B brush, E eraser, [ and ] size, Tab hides the tools, Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo."],
   ];
   return h("div", { className: "column" }, h("div", { className: "title" }, "Gestures and shortcuts"),
@@ -6689,6 +7466,8 @@ function showStudio() {
   homeView.hidden = true;
   studioView.hidden = false;
   closePanel();
+  hideMoreBar();
+  arrangeBars();
   placeRecentStrip();
   placeCompanion();
   companion.resize();

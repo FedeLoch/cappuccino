@@ -17,18 +17,26 @@
 <canvas id="overlay"></canvas>
 
 <div id="left" class="pill">
-  <button class="icon" data-icon="gallery" data-action="projects" aria-label="Projects"></button>
-  <button class="icon" data-icon="actions" data-action="actions" aria-label="Actions"></button>
-  <button class="icon" data-icon="references" data-action="references" aria-label="References"></button>
-  <button class="icon" data-icon="view" data-action="view" aria-label="Art direction"></button>
-  <button class="icon" id="tools-button" data-icon="select" data-action="tools" aria-label="Tools"></button>
+  <button class="icon" data-key="projects" data-icon="gallery" data-action="projects" aria-label="Projects"></button>
+  <button class="icon" data-key="more" data-icon="actions" data-action="more" aria-label="More"></button>
+  <button class="icon" data-key="references" data-icon="references" data-action="references" aria-label="References"></button>
+  <button class="icon" data-key="view" data-icon="view" data-action="view" aria-label="Art direction"></button>
+  <button class="icon" data-key="tools" id="tools-button" data-icon="select" data-action="tools" aria-label="Tools"></button>
 </div>
 
 <div id="right" class="pill">
-  <button class="icon" id="brush-button" data-icon="brush" aria-label="Brushes"></button>
-  <button class="icon" id="eraser-button" data-icon="eraser" aria-label="Eraser"></button>
-  <button class="icon" data-icon="layers" data-action="layers" aria-label="Layers"></button>
+  <button class="icon" data-key="brushes" id="brush-button" data-icon="brush" aria-label="Brushes"></button>
+  <button class="icon" data-key="eraser" id="eraser-button" data-icon="eraser" aria-label="Eraser"></button>
+  <button class="icon" data-key="layers" data-icon="layers" data-action="layers" aria-label="Layers"></button>
   <button id="color-button" class="swatch-button" aria-label="Color"><span></span></button>
+</div>
+
+<div id="more-bar" class="pill" hidden>
+  <button class="icon" data-key="create" data-icon="create" data-action="create" aria-label="Create"></button>
+  <button class="icon" data-key="study" data-icon="figure" data-action="study" aria-label="Study"></button>
+  <button class="icon" data-key="artwork" data-icon="rename" data-action="artwork" aria-label="Artwork"></button>
+  <button class="icon" data-key="export" data-icon="export" data-action="export" aria-label="Export"></button>
+  <button class="icon" data-key="settings" data-icon="settings" data-action="settings" aria-label="Settings"></button>
 </div>
 
 <div id="sliders" class="pill vertical">

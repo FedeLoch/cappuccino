@@ -24,7 +24,7 @@ mkdir -p "$OUT"
 em++ "${OPT[@]}" -std=c++20 -Wall -Wextra \
     -I"$ENGINE" \
     web/src/web_api.cpp \
-    "$ENGINE/fill.cpp" "$ENGINE/liquify.cpp" "$ENGINE/renderer.cpp" "$ENGINE/stroke.cpp" \
+    "$ENGINE/fill.cpp" "$ENGINE/liquify.cpp" "$ENGINE/model3d.cpp" "$ENGINE/renderer.cpp" "$ENGINE/stroke.cpp" \
     -sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 \
     -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=64MB -sMAXIMUM_MEMORY=2GB \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createEngine -sENVIRONMENT=web \
@@ -34,5 +34,5 @@ em++ "${OPT[@]}" -std=c++20 -Wall -Wextra \
 
 python3 web/tools/icons.py app/src/main/res/drawable "$OUT/icons.js"
 python3 web/tools/translations.py app/src/main/java/art/cappuccino/paint/Translations.kt "$OUT/translations.js"
-cp web/index.html web/style.css web/app.js web/brushes.js web/companion.js web/ui.js web/home.js web/storage.js web/analysis.js web/warmups.js web/practice.js web/psd.js web/references.js web/match.js web/zip.js web/i18n.js web/shapes.js web/print.js web/lettering.js "$OUT/"
+cp web/index.html web/style.css web/app.js web/brushes.js web/companion.js web/ui.js web/home.js web/storage.js web/analysis.js web/warmups.js web/practice.js web/psd.js web/references.js web/match.js web/zip.js web/i18n.js web/shapes.js web/print.js web/lettering.js web/figure.js "$OUT/"
 echo "Built $OUT: $(du -sh "$OUT" | cut -f1)"

@@ -234,7 +234,7 @@ val GUIDES = listOf("None", "Thirds", "Golden", "Grid", "Isometric", "Views", "F
 /**
  * A filter slider and how its value reads: "px" for pixels, "deg" for an angle in radians, "level"
  * for a 0 to 255 tone, "gamma" for a midtone power, "times" for a multiplier shown as a percentage,
- * and "%" for a share of the slider's range.
+ * "dir" for a direction named by where it comes from, and "%" for a share of the slider's range.
  */
 class FilterSlider(val label: String, val low: Float, val high: Float, val start: Float, val unit: String = "%")
 
@@ -265,7 +265,26 @@ val FILTERS = listOf(
         "Depth fade", 7, "Washes the layer toward your color, so it sits farther back.",
         listOf(FilterSlider("Amount", 0f, 1f, 0.3f)), usesColor = true,
     ),
+    FilterKind(
+        "Light", LIGHT_FILTER, "Shades flat shapes as if they were rounded, on a layer of its own clipped to this one.",
+        listOf(
+            FilterSlider("Light from", 0f, 6.2832f, 2.36f, "dir"),
+            FilterSlider("Light height", 0.1f, 1.45f, 0.6f, "deg"),
+            FilterSlider("Roundness", 4f, 300f, 60f, "px"),
+            FilterSlider("Strength", 0f, 1f, 0.8f),
+        ),
+    ),
 )
+
+/** The light filter, whose sliders the engine reads in its own order. */
+const val LIGHT_FILTER = 8
+
+/** Where light comes from, by eighths of a turn counterclockwise from the right. */
+val LIGHT_DIRECTIONS = listOf("right", "upper right", "top", "upper left", "left", "lower left", "bottom", "lower right")
+
+/** The engine's values for a filter: the light filter wants roundness, height, strength, then direction. */
+fun engineFilterValues(kind: FilterKind, values: FloatArray): FloatArray =
+    if (kind.id == LIGHT_FILTER) floatArrayOf(values[2], values[1], values[3], values[0]) else values.copyOf()
 
 /** How a filter slider's value reads beside it. */
 fun filterValueText(slider: FilterSlider, value: Float): String = when (slider.unit) {
@@ -274,6 +293,7 @@ fun filterValueText(slider: FilterSlider, value: Float): String = when (slider.u
     "level" -> "${Math.round(value * 255)}"
     "gamma" -> String.format(java.util.Locale.US, "%.2f", value)
     "times" -> "${Math.round(value * 100)}%"
+    "dir" -> LIGHT_DIRECTIONS[Math.floorMod(Math.round(value / (Math.PI / 4)).toInt(), 8)]
     else -> "${Math.round((value - slider.low) / (slider.high - slider.low) * 100)}%"
 }
 
@@ -304,3 +324,46 @@ data class ArtworkInfo(
     val height: Int = DEFAULT_CANVAS_HEIGHT,
     val layers: Int = 0,
 )
+
+/** Every button that can live on a bar, by key. */
+val BAR_KEYS = listOf(
+    "projects", "more", "references", "view", "tools", "brushes", "eraser", "layers",
+    "create", "study", "artwork", "export", "settings",
+)
+
+/** The bar the companion holds, the one with the color, and the one that opens under More. */
+val DEFAULT_BARS = listOf(
+    listOf("projects", "more", "references", "view", "tools"),
+    listOf("brushes", "eraser", "layers"),
+    listOf("create", "study", "artwork", "export", "settings"),
+)
+
+const val MORE_BAR = 2
+
+/** Reads saved bars, written as keys with commas between them and bars between bars, keeping every button once and no bar empty. */
+fun readBars(saved: String?): List<List<String>> {
+    val bars = saved?.split('|')?.map { bar -> bar.split(',').filter { it in BAR_KEYS } } ?: return DEFAULT_BARS
+    if (bars.size != DEFAULT_BARS.size || bars.any { it.isEmpty() }) return DEFAULT_BARS
+    val seen = HashSet<String>()
+    val clean = bars.map { bar -> bar.filter(seen::add) }.map { it.toMutableList() }
+    // A button added in an update lands where it starts out.
+    BAR_KEYS.filter { it !in seen }.forEach { key -> clean[DEFAULT_BARS.indexOfFirst { key in it }].add(key) }
+    if (clean.any { it.isEmpty() } || "more" in clean[MORE_BAR]) return DEFAULT_BARS
+    return clean
+}
+
+fun writeBars(bars: List<List<String>>) = bars.joinToString("|") { it.joinToString(",") }
+
+/**
+ * Moves a button to another place, or returns null when that would leave its bar empty or put
+ * More inside the bar it opens.
+ */
+fun moveBarItem(bars: List<List<String>>, key: String, toBar: Int, index: Int): List<List<String>>? {
+    val from = bars.indexOfFirst { key in it }
+    if (from < 0 || toBar !in bars.indices) return null
+    if (from != toBar && bars[from].size == 1) return null
+    if (key == "more" && toBar == MORE_BAR) return null
+    val moved = bars.map { bar -> bar.filter { it != key }.toMutableList() }
+    moved[toBar].add(index.coerceIn(0, moved[toBar].size), key)
+    return moved
+}

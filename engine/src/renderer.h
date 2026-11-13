@@ -127,6 +127,11 @@ public:
     void readLayerRegion(int id, const Rect& rect, void* pixels);
     void readLayer(int id, void* pixels);
     void writeLayer(int id, const void* pixels);
+    // Replaces a region of a layer with premultiplied RGBA, rows from the top, as one undo step
+    // unless history is false.
+    void placePixels(int id, const Rect& rect, const void* pixels, bool history = true);
+    // Clears a layer without an undo step, for content that's redrawn live, such as a 3D model.
+    void clearLayerPixels(int id);
 
     void beginStroke(const BrushParams& brush);
     void drawFront(const float* projection, const float* view, int bufferWidth, int bufferHeight,

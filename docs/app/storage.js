@@ -870,7 +870,7 @@ export class ArtworkStore {
     const dir = await this.artworkDir(id, true);
     const manifest = {
       version: 1, name: name || "Untitled", project: projectId, width, height,
-      groups: [], nextGroupId: 1, light: "OFF", figure: [], variationOf: "", journalSequence: 0,
+      groups: [], nextGroupId: 1, light: "OFF", figure: [], body: [], face: [], variationOf: "", journalSequence: 0,
       symmetry: 0, followedBoards: [], animation: false, fps: 8, symmetryCenter: [],
       activeLayer: 1, nextLayerId: 2, updated: Date.now(), packs: [], perspective: [], references: [],
       ...(print ? { print } : {}),

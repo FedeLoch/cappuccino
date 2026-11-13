@@ -287,3 +287,43 @@ class PrintGuideOverlay(
         }
     }
 }
+
+/** A bar button carried between bars, drawn as a drop of ink with the button's icon in it. */
+class InkDrop(context: Context, private val icon: android.graphics.drawable.Drawable?) : View(context) {
+    private val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = ACCENT }
+    private val shade = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(70, 30, 20, 15) }
+    private val shine = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(90, 255, 255, 255) }
+    private val drop = Path()
+
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        // A round belly with a soft point on top, as ink gathers before it falls.
+        val radius = width * 0.42f
+        val cx = width / 2f
+        val cy = height - radius - height * 0.06f
+        val tip = height * 0.04f
+        drop.reset()
+        drop.moveTo(cx, tip)
+        drop.cubicTo(cx + radius * 0.25f, tip + radius * 0.9f, cx + radius, cy - radius * 0.45f, cx + radius, cy)
+        drop.arcTo(RectF(cx - radius, cy - radius, cx + radius, cy + radius), 0f, 180f, false)
+        drop.cubicTo(cx - radius, cy - radius * 0.45f, cx - radius * 0.25f, tip + radius * 0.9f, cx, tip)
+        drop.close()
+        pivotX = cx
+        pivotY = height.toFloat()
+        icon?.setBounds(
+            (cx - radius * 0.55f).toInt(), (cy - radius * 0.55f).toInt(),
+            (cx + radius * 0.55f).toInt(), (cy + radius * 0.55f).toInt(),
+        )
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        canvas.save()
+        canvas.translate(0f, height * 0.03f)
+        canvas.drawPath(drop, shade)
+        canvas.restore()
+        canvas.drawPath(drop, ink)
+        val radius = width * 0.42f
+        val cy = height - radius - height * 0.06f
+        canvas.drawCircle(width / 2f - radius * 0.45f, cy - radius * 0.45f, radius * 0.14f, shine)
+        icon?.draw(canvas)
+    }
+}

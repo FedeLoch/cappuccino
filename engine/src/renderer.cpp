@@ -180,7 +180,7 @@ void main() {
     fragColor = mix(source, result, amount) * (1.0 - uUseHide * texture(uHide, vUv).a);
 })";
 
-// Kinds: 1 blur, 2 motion blur, 3 sharpen, 4 noise, 5 gradient map, 6 levels, 7 depth fade.
+// Kinds: 1 blur, 2 motion blur, 3 sharpen, 4 noise, 5 gradient map, 6 levels, 7 depth fade, 8 light.
 constexpr char kEffectFragment[] = R"(#version 300 es
 precision highp float;
 in vec2 vUv;
@@ -219,7 +219,37 @@ vec4 motion(float reach, float angle) {
 float noise(vec2 cell) {
     return fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
 }
+// Shades the layer's shapes as if they were puffed up into soft reliefs. Values: how far in from
+// the edge the roundness reaches, in pixels; the light's height in radians; strength; and where
+// the light comes from on screen, in radians: 0 from the right, a quarter turn from the top.
+// uColor.y at 1 gives only the shading, for a layer of its own.
+vec4 light(vec4 source) {
+    if (source.a <= 0.0) return source;
+    vec2 texel = max(uValues.x, 1.0) / uSize;
+    vec2 inward = vec2(0.0);
+    for (int i = 1; i < kSamples; ++i) {
+        float share = sqrt(float(i) / float(kSamples));
+        float turn = float(i) * 2.39996;
+        vec2 way = vec2(cos(turn), sin(turn));
+        inward += way * share * texture(uTexture, vUv + way * share * texel).a;
+    }
+    inward *= 3.0 / float(kSamples);
+    // The surface leans away from the inside, most at the edges, flat in the middle.
+    vec3 normal = normalize(vec3(-inward.x * 2.2, -inward.y * 2.2, 1.0));
+    // Layer rows run from the top of the canvas, so up on screen is down in the texture.
+    vec2 from = vec2(cos(uValues.w), -sin(uValues.w));
+    vec3 toward = vec3(from * cos(uValues.y), sin(uValues.y));
+    float lit = max(dot(normal, toward), 0.0);
+    vec3 warm = vec3(0.78, 0.74, 0.66);
+    vec3 cool = vec3(0.34, 0.36, 0.44);
+    vec3 shade = lit > 0.5 ? mix(vec3(0.5), warm, (lit - 0.5) * 2.0) : mix(cool, vec3(0.5), lit * 2.0);
+    shade = mix(vec3(0.5), shade, uValues.z);
+    if (uColor.y > 0.5) return vec4(shade * source.a, source.a);
+    // As the Soft light blend composites it, so the preview matches the layer it becomes.
+    return vec4(clamp(2.0 * source.rgb / source.a * shade, 0.0, 1.0) * source.a, source.a);
+}
 vec4 effect(vec4 source) {
+    if (uKind == 8) return light(source);
     if (uKind == 1) return blur(uValues.x);
     if (uKind == 2) return motion(uValues.x, uValues.y);
     if (uKind == 3) {
@@ -1744,6 +1774,34 @@ void Renderer::readLayerRegion(int id, const Rect& rect, void* pixels) {
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(rect.left, rect.top, rect.width(), rect.height(), GL_RGBA, GL_UNSIGNED_BYTE,
                  pixels);
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+}
+
+void Renderer::clearLayerPixels(int id) {
+    Layer* layer = findLayer(id);
+    if (!layer) return;
+    const GLint target = currentFramebuffer();
+    resetState();
+    glBindFramebuffer(GL_FRAMEBUFFER, layer->fbo);
+    glViewport(0, 0, width_, height_);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    layer->dirtyArea = {0, 0, width_, height_};
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+}
+
+void Renderer::placePixels(int id, const Rect& rect, const void* pixels, bool history) {
+    Layer* layer = findLayer(id);
+    if (!layer || rect.empty()) return;
+    const GLint target = currentFramebuffer();
+    resetState();
+    if (history) pushFullHistory(*layer);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glBindTexture(GL_TEXTURE_2D, layer->texture);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, rect.left, rect.top, rect.width(), rect.height(), GL_RGBA,
+                    GL_UNSIGNED_BYTE, pixels);
+    layer->dirtyArea = unite(layer->dirtyArea, rect);
+    if (id == activeLayer_) setActiveLayer(id);
     glBindFramebuffer(GL_FRAMEBUFFER, target);
 }
 

@@ -89,7 +89,18 @@ private const val LAYER_ROW = 56
 private const val LAYER_GAP = 4
 private const val FILTER_STEPS = 240
 private const val RETIRED_LAYERS = 6
-private val LEFT_PANELS = setOf("actions", "references", "view", "tools", "sticker", "gestures", "history", "versions")
+private val LEFT_PANELS = setOf("references", "view", "tools", "sticker", "gestures", "history", "versions")
+// The bar button each panel opens from, so a panel opens on the side its button now sits.
+private val PANEL_BUTTONS = mapOf(
+    "brushes" to "brushes", "erasers" to "eraser", "layers" to "layers", "references" to "references",
+    "view" to "view", "tools" to "tools", "create" to "create", "sticker" to "create", "variants" to "create",
+    "study" to "study", "artwork" to "artwork", "history" to "artwork", "versions" to "artwork",
+    "export" to "export", "settings" to "settings", "gestures" to "settings",
+)
+private const val BARS_KEY = "bars"
+private const val LIFT_MS = 380L
+private const val DROP_WIDTH = 56
+private const val DROP_HEIGHT = 70
 private const val PICK_TIP = 45
 private const val PICK_LAYER_IMAGE = 46
 private const val PICK_FLASH_MS = 700L
@@ -115,6 +126,16 @@ private const val DEFAULT_TEXT_SIZE = 0.05f
 private const val TEXT_PREVIEW_HEIGHT = 110
 private const val PREFLIGHT_WIDTH = 800
 private const val PICK_FONT = 48
+private const val PICK_MODEL = 49
+private const val MODEL_FILE_LIMIT = 40 * 1024 * 1024
+private const val SOFT_LIGHT_BLEND = 6
+// Whether the figure guide stays over the canvas after its panel closes.
+private const val FIGURE_KEEP = "figureKeep"
+// The 3D preview's longest side, so turning the model stays smooth, and lighter while dragging.
+private const val MODEL_PREVIEW_SIZE = 1024
+private const val MODEL_DRAG_PREVIEW_SIZE = 480
+// How long a slider rests before the model is drawn into its layer.
+private const val MODEL_SETTLE_MS = 300L
 private const val TEXT_FIND_WIDTH = 512
 private const val BRUSH_TIP_SIZE = 128
 
@@ -126,12 +147,48 @@ class MainActivity : Activity(), ReferenceHost {
 
     private val handler = Handler(Looper.getMainLooper())
     private val saver = Executors.newSingleThreadExecutor()
+    private var figureOverlay: FigureOverlay? = null
+    private var figureWindow: PopupWindow? = null
+    private var figureFace = false
+    private var guideWindowsFollow = false
+    private var figureLandmarks = true
+    private var draggedPoint = -1
+    private var dragSpot = FloatArray(2)
+    private val modelRenderer = Executors.newSingleThreadExecutor()
+    private var modelPreview: ModelPreview? = null
+    private var modelWindow: PopupWindow? = null
+    private var modelShape = 0
+    private var modelPose = 0
+    private var modelMoving = false
+    private val modelView = FloatArray(9)
+    private val modelRequest = AtomicInteger()
+    private var modelShownRequest = 0
+    private var modelLayer = 0
+    private var modelLive = false
+    private var modelTouching = false
+    private val modelSettle = Runnable { drawModelLayer() }
     private val analyzer = Executors.newSingleThreadExecutor { work ->
         Thread { Thread.currentThread().priority = Thread.MIN_PRIORITY; work.run() }
     }
     private val savedFiles = HashMap<Int, String>()
     private val recentColors = ArrayList<Int>()
     private val chrome = ArrayList<PopupWindow>()
+    private var bars = DEFAULT_BARS.map { it.toMutableList() }.toMutableList()
+    private val barButtons = HashMap<String, View>()
+    private val barViews = arrayOfNulls<LinearLayout>(3)
+    private val barWindows = arrayOfNulls<PopupWindow>(3)
+    private var moreWindow: PopupWindow? = null
+    private var barHeight = 0
+    private var pressedKey: String? = null
+    private var pressedView: View? = null
+    private var pressSpot = FloatArray(2)
+    private var liftedKey: String? = null
+    private var dropWindow: PopupWindow? = null
+    private var dropView: InkDrop? = null
+    private var slot: View? = null
+    private var slotBar = -1
+    private var slotIndex = -1
+    private val lift = Runnable { liftBarItem() }
     private val references = LinkedHashMap<String, ReferenceWindow>()
     private var companionWindow: PopupWindow? = null
     private var panel: PopupWindow? = null
@@ -346,6 +403,8 @@ class MainActivity : Activity(), ReferenceHost {
             positionHandles()
             noteOverlay?.invalidate()
             printOverlay?.invalidate()
+            figureOverlay?.invalidate()
+            modelPreview?.invalidate()
             canvas.redrawLassoShape()
         }
         canvas.onFillTap = { x, y -> fillAt(x, y) }
@@ -390,6 +449,7 @@ class MainActivity : Activity(), ReferenceHost {
         openDocument(artworkId, loaded, canvasWidth, canvasHeight)
         // Guides first, so the toolbars open above them.
         canvas.post { showPrintGuides() }
+        canvas.post { showGuideWindows() }
         canvas.post { showChrome() }
         window.insetsController?.apply {
             hide(WindowInsets.Type.systemBars())
@@ -881,33 +941,248 @@ class MainActivity : Activity(), ReferenceHost {
         chrome.add(window)
     }
 
+    /** A bar button by key, ready to tap, or to hold and carry to another bar. */
+    @SuppressLint("ClickableViewAccessibility")
+    private fun barButton(key: String): View {
+        fun group(panel: String, content: () -> View) = {
+            hideMoreBar()
+            togglePanel(panel, content)
+        }
+        val (icon, title, action) = when (key) {
+            "projects" -> Triple(R.drawable.ic_gallery, "Projects") {
+                save()
+                startActivity(
+                    Intent(this@MainActivity, GalleryActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                )
+                finish()
+            }
+            "more" -> Triple(R.drawable.ic_actions, "More") { toggleMoreBar() }
+            "references" -> Triple(R.drawable.ic_references, "References", group("references", ::referencesPanel))
+            "view" -> Triple(R.drawable.ic_view, "Art direction", group("view", ::viewPanel))
+            "tools" -> Triple(R.drawable.ic_select, "Tools", group("tools", ::toolsPanel))
+            "brushes" -> Triple(R.drawable.ic_brush, "Brushes") {
+                hideMoreBar()
+                if (canvas.brushKind.isEraser || canvas.brushKind.isTool) {
+                    closePanel()
+                    selectTool(lastBrush)
+                } else {
+                    togglePanel("brushes", ::brushPanel)
+                }
+            }
+            "eraser" -> Triple(R.drawable.ic_eraser, "Eraser") {
+                hideMoreBar()
+                if (canvas.brushKind.isEraser) {
+                    togglePanel("erasers", ::eraserPanel)
+                } else {
+                    closePanel()
+                    selectTool(lastEraser)
+                }
+            }
+            "layers" -> Triple(R.drawable.ic_layers, "Layers", group("layers", ::layersPanel))
+            "create" -> Triple(R.drawable.ic_create, "Create", group("create", ::createPanel))
+            "study" -> Triple(R.drawable.ic_figure, "Study", group("study", ::studyPanel))
+            "artwork" -> Triple(R.drawable.ic_rename, "Artwork", group("artwork", ::artworkPanel))
+            "export" -> Triple(R.drawable.ic_export, "Export", group("export", ::exportPanel))
+            else -> Triple(R.drawable.ic_settings, "Settings", group("settings", ::settingsPanel))
+        }
+        val button = iconButton(icon, tr(title)) { action() }
+        button.tag = key
+        button.setOnTouchListener { view, event -> barTouch(view, key, event) }
+        when (key) {
+            "brushes" -> brushButton = button
+            "eraser" -> eraserButton = button
+            "layers" -> layersButton = button
+            "tools" -> toolsButton = button
+        }
+        return button
+    }
+
+    private fun toggleMoreBar() = if (moreWindow?.isShowing == true) hideMoreBar() else showMoreBar()
+
+    /** The bar under More, opening below whichever bar holds More. */
+    private fun showMoreBar() {
+        if (moreWindow?.isShowing == true || isDestroyed) return
+        closePanel()
+        val host = bars.indexOfFirst { "more" in it }
+        val bar = pill().apply {
+            bars[MORE_BAR].forEach { key ->
+                val button = barButtons.getValue(key)
+                (button.parent as? ViewGroup)?.removeView(button)
+                addView(button)
+            }
+        }
+        val window = PopupWindow(bar, ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            isClippingEnabled = false
+            showAtLocation(canvas, Gravity.TOP or (if (host == 1) Gravity.END else Gravity.START), dp(12), dp(12) + barHeight + dp(8))
+        }
+        chrome.add(window)
+        moreWindow = window
+        barViews[MORE_BAR] = bar
+        barWindows[MORE_BAR] = window
+        if (interfaceHidden) bar.alpha = 0f
+    }
+
+    private fun hideMoreBar() {
+        val window = moreWindow ?: return
+        if (liftedKey != null) return
+        window.dismiss()
+        chrome.remove(window)
+        moreWindow = null
+        barViews[MORE_BAR] = null
+        barWindows[MORE_BAR] = null
+    }
+
+    /** Holding a button lifts it as a drop of ink; it can then be carried to any bar. */
+    private fun barTouch(view: View, key: String, event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                pressedKey = key
+                pressedView = view
+                pressSpot = floatArrayOf(event.rawX, event.rawY)
+                handler.postDelayed(lift, LIFT_MS)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (liftedKey == null) {
+                    if (hypot(event.rawX - pressSpot[0], event.rawY - pressSpot[1]) > dp(10)) handler.removeCallbacks(lift)
+                    return false
+                }
+                carryDrop(event.rawX, event.rawY)
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                handler.removeCallbacks(lift)
+                if (liftedKey != null) {
+                    landDrop(event.actionMasked == MotionEvent.ACTION_CANCEL)
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private fun liftBarItem() {
+        val key = pressedKey ?: return
+        val view = pressedView ?: return
+        liftedKey = key
+        view.isPressed = false
+        view.cancelLongPress()
+        view.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        closePanel()
+        // The bar under More opens too, so it can take the drop.
+        showMoreBar()
+        val drop = InkDrop(this, (view as ImageButton).drawable.constantState?.newDrawable()?.mutate())
+        dropView = drop
+        dropWindow = PopupWindow(drop, dp(DROP_WIDTH), dp(DROP_HEIGHT)).apply {
+            isTouchable = false
+            isClippingEnabled = false
+            showAtLocation(canvas, Gravity.NO_GRAVITY, 0, 0)
+        }
+        drop.scaleX = 0.4f
+        drop.scaleY = 0.4f
+        drop.animate().scaleX(1f).scaleY(1f).setInterpolator(android.view.animation.OvershootInterpolator(2.5f)).setDuration(220).start()
+        // The other buttons close the gap it leaves.
+        view.visibility = View.GONE
+        barViews.indices.forEach(::resizeBar)
+        carryDrop(pressSpot[0], pressSpot[1])
+    }
+
+    private fun resizeBar(index: Int) {
+        val bar = barViews[index] ?: return
+        val window = barWindows[index] ?: return
+        bar.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        window.update(bar.measuredWidth, bar.measuredHeight)
+    }
+
+    private fun carryDrop(x: Float, y: Float) {
+        val drop = dropView ?: return
+        val origin = IntArray(2).also(canvas::getLocationOnScreen)
+        // Held above the finger, so the finger doesn't cover it, or below it near the top edge,
+        // swaying as it's carried.
+        val left = (x - origin[0] - dp(DROP_WIDTH) / 2f).roundToInt()
+        val above = (y - origin[1] - dp(DROP_HEIGHT) - dp(12)).roundToInt()
+        val top = if (above >= 0) above else (y - origin[1] + dp(20)).roundToInt()
+        dropWindow?.update(left, top, -1, -1)
+        drop.rotation = ((x - pressSpot[0]) * 0.6f).coerceIn(-14f, 14f)
+        pressSpot = floatArrayOf(x, y)
+        // Where it would land: the bar under it, and the spot between buttons.
+        var target = -1
+        var index = -1
+        val reach = dp(28)
+        for (bar in barViews.indices) {
+            val view = barViews[bar] ?: continue
+            val at = IntArray(2).also(view::getLocationOnScreen)
+            if (x < at[0] - reach || x > at[0] + view.width + reach || y < at[1] - reach || y > at[1] + view.height + reach) continue
+            target = bar
+            index = (0 until view.childCount).map(view::getChildAt).count { child ->
+                child !== slot && child.tag is String && child.visibility == View.VISIBLE &&
+                    IntArray(2).also(child::getLocationOnScreen)[0] + child.width / 2f < x
+            }
+            break
+        }
+        if (target == slotBar && index == slotIndex) return
+        (slot?.parent as? ViewGroup)?.removeView(slot)
+        val old = slotBar
+        slotBar = target
+        slotIndex = index
+        if (target >= 0) {
+            val bar = barViews[target]!!
+            val place = View(this).apply { background = rounded(SURFACE_RAISED, 22) }
+            slot = place
+            // Before the button now at that spot, or after the last one, ahead of the color.
+            val buttons = (0 until bar.childCount).map(bar::getChildAt).filter { it.tag is String && it.visibility == View.VISIBLE }
+            val at = buttons.getOrNull(index)?.let(bar::indexOfChild)
+                ?: buttons.lastOrNull()?.let { bar.indexOfChild(it) + 1 } ?: 0
+            bar.addView(place, at, LinearLayout.LayoutParams(dp(44), dp(44)))
+            resizeBar(target)
+        }
+        if (old >= 0 && old != target) resizeBar(old)
+    }
+
+    private fun landDrop(cancelled: Boolean) {
+        val key = liftedKey ?: return
+        liftedKey = null
+        dropWindow?.dismiss()
+        dropWindow = null
+        dropView = null
+        (slot?.parent as? ViewGroup)?.removeView(slot)
+        slot = null
+        val target = slotBar
+        val index = slotIndex
+        slotBar = -1
+        slotIndex = -1
+        if (!cancelled && target >= 0) {
+            val moved = moveBarItem(bars, key, target, index)
+            if (moved == null) {
+                say(tr("Each bar keeps at least one tool."))
+            } else {
+                preferences.edit().putString(BARS_KEY, writeBars(moved)).apply()
+            }
+        }
+        rebuildChrome()
+        if (target == MORE_BAR) showMoreBar()
+    }
+
     private fun showChrome() {
         if (isDestroyed) return
         hideMotion?.removeAllListeners()
         hideMotion?.cancel()
-        val left = pill().apply {
-            addView(
-                iconButton(R.drawable.ic_gallery, tr("Projects")) {
-                    save()
-                    startActivity(
-                        Intent(this@MainActivity, GalleryActivity::class.java)
-                            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                    )
-                    finish()
-                },
-            )
-            addView(iconButton(R.drawable.ic_actions, tr("Actions")) { togglePanel("actions", ::actionsPanel) })
-            addView(iconButton(R.drawable.ic_references, tr("References")) { togglePanel("references", ::referencesPanel) })
-            addView(iconButton(R.drawable.ic_view, tr("Art direction")) { togglePanel("view", ::viewPanel) })
-            toolsButton = iconButton(R.drawable.ic_select, tr("Tools")) { togglePanel("tools", ::toolsPanel) }
-            addView(toolsButton)
-        }
+        bars = readBars(preferences.getString(BARS_KEY, null)).map { it.toMutableList() }.toMutableList()
+        barButtons.clear()
+        BAR_KEYS.forEach { key -> barButtons[key] = barButton(key) }
+        moreWindow = null
+        barViews.fill(null)
+        barWindows.fill(null)
+        val left = pill().apply { bars[0].forEach { addView(barButtons.getValue(it)) } }
         left.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+        barHeight = left.measuredHeight
         showPeek(
             dp(12) + left.measuredWidth - dp(PEEK_OVERLAP),
             dp(12) + left.measuredHeight / 2 - dp(PEEK_SIZE) / 2,
         )
         place(left, Gravity.TOP or Gravity.START, dp(12), dp(12))
+        barViews[0] = left
+        barWindows[0] = chrome.last()
         showPeekHands(dp(12) + left.measuredWidth - dp(HANDS_OVERLAP), dp(12) - dp(HANDS_OVERHANG), left.measuredHeight + dp(HANDS_OVERHANG) * 2)
 
         val colorButton = View(this).apply {
@@ -924,29 +1199,12 @@ class MainActivity : Activity(), ReferenceHost {
         swatch = colorButton
         dropColorFrom(colorButton) { canvas.brushColor }
         val right = pill().apply {
-            brushButton = iconButton(R.drawable.ic_brush, tr("Brushes")) {
-                if (canvas.brushKind.isEraser || canvas.brushKind.isTool) {
-                    closePanel()
-                    selectTool(lastBrush)
-                } else {
-                    togglePanel("brushes", ::brushPanel)
-                }
-            }
-            eraserButton = iconButton(R.drawable.ic_eraser, tr("Eraser")) {
-                if (canvas.brushKind.isEraser) {
-                    togglePanel("erasers", ::eraserPanel)
-                } else {
-                    closePanel()
-                    selectTool(lastEraser)
-                }
-            }
-            addView(brushButton)
-            addView(eraserButton)
-            layersButton = iconButton(R.drawable.ic_layers, tr("Layers")) { togglePanel("layers", ::layersPanel) }
-            addView(layersButton)
+            bars[1].forEach { addView(barButtons.getValue(it)) }
             addView(colorButton)
         }
         place(right, Gravity.TOP or Gravity.END, dp(12), dp(12))
+        barViews[1] = right
+        barWindows[1] = chrome.last()
 
         val sliders = pill(vertical = true).apply {
             addView(verticalSlider(tr("Brush size"), sizeProgress(), { sizeBar = it }) {
@@ -1585,6 +1843,7 @@ class MainActivity : Activity(), ReferenceHost {
             tr("Tap the name of your layer") to tr("Rename it right there."),
             tr("Double-tap a reference") to tr("Fits the whole image again. Two fingers zoom and turn it."),
             tr("Pen side button") to tr("Picks a color, erases, or undoes. Choose in this menu."),
+            tr("Hold a bar button") to tr("Lifts it like a drop of ink, to carry to another bar."),
             tr("Keyboard") to tr("B brush, E eraser, [ and ] size, Tab hides the tools, Ctrl+Z undo, Ctrl+Shift+Z or Ctrl+Y redo."),
         )
         rows.forEach { (gesture, effect) ->
@@ -1654,7 +1913,10 @@ class MainActivity : Activity(), ReferenceHost {
         val window = PopupWindow(body, panelWidth, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             isClippingEnabled = true
         }
-        val leftSide = key in LEFT_PANELS
+        val leftSide = PANEL_BUTTONS[key]?.let { button ->
+            val bar = bars.indexOfFirst { button in it }
+            if (bar == MORE_BAR) bars.indexOfFirst { "more" in it } != 1 else bar != 1
+        } ?: (key in LEFT_PANELS)
         val side = if (leftSide) Gravity.START else Gravity.END
         window.height = panelHeight(body, panelWidth)
         if (key == "companion") {
@@ -1705,6 +1967,8 @@ class MainActivity : Activity(), ReferenceHost {
         if (panelKey == "adjust") canvas.act { NativeEngine.setAdjustment(it, false, FloatArray(6)) }
         if (panelKey == "filter") canvas.act { NativeEngine.setFilter(it, false, 0, FloatArray(4), FloatArray(3)) }
         if (panelKey == "color") rememberColor()
+        if (panelKey == "figure") stopEditingFigure()
+        if (panelKey == "model") hideModel()
         panel?.dismiss()
         panel = null
         panelKey = ""
@@ -2750,13 +3014,14 @@ class MainActivity : Activity(), ReferenceHost {
         4 -> R.drawable.ic_fx_noise
         5 -> R.drawable.ic_fx_gradient_map
         6 -> R.drawable.ic_fx_levels
-        else -> R.drawable.ic_fx_depth
+        7 -> R.drawable.ic_fx_depth
+        else -> R.drawable.ic_fx_light
     }
 
     /** A slider with its name on the left and its value, in pixels, degrees, or percent, on the right. */
     private fun filterSlider(slider: FilterSlider, index: Int): View = column().apply {
         val span = slider.high - slider.low
-        val value = label(filterValueText(slider, filterValues[index]), 12f)
+        val value = label(tr(filterValueText(slider, filterValues[index])), 12f)
         gapped(
             LinearLayout(context).apply {
                 addView(label(tr(slider.label), 12f, MUTED_TEXT), LinearLayout.LayoutParams(0, -2, 1f))
@@ -2772,7 +3037,7 @@ class MainActivity : Activity(), ReferenceHost {
                 thumbTintList = ColorStateList.valueOf(ACCENT)
                 onChange {
                     filterValues[index] = slider.low + span * it / FILTER_STEPS
-                    value.text = filterValueText(slider, filterValues[index])
+                    value.text = tr(filterValueText(slider, filterValues[index]))
                     pushFilter()
                 }
             },
@@ -2823,6 +3088,557 @@ class MainActivity : Activity(), ReferenceHost {
         rerender("filter", ::filterPanel)
     }
 
+    // --- Figure guide ---------------------------------------------------------------------------
+
+    private fun bodyPoints() = document.body.toFloatArray()
+    private fun facePoints() = document.face.toFloatArray()
+
+    private fun figureNotes() = if (figureFace) {
+        if (document.face.size == FACE_POINTS * 2) analyzeFace(facePoints()) else emptyList()
+    } else {
+        if (document.body.size == BODY_JOINTS * 2) analyzeBody(bodyPoints()) else emptyList()
+    }
+
+    /**
+     * The figure guide and the 3D preview each draw in a window over the canvas. Both open with the
+     * studio, before its toolbars, so panels and toolbars always sit above them.
+     */
+    private fun showGuideWindows() {
+        figureWindow?.dismiss()
+        modelWindow?.dismiss()
+        if (isDestroyed) return
+        if (canvas.width == 0 || canvas.windowToken == null) {
+            canvas.post { showGuideWindows() }
+            return
+        }
+        fun cover(view: View) = PopupWindow(view, canvas.width, canvas.height).apply {
+            isTouchable = false
+            isClippingEnabled = false
+            showAtLocation(canvas, Gravity.NO_GRAVITY, 0, 0)
+        }
+        val overlay = FigureOverlay(this, canvas::canvasToScreen)
+        figureOverlay = overlay
+        figureWindow = cover(overlay)
+        val preview = ModelPreview(this, canvas::viewTransform) { floatArrayOf(modelView[3], modelView[4]) }
+        modelPreview = preview
+        modelWindow = cover(preview)
+        if (!guideWindowsFollow) {
+            guideWindowsFollow = true
+            // They keep covering the canvas when it changes size, as on turning the tablet.
+            canvas.addOnLayoutChangeListener { _, left, top, right, bottom, _, _, _, _ ->
+                figureWindow?.update(0, 0, right - left, bottom - top)
+                modelWindow?.update(0, 0, right - left, bottom - top)
+            }
+        }
+        showFigureGuide()
+    }
+
+    /** Draws the guide over the canvas when one is placed; it follows the view and stays while you draw. */
+    internal fun showFigureGuide() {
+        val overlay = figureOverlay ?: return
+        val editing = panelKey == "figure"
+        // Shown while it's being edited; while drawing, only if you asked to keep it.
+        val shown = editing || (preferences.getBoolean(FIGURE_KEEP, false) && panelKey != "model")
+        overlay.body = document.body.takeIf { shown && it.size == BODY_JOINTS * 2 }?.toFloatArray()
+        overlay.face = document.face.takeIf { shown && it.size == FACE_POINTS * 2 }?.toFloatArray()
+        overlay.editing = editing
+        overlay.showFace = figureFace
+        overlay.landmarks = figureLandmarks && editing
+        overlay.flagged = if (editing) figureNotes().filter { it.warning }.flatMap { it.joints }.toSet() else emptySet()
+        overlay.invalidate()
+    }
+
+    internal fun openFigureGuide(face: Boolean = figureFace) {
+        figureFace = face
+        placeFigureIfMissing()
+        showPanel("figure", figurePanel())
+        canvas.guideTouch = ::figureTouch
+        showFigureGuide()
+    }
+
+    private fun placeFigureIfMissing() {
+        if (figureFace && document.face.size != FACE_POINTS * 2) {
+            document.face = defaultFace(document.width, document.height).toList()
+            markUnsaved()
+        }
+        if (!figureFace && document.body.size != BODY_JOINTS * 2) {
+            document.body = defaultBody(document.width, document.height).toList()
+            markUnsaved()
+        }
+    }
+
+    private fun stopEditingFigure() {
+        canvas.guideTouch = null
+        draggedPoint = -1
+        canvas.post { showFigureGuide() }
+    }
+
+    private fun figurePanel(): View = column().apply {
+        addView(label(tr("Figure guide"), 16f))
+        gapped(
+            segmented(listOf(tr("Body"), tr("Face")), if (figureFace) 1 else 0) { index ->
+                figureFace = index == 1
+                placeFigureIfMissing()
+                showFigureGuide()
+                rerender("figure", ::figurePanel)
+            },
+        )
+        gapped(
+            label(
+                if (figureFace) {
+                    tr("Drag the points onto the face: top of the head, chin, eyes, nose, and mouth. Drag inside the oval to move it all.")
+                } else {
+                    tr("Drag the points onto your figure. Drag the hips to move it all.")
+                },
+                12f, MUTED_TEXT,
+            ),
+        )
+        figureNotes().forEach { note -> gapped(noteRow(note)) }
+        gapped(
+            wrapRow(
+                listOfNotNull(
+                    smallChip(tr("Landmarks"), figureLandmarks) {
+                        figureLandmarks = !figureLandmarks
+                        showFigureGuide()
+                        rerender("figure", ::figurePanel)
+                    }.takeIf { !figureFace },
+                    smallChip(tr("Keep showing"), preferences.getBoolean(FIGURE_KEEP, false)) {
+                        preferences.edit().putBoolean(FIGURE_KEEP, !preferences.getBoolean(FIGURE_KEEP, false)).apply()
+                        rerender("figure", ::figurePanel)
+                    },
+                ),
+            ),
+        )
+        gapped(
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    smallChip(tr("3D")) {
+                        closePanel()
+                        openModel(if (figureFace) 1 else 0, match = true)
+                    },
+                    LinearLayout.LayoutParams(-2, -2).apply { marginEnd = dp(8) },
+                )
+                addView(
+                    smallChip(tr("Remove")) {
+                        if (figureFace) document.face = emptyList() else document.body = emptyList()
+                        markUnsaved()
+                        closePanel()
+                        showFigureGuide()
+                    },
+                )
+                addView(View(context), LinearLayout.LayoutParams(0, 0, 1f))
+                addView(smallChip(tr("Done"), true) { closePanel() })
+            },
+        )
+    }
+
+    /** A note with a small dot: the accent for what to look at, quiet for what's fine. */
+    private fun noteRow(note: FigureNote): View = LinearLayout(this).apply {
+        addView(
+            View(context).apply { background = rounded(if (note.warning) ACCENT else MUTED_TEXT, 4) },
+            LinearLayout.LayoutParams(dp(8), dp(8)).apply {
+                topMargin = dp(6)
+                marginEnd = dp(8)
+            },
+        )
+        addView(
+            label(tr(note.text, *note.values.map { tr(it) }.toTypedArray()), 13f),
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+    }
+
+    /** Drags guide points while the panel is open; touches away from them still draw. */
+    private fun figureTouch(event: MotionEvent): Boolean {
+        val overlay = figureOverlay ?: return false
+        val spot = canvas.screenToCanvas(event.x, event.y)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val hit = overlay.pointAt(event.x, event.y)
+                draggedPoint = when {
+                    hit >= 0 -> hit
+                    figureFace && insideFace(spot) -> FACE_POINTS
+                    else -> return false
+                }
+                dragSpot = spot
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (draggedPoint < 0 || event.pointerCount > 1) return true
+                val dx = spot[0] - dragSpot[0]
+                val dy = spot[1] - dragSpot[1]
+                dragSpot = spot
+                if (figureFace) {
+                    val points = facePoints()
+                    for (index in 0 until FACE_POINTS) {
+                        if (draggedPoint == FACE_POINTS || draggedPoint == index) {
+                            points[index * 2] += dx
+                            points[index * 2 + 1] += dy
+                        }
+                    }
+                    document.face = points.toList()
+                } else {
+                    val points = bodyPoints()
+                    moveJoint(points, draggedPoint, dx, dy)
+                    document.body = points.toList()
+                }
+                showFigureGuide()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                if (draggedPoint >= 0) {
+                    draggedPoint = -1
+                    markUnsaved()
+                    rerender("figure", ::figurePanel)
+                    showFigureGuide()
+                }
+            }
+        }
+        return true
+    }
+
+    private fun insideFace(spot: FloatArray): Boolean {
+        if (document.face.size != FACE_POINTS * 2) return false
+        val points = facePoints().copyOf(FACE_POINTS * 2 + 2)
+        points[FACE_POINTS * 2] = spot[0]
+        points[FACE_POINTS * 2 + 1] = spot[1]
+        val (down, across) = facePlace(points, FACE_POINTS)
+        return down in 0f..1f && abs(across) < 0.37f
+    }
+
+    // --- 3D model -------------------------------------------------------------------------------
+
+    private val modelShapes = listOf(
+        Triple(0, R.drawable.ic_figure, "Figure"), Triple(1, R.drawable.ic_head, "Head"),
+        Triple(2, R.drawable.ic_cube, "Box"), Triple(3, R.drawable.ic_sphere, "Sphere"),
+        Triple(4, R.drawable.ic_cylinder, "Cylinder"), Triple(5, R.drawable.ic_model_file, "Your model"),
+    )
+
+    /** Opens the 3D aid; [match] poses and places it from the figure guide. */
+    internal fun openModel(shape: Int = modelShape, match: Boolean = false) {
+        setEditingMask(false)
+        modelShape = shape
+        if (modelView[5] == 0f) resetModelView()
+        val chosen = shape
+        modelRenderer.execute { NativeEngine.modelShape(chosen) }
+        if (match) matchGuide() else applyPose()
+        if (!ensureModelLayer()) return
+        showPanel("model", modelPanel())
+        canvas.guideTouch = ::modelTouch
+        showFigureGuide()
+        drawModelLayer()
+    }
+
+    /** The model lives on a layer of its own: the one it was drawn on when that's the active layer, or a new one. */
+    private fun ensureModelLayer(): Boolean {
+        if (modelLayer != 0 && activeLayer()?.id == modelLayer) return true
+        val before = activeLayer()?.id
+        addLayer(tr("3D model"))
+        val layer = activeLayer() ?: return false
+        if (layer.id == before) return false
+        modelLayer = layer.id
+        refreshLayers()
+        return true
+    }
+
+    /**
+     * While a finger or slider is moving the model, a light preview floats over the canvas and the
+     * layer waits empty; once it settles, the model is drawn into its layer at full size.
+     */
+    private fun changeModel(now: Boolean = false) {
+        handler.removeCallbacks(modelSettle)
+        if (now) {
+            drawModelLayer()
+            return
+        }
+        if (!modelLive) {
+            modelLive = true
+            val id = modelLayer
+            canvas.act { NativeEngine.clearLayerPixels(it, id) }
+        }
+        showModelPreview(dragging = true)
+        if (!modelTouching) handler.postDelayed(modelSettle, MODEL_SETTLE_MS)
+    }
+
+    private fun drawModelLayer() {
+        handler.removeCallbacks(modelSettle)
+        val id = modelLayer
+        if (id == 0 || layerById(id) == null) return
+        val width = document.width
+        val height = document.height
+        modelRequest.incrementAndGet()
+        // After any shape or pose change already queued for the model.
+        modelRenderer.execute {
+            runOnUiThread {
+                val view = modelView.copyOf()
+                canvas.act {
+                    NativeEngine.modelPlace(it, id, view, width, height, true)
+                    runOnUiThread {
+                        modelLive = false
+                        modelPreview?.let { preview ->
+                            preview.bitmap = null
+                            preview.invalidate()
+                        }
+                        requestLayerThumbnails()
+                    }
+                }
+                markUnsaved()
+            }
+        }
+    }
+
+    private fun resetModelView() {
+        modelView[0] = 0.4f
+        modelView[1] = 0.12f
+        modelView[2] = 0.35f
+        modelView[3] = document.width / 2f
+        modelView[4] = document.height / 2f
+        modelView[5] = document.height * (if (modelShape == 0) 0.85f else 0.45f)
+        modelView[6] = 2.36f
+        modelView[7] = 0.6f
+        modelView[8] = 0f
+    }
+
+    private fun applyPose() {
+        val pose = MANNEQUIN_POSES[modelPose].second
+        modelRenderer.execute { NativeEngine.modelPose(pose) }
+    }
+
+    /** Takes the figure guide's pose and place, or the face guide's turn and place. */
+    private fun matchGuide() {
+        if (modelShape == 0 && document.body.size == BODY_JOINTS * 2) {
+            val points = bodyPoints()
+            val pose = liftBody(points)
+            modelRenderer.execute { NativeEngine.modelPose(pose) }
+            val head = hypot(points[2] - points[0], points[3] - points[1])
+            val xs = (0 until BODY_JOINTS).map { points[it * 2] }
+            val ys = (0 until BODY_JOINTS).map { points[it * 2 + 1] }
+            modelView[0] = 0f
+            modelView[1] = 0f
+            modelView[3] = (xs.min() + xs.max()) / 2f
+            modelView[4] = (ys.min() + ys.max()) / 2f + head * 0.05f
+            modelView[5] = head * 7.6f
+        } else if (modelShape == 1 && document.face.size == FACE_POINTS * 2) {
+            val points = facePoints()
+            val (yaw, pitch) = faceTurn(points)
+            val length = hypot(points[2] - points[0], points[3] - points[1])
+            modelView[0] = yaw
+            modelView[1] = pitch
+            modelView[3] = (points[0] + points[2]) / 2f
+            modelView[4] = (points[1] + points[3]) / 2f + length * 0.12f
+            // The head model runs from crown to the bottom of the neck, a bit over one face length.
+            modelView[5] = length * 1.45f
+            applyPose()
+        } else {
+            applyPose()
+        }
+    }
+
+    private fun modelPanel(): View = column().apply {
+        addView(label(tr("3D model"), 16f))
+        gapped(
+            tileGrid(
+                modelShapes.map { (id, icon, title) ->
+                    iconTile(icon, tr(title), id == modelShape) {
+                        if (id == 5) {
+                            startActivityForResult(
+                                Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),
+                                PICK_MODEL,
+                            )
+                            return@iconTile
+                        }
+                        val sized = (modelShape == 0) != (id == 0)
+                        modelShape = id
+                        modelRenderer.execute { NativeEngine.modelShape(id) }
+                        if (sized) modelView[5] = document.height * (if (id == 0) 0.85f else 0.45f)
+                        changeModel(now = true)
+                        rerender("model", ::modelPanel)
+                    }
+                },
+                columns = 3,
+            ),
+        )
+        gapped(label(tr(if (modelMoving) "Drag on the canvas to move it." else "Drag on the canvas to turn it."), 12f, MUTED_TEXT))
+        gapped(
+            segmented(listOf(tr("Turn"), tr("Move")), if (modelMoving) 1 else 0) {
+                modelMoving = it == 1
+                rerender("model", ::modelPanel)
+            },
+        )
+        if (modelShape == 0) {
+            gapped(label(tr("Pose"), 12f, MUTED_TEXT))
+            gapped(
+                wrapRow(
+                    MANNEQUIN_POSES.mapIndexed { index, (name, _) ->
+                        smallChip(tr(name), index == modelPose) {
+                            modelPose = index
+                            applyPose()
+                            changeModel(now = true)
+                            rerender("model", ::modelPanel)
+                        }
+                    } + listOfNotNull(
+                        smallChip(tr("My figure")) {
+                            matchGuide()
+                            changeModel(now = true)
+                        }.takeIf { document.body.size == BODY_JOINTS * 2 },
+                    ),
+                ),
+            )
+        }
+        if (modelShape == 1 && document.face.size == FACE_POINTS * 2) {
+            gapped(
+                wrapRow(
+                    listOf(
+                        smallChip(tr("Match my face guide")) {
+                            matchGuide()
+                            changeModel(now = true)
+                        },
+                    ),
+                ),
+            )
+        }
+        fun slider(name: String, index: Int, low: Float, high: Float) {
+            addView(toolSlider(name, ((modelView[index] - low) / (high - low) * 100).roundToInt().coerceIn(0, 100)) {
+                modelView[index] = low + (high - low) * it / 100f
+                changeModel()
+            })
+        }
+        slider(tr("Size"), 5, document.height * 0.1f, document.height * 1.6f)
+        slider(tr("Perspective"), 2, 0f, 1f)
+        slider(tr("Light from"), 6, 0f, (2 * PI).toFloat())
+        slider(tr("Light height"), 7, 0.1f, 1.45f)
+        gapped(
+            segmented(listOf(tr("Shaded"), tr("Lines")), modelView[8].toInt()) {
+                modelView[8] = it.toFloat()
+                changeModel(now = true)
+                rerender("model", ::modelPanel)
+            },
+        )
+        gapped(
+            LinearLayout(context).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    smallChip(tr("Remove")) {
+                        val layer = layerById(modelLayer)
+                        modelLayer = 0
+                        closePanel()
+                        layer?.let(::deleteLayer)
+                    },
+                )
+                addView(View(context), LinearLayout.LayoutParams(0, 0, 1f))
+                addView(smallChip(tr("Done"), true) { placeModel() })
+            },
+        )
+    }
+
+    /** Turns or moves the model with one finger while its panel is open. */
+    private fun modelTouch(event: MotionEvent): Boolean {
+        if (event.pointerCount > 1) return true
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                dragSpot = floatArrayOf(event.x, event.y)
+                modelTouching = true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val dx = event.x - dragSpot[0]
+                val dy = event.y - dragSpot[1]
+                dragSpot = floatArrayOf(event.x, event.y)
+                if (modelMoving) {
+                    val zoom = canvas.viewZoom
+                    modelView[3] += dx / zoom
+                    modelView[4] += dy / zoom
+                } else {
+                    modelView[0] += dx * 0.01f
+                    modelView[1] = (modelView[1] + dy * 0.01f).coerceIn(-1.5f, 1.5f)
+                }
+                changeModel()
+                if (modelMoving) modelPreview?.invalidate()
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                modelTouching = false
+                changeModel(now = true)
+            }
+        }
+        return true
+    }
+
+
+    /**
+     * Renders a preview off the main thread, smaller while [dragging] so it keeps up with the
+     * finger. Each frame shows as soon as it's ready unless a newer one already has.
+     */
+    private fun showModelPreview(dragging: Boolean = false) {
+        val preview = modelPreview ?: return
+        val size = if (dragging) MODEL_DRAG_PREVIEW_SIZE else MODEL_PREVIEW_SIZE
+        val scale = min(1f, size.toFloat() / max(document.width, document.height))
+        val renderedX = modelView[3]
+        val renderedY = modelView[4]
+        val width = (document.width * scale).roundToInt()
+        val height = (document.height * scale).roundToInt()
+        val view = modelView.copyOf().also {
+            it[3] *= scale
+            it[4] *= scale
+            it[5] *= scale
+        }
+        val request = modelRequest.incrementAndGet()
+        modelRenderer.execute {
+            if (request != modelRequest.get()) return@execute
+            val pixels = java.nio.ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
+            NativeEngine.modelRender(view, width, height, pixels)
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            pixels.rewind()
+            bitmap.copyPixelsFromBuffer(pixels)
+            runOnUiThread {
+                if (request < modelShownRequest || panelKey != "model") return@runOnUiThread
+                modelShownRequest = request
+                preview.bitmap = bitmap
+                preview.scale = scale
+                preview.renderedX = renderedX
+                preview.renderedY = renderedY
+                preview.invalidate()
+            }
+        }
+    }
+
+    private fun hideModel() {
+        canvas.guideTouch = null
+        modelTouching = false
+        // A model still moving lands where it is.
+        if (modelLive || handler.hasCallbacks(modelSettle)) drawModelLayer()
+        modelPreview?.let {
+            it.bitmap = null
+            it.invalidate()
+        }
+        canvas.post { showFigureGuide() }
+    }
+
+    /** Leaves the model on its layer. Opening 3D again with that layer active keeps editing it. */
+    internal fun placeModel() = closePanel()
+
+    private fun importModel(uri: android.net.Uri) {
+        saver.execute {
+            val text = runCatching {
+                contentResolver.openInputStream(uri)?.use { stream -> stream.readBytes().takeIf { it.size <= MODEL_FILE_LIMIT }?.decodeToString() }
+            }.getOrNull()
+            modelRenderer.execute {
+                val loaded = text != null && NativeEngine.modelLoadObj(text)
+                runOnUiThread {
+                    if (!loaded) {
+                        say(tr("Couldn't read this model. Pick an .obj file."))
+                        return@runOnUiThread
+                    }
+                    modelShape = 5
+                    if (modelView[5] == 0f) resetModelView()
+                    modelView[5] = document.height * 0.6f
+                    if (panelKey == "model") {
+                        changeModel(now = true)
+                        rerender("model", ::modelPanel)
+                    } else {
+                        openModel(5)
+                    }
+                }
+            }
+        }
+    }
+
     private fun openFilters() {
         setEditingMask(false)
         closePanel()
@@ -2832,15 +3648,43 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun pushFilter() = showFilter(true)
 
-    private fun showFilter(shown: Boolean) {
+    private fun showFilter(shown: Boolean, shadeOnly: Boolean = false) {
         val id = filter.id
-        val values = filterValues.copyOf()
+        val values = engineFilterValues(filter, filterValues)
         val color = canvas.brushColor
-        val rgb = floatArrayOf(Color.red(color) / 255f, Color.green(color) / 255f, Color.blue(color) / 255f)
+        // The light filter reads its color slot as a switch: shading alone, for its own layer.
+        val rgb = if (id == LIGHT_FILTER) {
+            floatArrayOf(0f, if (shadeOnly) 1f else 0f, 0f)
+        } else {
+            floatArrayOf(Color.red(color) / 255f, Color.green(color) / 255f, Color.blue(color) / 255f)
+        }
         canvas.act { NativeEngine.setFilter(it, shown, id, values, rgb) }
     }
 
+    /** Light lands on a copy of the layer, clipped to it in Soft light, so it stays editable. */
+    private fun commitLight() {
+        val source = activeLayer() ?: return
+        duplicateLayer(source)
+        val light = activeLayer() ?: return
+        if (light.id == source.id) return
+        editLayers(structural = false) {
+            light.name = tr("%1 light", source.name)
+            light.clip = true
+            light.blend = SOFT_LIGHT_BLEND
+            light.opacity = 1f
+        }
+        showFilter(true, shadeOnly = true)
+        canvas.act { NativeEngine.commitFilter(it) }
+        history.record(Edit.Stroke)
+        markUnsaved()
+        refreshLayers()
+    }
+
     private fun commitFilter() {
+        if (filter.id == LIGHT_FILTER) {
+            commitLight()
+            return
+        }
         pushFilter()
         canvas.act { NativeEngine.commitFilter(it) }
         history.record(Edit.Stroke)
@@ -3815,10 +4659,11 @@ class MainActivity : Activity(), ReferenceHost {
 
     internal val layerCount get() = document.layers.size
     internal val layerOrder get() = document.layers.map { it.id }
+    internal val guideBody get() = document.body
     internal val artworkId get() = document.id
 
     internal fun openActionsAndVariants() {
-        showPanel("actions", actionsPanel())
+        showPanel("create", createPanel())
         closePanel()
         showPanel("variants", variantsPanel())
     }
@@ -4703,7 +5548,7 @@ class MainActivity : Activity(), ReferenceHost {
         }
     }
 
-    internal fun addLayer() {
+    internal fun addLayer(name: String? = null) {
         if (layerSlots >= maxLayers) {
             say(tr("This canvas can hold %1 layers", maxLayers), long = true)
             return
@@ -4713,7 +5558,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.act { NativeEngine.createLayer(it, id) }
         editLayers {
             val index = document.layers.indexOfFirst { it.id == document.activeLayer } + 1
-            document.layers.add(index, LayerInfo(id, tr("Layer %1", id)))
+            document.layers.add(index, LayerInfo(id, name ?: tr("Layer %1", id)))
             document.activeLayer = id
         }
         refreshLayers()
@@ -4815,7 +5660,8 @@ class MainActivity : Activity(), ReferenceHost {
 
     private fun askForName(title: String, current: String, done: (String) -> Unit) = askSheet(title, current, done)
 
-    private fun actionsPanel(): View = column().apply {
+    /** The artwork itself: its name, variations, size, and history. */
+    private fun artworkPanel(): View = column().apply {
         addView(label(document.name, 16f))
         addView(label(tr("%1 x %2 pixels · %3 of %4 layers", document.width, document.height, layerSlots, maxLayers), 12f, MUTED_TEXT))
         gapped(
@@ -4825,21 +5671,6 @@ class MainActivity : Activity(), ReferenceHost {
                     document.name = it
                     markUnsaved()
                 }
-            },
-        )
-        gapped(
-            actionRow(R.drawable.ic_text, tr("Add text"), tr("Titles, names, and labels")) {
-                closePanel()
-                askForText()
-            },
-        )
-        gapped(
-            actionRow(R.drawable.ic_copy, tr("Make a sticker"), tr("Add a die-cut border around your drawing")) { openStickerPanel() },
-        )
-        gapped(
-            actionRow(R.drawable.ic_palette, tr("Color variants"), tr("Try this design in new colors")) {
-                closePanel()
-                showPanel("variants", variantsPanel())
             },
         )
         gapped(label(tr("Variations"), 13f, MUTED_TEXT))
@@ -4876,12 +5707,6 @@ class MainActivity : Activity(), ReferenceHost {
             )
         }
         gapped(
-            actionRow(R.drawable.ic_video, if (document.animation) tr("Stop animating") else tr("Animate"), tr("Each layer becomes a frame")) {
-                closePanel()
-                setAnimation(!document.animation)
-            },
-        )
-        gapped(
             actionRow(R.drawable.ic_transform, tr("Canvas size"), tr("Crop, extend, or scale, as a new variation")) {
                 showCanvasSize()
             },
@@ -4898,18 +5723,51 @@ class MainActivity : Activity(), ReferenceHost {
                 showPanel("versions", versionsPanel())
             },
         )
+    }
+
+    private fun createPanel(): View = column().apply {
+        addView(label(tr("Create"), 16f))
         gapped(
-            actionRow(R.drawable.ic_view, tr("Focus mode"), tr("Only the canvas, with a tab to bring the tools back")) {
-                setFocusMode(true)
-            },
-        )
-        gapped(
-            actionRow(R.drawable.ic_companion, tr("Gestures and shortcuts"), tr("Every tap, hold, and key the app knows")) {
+            actionRow(R.drawable.ic_text, tr("Add text"), tr("Titles, names, and labels")) {
                 closePanel()
-                showPanel("gestures", gesturesPanel())
+                askForText()
             },
         )
-        gapped(label(tr("Export"), 13f, MUTED_TEXT))
+        gapped(
+            actionRow(R.drawable.ic_copy, tr("Make a sticker"), tr("Add a die-cut border around your drawing")) { openStickerPanel() },
+        )
+        gapped(
+            actionRow(R.drawable.ic_palette, tr("Color variants"), tr("Try this design in new colors")) {
+                closePanel()
+                showPanel("variants", variantsPanel())
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_video, if (document.animation) tr("Stop animating") else tr("Animate"), tr("Each layer becomes a frame")) {
+                closePanel()
+                setAnimation(!document.animation)
+            },
+        )
+    }
+
+    private fun studyPanel(): View = column().apply {
+        addView(label(tr("Study"), 16f))
+        gapped(
+            actionRow(R.drawable.ic_figure, tr("Figure guide"), tr("Place a body or face and check its proportions")) {
+                closePanel()
+                openFigureGuide()
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_cube, tr("3D model"), tr("Turn a figure, head, or shape to draw from")) {
+                closePanel()
+                openModel()
+            },
+        )
+    }
+
+    private fun exportPanel(): View = column().apply {
+        addView(label(tr("Export"), 16f))
         gapped(
             actionRow(R.drawable.ic_layers, tr("Design sheet"), tr("All variations on one page")) {
                 closePanel()
@@ -4957,6 +5815,30 @@ class MainActivity : Activity(), ReferenceHost {
                 askTimelapseLength()
             },
         )
+    }
+
+    private fun settingsPanel(): View = column().apply {
+        addView(label(tr("Settings"), 16f))
+        gapped(
+            actionRow(R.drawable.ic_view, tr("Focus mode"), tr("Only the canvas, with a tab to bring the tools back")) {
+                setFocusMode(true)
+            },
+        )
+        gapped(
+            actionRow(R.drawable.ic_companion, tr("Gestures and shortcuts"), tr("Every tap, hold, and key the app knows")) {
+                closePanel()
+                showPanel("gestures", gesturesPanel())
+            },
+        )
+        gapped(label(tr("Toolbars"), 13f, MUTED_TEXT))
+        gapped(label(tr("Hold a button to lift it, then drop it on another bar."), 12f, MUTED_TEXT))
+        gapped(
+            actionRow(R.drawable.ic_settings, tr("Reset bars")) {
+                preferences.edit().remove(BARS_KEY).apply()
+                closePanel()
+                rebuildChrome()
+            },
+        )
         gapped(label(tr("Language"), 13f, MUTED_TEXT))
         gapped(
             segmented(Language.entries.map { it.label }, I18n.language.ordinal) { index ->
@@ -4968,7 +5850,7 @@ class MainActivity : Activity(), ReferenceHost {
             segmented(listOf(tr("Pick color"), tr("Eraser"), tr("Undo")), canvas.penButtonAction) { action ->
                 canvas.penButtonAction = action
                 preferences.edit().putInt("penButton", action).apply()
-                rerender("actions", ::actionsPanel)
+                rerender("settings", ::settingsPanel)
             },
         )
         gapped(label(tr("Companion"), 13f, MUTED_TEXT))
@@ -6240,6 +7122,11 @@ class MainActivity : Activity(), ReferenceHost {
             if (resultCode == RESULT_OK) data?.data?.let(::importLayerImage)
             return
         }
+        if (requestCode == PICK_MODEL) {
+            val uri = data?.data
+            if (resultCode == RESULT_OK && uri != null) importModel(uri)
+            return
+        }
         if (requestCode == PICK_FONT) {
             val draft = textDraft ?: return
             textDraft = null
@@ -6409,6 +7296,7 @@ class MainActivity : Activity(), ReferenceHost {
         canvas.post {
             closePanel()
             showPrintGuides()
+            showGuideWindows()
             rebuildChrome()
             references.values.forEach { it.refit() }
         }
@@ -6440,6 +7328,9 @@ class MainActivity : Activity(), ReferenceHost {
         sizeRingWindow?.dismiss()
         focusTab?.dismiss()
         printWindow?.dismiss()
+        figureWindow?.dismiss()
+        modelWindow?.dismiss()
+        modelRenderer.shutdownNow()
         noteWindow?.dismiss()
         liquifyControls?.dismiss()
         liquifyRingWindow?.dismiss()

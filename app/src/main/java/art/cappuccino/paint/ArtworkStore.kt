@@ -48,6 +48,9 @@ class ArtworkDocument(
     var fps: Int = DEFAULT_FPS,
     /** Set for a book cover: its trim, bleed, and spine, for guides and print-ready files. */
     var print: PrintSetup? = null,
+    /** The figure guide's body joints and face points, in canvas pixels. Empty when not placed. */
+    var body: List<Float> = emptyList(),
+    var face: List<Float> = emptyList(),
 ) {
     val thumbnailHeight get() = ArtworkStore.thumbnailHeight(width, height)
 }
@@ -484,8 +487,12 @@ class ArtworkStore(context: Context) {
             manifest.optBoolean("animation"),
             manifest.optInt("fps", DEFAULT_FPS),
             PrintSetup.fromJson(manifest.optJSONObject("print")),
+            floats(manifest.optJSONArray("body")),
+            floats(manifest.optJSONArray("face")),
         )
     }
+
+    private fun floats(values: JSONArray?) = values?.let { (0 until it.length()).map { index -> it.getDouble(index).toFloat() } }.orEmpty()
 
     private fun readTileMaps(manifest: JSONObject): Map<Int, Map<Int, TileRef>> {
         val packs = manifest.optJSONArray("packs") ?: return emptyMap()
@@ -632,6 +639,8 @@ class ArtworkStore(context: Context) {
             .put("nextGroupId", snapshot.nextGroupId)
             .put("light", document.light.name)
             .put("figure", JSONArray(document.figure.map { it.toDouble() }))
+            .put("body", JSONArray(document.body.map { it.toDouble() }))
+            .put("face", JSONArray(document.face.map { it.toDouble() }))
             .put("variationOf", document.variationOf)
             .put("journalSequence", snapshot.journalSequence)
             .put("symmetry", document.symmetry)

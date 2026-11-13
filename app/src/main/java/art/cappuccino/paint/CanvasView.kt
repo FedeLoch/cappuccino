@@ -159,6 +159,12 @@ class CanvasView(
     var onStrokePath: (FloatArray) -> Unit = {}
     var onStrokeRecord: (BrushState, FloatArray) -> Unit = { _, _ -> }
     var onPenNear: () -> Unit = {}
+    /**
+     * Offered each single touch first while a guide is being edited. Returning true on the first
+     * event of a touch keeps the whole touch for the guide instead of drawing.
+     */
+    var guideTouch: ((MotionEvent) -> Boolean)? = null
+    private var guideOwnsTouch = false
 
     /** What the pen's side button does: 0 picks a color, 1 erases while held, 2 undoes. */
     var penButtonAction = 0
@@ -328,6 +334,9 @@ class CanvasView(
         pendingActions.add(action)
         renderer.execute { glCallback.drainActions() }
     }
+
+    /** A copy of the canvas-to-screen transform. */
+    fun viewTransform() = Matrix(viewMatrix)
 
     fun canvasToScreen(x: Float, y: Float): FloatArray =
         floatArrayOf(x, y).also(viewMatrix::mapPoints)
@@ -527,6 +536,11 @@ class CanvasView(
         if (ignorePen) {
             val action = event.actionMasked
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) ignorePen = false
+            return true
+        }
+        if (guideOwnsTouch || (event.actionMasked == MotionEvent.ACTION_DOWN && guideTouch?.invoke(event) == true)) {
+            if (guideOwnsTouch) guideTouch?.invoke(event)
+            guideOwnsTouch = event.actionMasked != MotionEvent.ACTION_UP && event.actionMasked != MotionEvent.ACTION_CANCEL
             return true
         }
         if (transformMode) return onTransformEvent(event)

@@ -7,6 +7,7 @@ add_library(cappuccino SHARED
     jni.cpp
     ${ENGINE_DIR}/fill.cpp
     ${ENGINE_DIR}/liquify.cpp
+    ${ENGINE_DIR}/model3d.cpp
     ${ENGINE_DIR}/renderer.cpp
     ${ENGINE_DIR}/stroke.cpp)
 

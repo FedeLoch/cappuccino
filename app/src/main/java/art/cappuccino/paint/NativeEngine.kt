@@ -134,4 +134,13 @@ object NativeEngine {
     )
     external fun undo(handle: Long)
     external fun redo(handle: Long)
+
+    // The 3D drawing aid. A view is yaw, pitch, lens, center x, center y, size, light direction,
+    // light height, and style, as ModelView in model3d.h.
+    external fun modelShape(shape: Int)
+    external fun modelPose(joints: FloatArray)
+    external fun modelLoadObj(text: String): Boolean
+    external fun modelRender(view: FloatArray, width: Int, height: Int, pixels: ByteBuffer)
+    external fun modelPlace(handle: Long, layerId: Int, view: FloatArray, width: Int, height: Int, live: Boolean): Boolean
+    external fun clearLayerPixels(handle: Long, id: Int)
 }

@@ -342,6 +342,50 @@ class CanvasInteractionTest {
         assertEquals(listOf(before[1], before[2], before[0]), after)
     }
 
+    @Test
+    fun lightShadesFromWhereItComesAndSitsOnItsOwnLayer() {
+        val x = width / 2f
+        val y = height / 2f
+        onStudio { it.setColor(Color.rgb(140, 140, 140)) }
+        loop(x, y, 200f)
+        settle()
+        onStudio { it.dropColorAt(Color.rgb(140, 140, 140), x, y) }
+        val layers = layerCount()
+        val light = FILTERS.first { it.id == LIGHT_FILTER }
+        // From the left, low, reaching well in from the edge.
+        onStudio { it.applyFilter(light, Math.PI.toFloat(), 0.35f, 300f, 1f) }
+        settle()
+        assertEquals(layers + 1, layerCount())
+        val shot = screenshot()
+        // Near the edges, where the relief turns most.
+        val left = Color.red(shot.getPixel((x - 175f).toInt(), y.toInt()))
+        val right = Color.red(shot.getPixel((x + 175f).toInt(), y.toInt()))
+        assertTrue("the left should be lit, $left against $right", left > right + 25)
+    }
+
+    @Test
+    fun aModelLandsOnANewLayer() {
+        val layers = layerCount()
+        onStudio {
+            it.openModel(3)
+            it.placeModel()
+        }
+        settle()
+        assertEquals(layers + 1, layerCount())
+        assertTrue("the sphere should be drawn in the middle", !isPaper(width / 2f, height / 2f))
+        tap(2)
+        settle()
+        assertTrue("undo should clear the sphere", isPaper(width / 2f, height / 2f))
+    }
+
+    @Test
+    fun theFigureGuideSavesWithTheArtwork() {
+        onStudio { it.openFigureGuide(face = false) }
+        var body = emptyList<Float>()
+        onStudio { body = it.guideBody }
+        assertEquals(BODY_JOINTS * 2, body.size)
+    }
+
     private fun onStudio(action: (MainActivity) -> Unit) {
         scenario.onActivity(action)
         settle()
